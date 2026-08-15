@@ -10,8 +10,10 @@ import hashlib
 import json
 import os
 import tempfile
+import threading
 import time
 import uuid
+from collections import OrderedDict
 from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import datetime, timezone
@@ -529,6 +531,35 @@ def _unlink_with_retry(target: Path) -> None:
     for attempt in range(_REPLACE_ATTEMPTS):
         try:
             target.unlink(missing_ok=True)
+            return
+        except PermissionError:
+            if attempt + 1 >= _REPLACE_ATTEMPTS:
+                raise
+            time.sleep(_REPLACE_RETRY_DELAY_S * (attempt + 1))
+
+
+def _append_line_with_retry(path: Path, line: bytes) -> None:
+    """Append one durable canonical line (repo-standard PermissionError retry).
+
+    P2 consistency (2026-08-15): the verifier-WAL true-append path was a bare
+    ``open("ab")`` write. Windows AV/indexer handles can transiently deny the
+    append-mode open with PermissionError, which would abort a locked
+    publication outright. Same discipline as ``_replace_with_retry`` and the
+    translation sidecar journal: 8 attempts × 0.02s×(1..7) linear backoff,
+    re-raise after the budget — failures stay loud.
+
+    Atomicity: a denied open lands zero bytes, so a retry is clean. The
+    canonical line is written whole after a successful open; a hypothetical
+    partial in-handle write failure would leave at most a torn tail that
+    readers fail closed on and the write-side load truncates — never a glued
+    partial line inside a committed generation.
+    """
+    for attempt in range(_REPLACE_ATTEMPTS):
+        try:
+            with path.open("ab") as handle:
+                handle.write(line)
+                handle.flush()
+                os.fsync(handle.fileno())
             return
         except PermissionError:
             if attempt + 1 >= _REPLACE_ATTEMPTS:
@@ -1717,6 +1748,17 @@ def _recover_claim_state_unlocked(
         raise ClaimArtifactError(
             "budget checkpoint recovery requires claim maintenance"
         )
+    # The verifier-attempt ledger is append-mode now; a crash mid-line can
+    # leave a torn (newline-less) tail. Recovery owns the publication lock, so
+    # heal it back to the last committed generation before any read below.
+    # Pure GET paths never reach this function (readonly loads skip recovery)
+    # and keep failing closed on an unsettled torn tail.
+    if (claim_artifact_path(root, CLAIM_VERIFIER_ATTEMPTS)).is_file():
+        _load_verifier_ledger_unlocked(
+            root,
+            allow_missing=False,
+            for_write=True,
+        )
     binding = _recover_interrupted_publication_unlocked(root)
     _recover_interrupted_effective_publication_unlocked(root)
     checkpoint_binding = _recover_abandoned_verifier_checkpoint_unlocked(
@@ -1810,18 +1852,22 @@ def _read_jsonl(path: Path, *, label: str) -> list[dict[str, Any]]:
     return rows
 
 
-def _require_hash(path: Path, expected: object, *, label: str) -> None:
+def _require_hash_value(actual: str, expected: object, *, label: str) -> None:
     wanted = str(expected or "")
     if not wanted:
         raise ClaimArtifactError(f"missing committed hash for {label}")
-    try:
-        actual = file_sha256(path)
-    except OSError as exc:
-        raise ClaimArtifactError(f"missing committed artifact: {path.name}") from exc
     if actual != wanted:
         raise ClaimArtifactError(
             f"hash mismatch for {label}: expected {wanted}, got {actual}"
         )
+
+
+def _require_hash(path: Path, expected: object, *, label: str) -> None:
+    try:
+        actual = file_sha256(path)
+    except OSError as exc:
+        raise ClaimArtifactError(f"missing committed artifact: {path.name}") from exc
+    _require_hash_value(actual, expected, label=label)
 
 
 def _catalog_meta_requires_cell_binding(catalog_meta: dict[str, Any]) -> bool:
@@ -2108,111 +2154,371 @@ def _validate_attempt_source(source: object, *, attempt_kind: str) -> None:
         raise ClaimArtifactError("invalid verifier attempt kind")
 
 
+def _validate_attempt_event_row(
+    row: dict[str, Any],
+    expected_seq: int,
+    previous_hash: str,
+    chain_counts: dict[str, int],
+    attempt_states: dict[str, dict[str, Any]],
+) -> None:
+    """Validate one ledger row against the accumulated chain state.
+
+    ``chain_counts``/``attempt_states`` are mutated exactly like the full-ledger
+    pass so an append can validate only its new row against the memoized state
+    of the committed prefix (identical rules, incremental scope).
+    """
+    if set(row) != _ATTEMPT_EVENT_FIELDS:
+        raise ClaimArtifactError("invalid verifier attempt event shape")
+    if row.get("schema") != CLAIM_VERIFIER_ATTEMPT_SCHEMA:
+        raise ClaimArtifactError("unsupported verifier attempt schema")
+    if row.get("event_seq") != expected_seq:
+        raise ClaimArtifactError("invalid verifier attempt event sequence")
+    if row.get("attempt_kind") not in {"cold", "ledger_only"}:
+        raise ClaimArtifactError("invalid verifier attempt kind")
+    if row.get("attempt_status") not in {"complete", "incomplete", "failed"}:
+        raise ClaimArtifactError("invalid verifier attempt status")
+    if not isinstance(row.get("recorded_at"), str) or not row.get("recorded_at"):
+        raise ClaimArtifactError("invalid verifier attempt timestamp")
+    if not isinstance(row.get("error"), str):
+        raise ClaimArtifactError("invalid verifier attempt error")
+    if row.get("previous_event_hash") != previous_hash:
+        raise ClaimArtifactError("invalid verifier attempt previous event hash")
+    _validate_attempt_identity(row.get("chain_identity"))
+    _validate_attempt_policy_identity(row.get("attempt_policy_identity"))
+    expected_chain_id = _sha256_payload(row["chain_identity"])
+    if row.get("chain_id") != expected_chain_id:
+        raise ClaimArtifactError("invalid verifier attempt chain id")
+    _validate_attempt_source(
+        row.get("source_locator"),
+        attempt_kind=str(row["attempt_kind"]),
+    )
+    _validate_attempt_metrics(row.get("attempt_metrics"))
+    expected_attempt_id = _attempt_id(
+        expected_chain_id,
+        str(row["attempt_kind"]),
+        row["source_locator"],
+    )
+    if row.get("attempt_id") != expected_attempt_id:
+        raise ClaimArtifactError("invalid verifier attempt id")
+    source = row["source_locator"]
+    identity = row["chain_identity"]
+    if (
+        identity["requirements_request_id"] != source["requirements_request_id"]
+        or identity["document_generation_id"] != source["document_generation_id"]
+        or identity["requirements_sha256"] != source["requirements_sha256"]
+    ):
+        raise ClaimArtifactError("verifier attempt requirements root differs from source")
+    if row["attempt_kind"] == "cold":
+        if identity["root_attempt_request_id"] != source["attempt_request_id"]:
+            raise ClaimArtifactError("cold verifier chain root differs from request")
+    else:
+        reuse_attempt_id = str(source["reuse_attempt_id"])
+        reused = attempt_states.get(reuse_attempt_id)
+        if reused is None:
+            raise ClaimArtifactError("ledger-only verifier attempt reuses unknown attempt")
+        if (
+            reused["chain_id"] != expected_chain_id
+            or reused["source_locator"]["attempt_request_id"]
+            != source["reuse_generation_run_id"]
+            or identity["root_attempt_request_id"]
+            != reused["chain_identity"]["root_attempt_request_id"]
+        ):
+            raise ClaimArtifactError("ledger-only verifier attempt reuse lineage is stale")
+
+    prior = attempt_states.get(expected_attempt_id)
+    if prior is None:
+        if row.get("supersedes_event_hash") is not None:
+            raise ClaimArtifactError("initial verifier attempt cannot supersede an event")
+        chain_counts[expected_chain_id] = chain_counts.get(expected_chain_id, 0) + 1
+        if row.get("chain_attempt_seq") != chain_counts[expected_chain_id]:
+            raise ClaimArtifactError("invalid verifier chain attempt sequence")
+    else:
+        if (
+            row.get("supersedes_event_hash") != prior.get("event_hash")
+            or row.get("attempt_kind") != prior.get("attempt_kind")
+            or row.get("chain_id") != prior.get("chain_id")
+            or row.get("chain_attempt_seq") != prior.get("chain_attempt_seq")
+            or row.get("chain_identity") != prior.get("chain_identity")
+            or row.get("attempt_policy_identity")
+            != prior.get("attempt_policy_identity")
+            or row.get("source_locator") != prior.get("source_locator")
+            or row.get("attempt_status") != "failed"
+            or not row.get("error")
+        ):
+            raise ClaimArtifactError("invalid verifier attempt status correction")
+        old_metrics = dict(prior["attempt_metrics"])
+        new_metrics = dict(row["attempt_metrics"])
+        for field in _ATTEMPT_METRIC_FIELDS - {
+            "verifier_usage_complete",
+            "semantic_validation_reused_group_ratio",
+        }:
+            if int(new_metrics[field]) < int(old_metrics[field]):
+                raise ClaimArtifactError("verifier attempt correction loses accounting")
+        if (
+            new_metrics["verifier_operation_failure_count"]
+            <= old_metrics["verifier_operation_failure_count"]
+            or old_metrics["verifier_usage_complete"] is False
+            and new_metrics["verifier_usage_complete"] is True
+        ):
+            raise ClaimArtifactError("invalid verifier attempt failure correction")
+    unhashed = dict(row)
+    event_hash = unhashed.pop("event_hash")
+    if event_hash != _sha256_payload(unhashed):
+        raise ClaimArtifactError("invalid verifier attempt event hash")
+    attempt_states[expected_attempt_id] = row
+    return str(event_hash)
+
+
 def _validate_attempt_rows(rows: list[dict[str, Any]]) -> None:
+    """Full fail-closed validation of a verifier-attempt ledger (cold loads)."""
+    _reduce_attempt_rows(rows)
+
+
+def _reduce_attempt_rows(
+    rows: list[dict[str, Any]],
+) -> tuple[str, dict[str, int], dict[str, dict[str, Any]]]:
     previous_hash = _EMPTY_SHA256
     chain_counts: dict[str, int] = {}
     attempt_states: dict[str, dict[str, Any]] = {}
     for expected_seq, row in enumerate(rows, start=1):
-        if set(row) != _ATTEMPT_EVENT_FIELDS:
-            raise ClaimArtifactError("invalid verifier attempt event shape")
-        if row.get("schema") != CLAIM_VERIFIER_ATTEMPT_SCHEMA:
-            raise ClaimArtifactError("unsupported verifier attempt schema")
-        if row.get("event_seq") != expected_seq:
-            raise ClaimArtifactError("invalid verifier attempt event sequence")
-        if row.get("attempt_kind") not in {"cold", "ledger_only"}:
-            raise ClaimArtifactError("invalid verifier attempt kind")
-        if row.get("attempt_status") not in {"complete", "incomplete", "failed"}:
-            raise ClaimArtifactError("invalid verifier attempt status")
-        if not isinstance(row.get("recorded_at"), str) or not row.get("recorded_at"):
-            raise ClaimArtifactError("invalid verifier attempt timestamp")
-        if not isinstance(row.get("error"), str):
-            raise ClaimArtifactError("invalid verifier attempt error")
-        if row.get("previous_event_hash") != previous_hash:
-            raise ClaimArtifactError("invalid verifier attempt previous event hash")
-        _validate_attempt_identity(row.get("chain_identity"))
-        _validate_attempt_policy_identity(row.get("attempt_policy_identity"))
-        expected_chain_id = _sha256_payload(row["chain_identity"])
-        if row.get("chain_id") != expected_chain_id:
-            raise ClaimArtifactError("invalid verifier attempt chain id")
-        _validate_attempt_source(
-            row.get("source_locator"),
-            attempt_kind=str(row["attempt_kind"]),
+        previous_hash = _validate_attempt_event_row(
+            row,
+            expected_seq,
+            previous_hash,
+            chain_counts,
+            attempt_states,
         )
-        _validate_attempt_metrics(row.get("attempt_metrics"))
-        expected_attempt_id = _attempt_id(
-            expected_chain_id,
-            str(row["attempt_kind"]),
-            row["source_locator"],
-        )
-        if row.get("attempt_id") != expected_attempt_id:
-            raise ClaimArtifactError("invalid verifier attempt id")
-        source = row["source_locator"]
-        identity = row["chain_identity"]
-        if (
-            identity["requirements_request_id"] != source["requirements_request_id"]
-            or identity["document_generation_id"] != source["document_generation_id"]
-            or identity["requirements_sha256"] != source["requirements_sha256"]
-        ):
-            raise ClaimArtifactError("verifier attempt requirements root differs from source")
-        if row["attempt_kind"] == "cold":
-            if identity["root_attempt_request_id"] != source["attempt_request_id"]:
-                raise ClaimArtifactError("cold verifier chain root differs from request")
-        else:
-            reuse_attempt_id = str(source["reuse_attempt_id"])
-            reused = attempt_states.get(reuse_attempt_id)
-            if reused is None:
-                raise ClaimArtifactError("ledger-only verifier attempt reuses unknown attempt")
-            if (
-                reused["chain_id"] != expected_chain_id
-                or reused["source_locator"]["attempt_request_id"]
-                != source["reuse_generation_run_id"]
-                or identity["root_attempt_request_id"]
-                != reused["chain_identity"]["root_attempt_request_id"]
-            ):
-                raise ClaimArtifactError("ledger-only verifier attempt reuse lineage is stale")
+    return previous_hash, chain_counts, attempt_states
 
-        prior = attempt_states.get(expected_attempt_id)
-        if prior is None:
-            if row.get("supersedes_event_hash") is not None:
-                raise ClaimArtifactError("initial verifier attempt cannot supersede an event")
-            chain_counts[expected_chain_id] = chain_counts.get(expected_chain_id, 0) + 1
-            if row.get("chain_attempt_seq") != chain_counts[expected_chain_id]:
-                raise ClaimArtifactError("invalid verifier chain attempt sequence")
+
+class _VerifierLedgerState:
+    """Memoized chain state for one verifier-attempt ledger file.
+
+    Keyed by the file's stat signature so cross-process writers invalidate it.
+    ``rows`` (and the per-chain views) are shared with callers — treat them as
+    read-only. The sha256 hasher runs over the canonical serialization, so
+    ``ledger_sha256``/``prefix_sha256`` match ``_sha256_bytes(_jsonl_bytes(...))``
+    exactly while advancing incrementally per append.
+    """
+
+    __slots__ = (
+        "signature",
+        "rows",
+        "raw_bytes",
+        "canonical_len",
+        "hasher",
+        "previous_hash",
+        "chain_counts",
+        "attempt_states",
+        "chains",
+        "prefix_hashes",
+    )
+
+    def __init__(
+        self,
+        signature: tuple[int, int, int, int, int],
+        rows: list[dict[str, Any]],
+        raw_bytes: bytes,
+        canonical_bytes: bytes,
+        previous_hash: str,
+        chain_counts: dict[str, int],
+        attempt_states: dict[str, dict[str, Any]],
+    ) -> None:
+        self.signature = signature
+        self.rows = rows
+        self.raw_bytes = raw_bytes
+        self.canonical_len = len(canonical_bytes)
+        self.hasher = hashlib.sha256(canonical_bytes)
+        self.previous_hash = previous_hash
+        self.chain_counts = chain_counts
+        self.attempt_states = attempt_states
+        self.chains: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            self.chains.setdefault(str(row["chain_id"]), []).append(row)
+        self.prefix_hashes: dict[int, str] = {len(rows): self.ledger_sha256()}
+
+    def ledger_sha256(self) -> str:
+        return "sha256:" + self.hasher.hexdigest()
+
+    def prefix_sha256(self, count: int) -> str:
+        cached = self.prefix_hashes.get(count)
+        if cached is not None:
+            return cached
+        digest = _sha256_bytes(_jsonl_bytes(self.rows[:count]))
+        self.prefix_hashes[count] = digest
+        return digest
+
+    def chain_rows(self, chain_id: str) -> list[dict[str, Any]]:
+        return self.chains.get(chain_id, [])
+
+
+_VERIFIER_LEDGER_MEMO_GUARD = RLock()
+_VERIFIER_LEDGER_MEMO: dict[Path, _VerifierLedgerState] = {}
+_VERIFIER_LEDGER_COMPACT_MAX_ROWS = max(
+    1,
+    int(os.environ.get("RATOMIZER_VERIFIER_LEDGER_COMPACT_MAX_ROWS") or 2000),
+)
+_VERIFIER_LEDGER_COMPACT_MAX_BYTES = max(
+    1,
+    int(
+        os.environ.get("RATOMIZER_VERIFIER_LEDGER_COMPACT_MAX_BYTES")
+        or 8 * 1024 * 1024
+    ),
+)
+
+
+def _stat_signature(path: Path) -> tuple[int, int, int, int, int] | None:
+    """Verifier-ledger memo key: stat signature extended with file identity.
+
+    Distinct memo site from ``_stat_identity_signature`` (the already-hardened
+    effective-snapshot revision key) — this key only serves the in-process
+    verifier-WAL memo here. Same rationale: the toolchain writes through
+    atomic os.replace, which always mints a fresh file identity, so a replaced
+    ledger can never collide with the memoized state even when size and
+    mtime_ns were restored (Windows additionally preserves creation time —
+    st_ctime_ns — across a replace). Where the filesystem reports
+    ``st_ino == 0`` the extra fields are constant and the key degrades to the
+    legacy (size, mtime_ns, ctime_ns) strength.
+    """
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return (
+        stat.st_size,
+        stat.st_mtime_ns,
+        stat.st_ctime_ns,
+        stat.st_ino,
+        stat.st_dev,
+    )
+
+
+def _verifier_ledger_memo_hit(
+    root: Path,
+    signature: tuple[int, int, int, int, int] | None,
+) -> _VerifierLedgerState | None:
+    if signature is None:
+        return None
+    with _VERIFIER_LEDGER_MEMO_GUARD:
+        state = _VERIFIER_LEDGER_MEMO.get(root)
+    if state is not None and state.signature == signature:
+        return state
+    return None
+
+
+def _parse_verifier_ledger_bytes(path: Path, raw: bytes) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeError as exc:
+        raise ClaimArtifactError(f"invalid verifier attempt ledger: {path.name}") from exc
+    # Split strictly on "\n" like the JSONL writer joins: str.splitlines would
+    # additionally break on characters that are legal inside JSON strings.
+    segments = text.split("\n")
+    if segments and segments[-1] == "":
+        segments.pop()
+    for line_number, line in enumerate(segments, start=1):
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ClaimArtifactError(
+                f"invalid verifier attempt ledger: {path.name}:{line_number}"
+            ) from exc
+        if not isinstance(row, dict):
+            raise ClaimArtifactError(
+                f"invalid verifier attempt ledger: {path.name}:{line_number} is not an object"
+            )
+        rows.append(row)
+    return rows
+
+
+def _truncate_verifier_torn_tail(path: Path, raw: bytes) -> bytes:
+    """Drop an uncommitted partial trailing line (write paths, under lock).
+
+    ``truncate(cut)`` targets an absolute offset and is therefore idempotent,
+    so retrying the whole open/truncate/fsync unit after a transient
+    PermissionError can never truncate past the intended cut.
+    """
+    cut = raw.rfind(b"\n") + 1
+    for attempt in range(_REPLACE_ATTEMPTS):
+        try:
+            with path.open("r+b") as handle:
+                handle.truncate(cut)
+                handle.flush()
+                os.fsync(handle.fileno())
+            return raw[:cut]
+        except PermissionError:
+            if attempt + 1 >= _REPLACE_ATTEMPTS:
+                raise
+            time.sleep(_REPLACE_RETRY_DELAY_S * (attempt + 1))
+
+
+def _load_verifier_ledger_unlocked(
+    root: Path,
+    *,
+    allow_missing: bool,
+    for_write: bool = False,
+) -> _VerifierLedgerState | None:
+    """Load the verifier ledger with full hash-chain validation, memoized.
+
+    ``for_write`` is only legal while the claim publication lock is held: a
+    newline-less tail is truncated to the last committed generation instead of
+    retried, so the append chains onto a complete prefix. Readers keep the
+    bounded torn-tail retry window and fail closed.
+    """
+    path = claim_artifact_path(root, CLAIM_VERIFIER_ATTEMPTS)
+    signature = _stat_signature(path)
+    state = _verifier_ledger_memo_hit(root, signature)
+    if state is not None:
+        return state
+    if signature is None:
+        if allow_missing:
+            return None
+        raise ClaimArtifactError(f"missing verifier attempt ledger: {path.name}")
+    raw = path.read_bytes()
+    if raw and not raw.endswith(b"\n"):
+        if for_write:
+            raw = _truncate_verifier_torn_tail(path, raw)
         else:
-            if (
-                row.get("supersedes_event_hash") != prior.get("event_hash")
-                or row.get("attempt_kind") != prior.get("attempt_kind")
-                or row.get("chain_id") != prior.get("chain_id")
-                or row.get("chain_attempt_seq") != prior.get("chain_attempt_seq")
-                or row.get("chain_identity") != prior.get("chain_identity")
-                or row.get("attempt_policy_identity")
-                != prior.get("attempt_policy_identity")
-                or row.get("source_locator") != prior.get("source_locator")
-                or row.get("attempt_status") != "failed"
-                or not row.get("error")
-            ):
-                raise ClaimArtifactError("invalid verifier attempt status correction")
-            old_metrics = dict(prior["attempt_metrics"])
-            new_metrics = dict(row["attempt_metrics"])
-            for field in _ATTEMPT_METRIC_FIELDS - {
-                "verifier_usage_complete",
-                "semantic_validation_reused_group_ratio",
-            }:
-                if int(new_metrics[field]) < int(old_metrics[field]):
-                    raise ClaimArtifactError("verifier attempt correction loses accounting")
-            if (
-                new_metrics["verifier_operation_failure_count"]
-                <= old_metrics["verifier_operation_failure_count"]
-                or old_metrics["verifier_usage_complete"] is False
-                and new_metrics["verifier_usage_complete"] is True
-            ):
-                raise ClaimArtifactError("invalid verifier attempt failure correction")
-        unhashed = dict(row)
-        event_hash = unhashed.pop("event_hash")
-        if event_hash != _sha256_payload(unhashed):
-            raise ClaimArtifactError("invalid verifier attempt event hash")
-        attempt_states[expected_attempt_id] = row
-        previous_hash = str(event_hash)
+            # A missing trailing newline on the final line is a suspected torn tail: the
+            # publisher may still be appending. Re-read within a bounded window and only
+            # declare permanent corruption if the partial tail never settles. A complete
+            # line whose hash/chain/schema is forged is distinguished by
+            # _validate_attempt_rows below and rejected immediately, never retried.
+            max_retries = int(os.environ.get("RATOMIZER_ATTEMPT_LOG_TORN_RETRIES", "3"))
+            retry_delay = float(os.environ.get("RATOMIZER_ATTEMPT_LOG_TORN_DELAY", "0.005"))
+            settled = False
+            for _ in range(max_retries):
+                time.sleep(retry_delay)
+                candidate = path.read_bytes()
+                if candidate.endswith(b"\n"):
+                    raw = candidate
+                    settled = True
+                    break
+                if candidate != raw:
+                    raw = candidate  # still moving; keep observing within the window
+            if not settled and raw and not raw.endswith(b"\n"):
+                raise ClaimAttemptLogTornTail(
+                    "verifier attempt ledger has a persistent torn tail that never settled"
+                )
+    rows = _parse_verifier_ledger_bytes(path, raw)
+    previous_hash, chain_counts, attempt_states = _reduce_attempt_rows(rows)
+    canonical = _jsonl_bytes(rows)
+    signature = _stat_signature(path) or signature
+    state = _VerifierLedgerState(
+        signature,
+        rows,
+        raw,
+        canonical,
+        previous_hash,
+        chain_counts,
+        attempt_states,
+    )
+    with _VERIFIER_LEDGER_MEMO_GUARD:
+        _VERIFIER_LEDGER_MEMO[root] = state
+    return state
 
 
 def _read_claim_verifier_attempts_unlocked(
@@ -2220,37 +2526,8 @@ def _read_claim_verifier_attempts_unlocked(
     *,
     allow_missing: bool,
 ) -> list[dict[str, Any]]:
-    path = claim_artifact_path(root, CLAIM_VERIFIER_ATTEMPTS)
-    if not path.is_file():
-        if allow_missing:
-            return []
-        raise ClaimArtifactError(f"missing verifier attempt ledger: {path.name}")
-    raw = path.read_bytes()
-    if raw and not raw.endswith(b"\n"):
-        # A missing trailing newline on the final line is a suspected torn tail: the
-        # publisher may still be appending. Re-read within a bounded window and only
-        # declare permanent corruption if the partial tail never settles. A complete
-        # line whose hash/chain/schema is forged is distinguished by
-        # _validate_attempt_rows below and rejected immediately, never retried.
-        max_retries = int(os.environ.get("RATOMIZER_ATTEMPT_LOG_TORN_RETRIES", "3"))
-        retry_delay = float(os.environ.get("RATOMIZER_ATTEMPT_LOG_TORN_DELAY", "0.005"))
-        settled = False
-        for _ in range(max_retries):
-            time.sleep(retry_delay)
-            candidate = path.read_bytes()
-            if candidate.endswith(b"\n"):
-                raw = candidate
-                settled = True
-                break
-            if candidate != raw:
-                raw = candidate  # still moving; keep observing within the window
-        if not settled and raw and not raw.endswith(b"\n"):
-            raise ClaimAttemptLogTornTail(
-                "verifier attempt ledger has a persistent torn tail that never settled"
-            )
-    rows = _read_jsonl(path, label="verifier attempt ledger")
-    _validate_attempt_rows(rows)
-    return rows
+    state = _load_verifier_ledger_unlocked(root, allow_missing=allow_missing)
+    return [] if state is None else state.rows
 
 
 def read_claim_verifier_attempts(out_dir: Path | str) -> list[dict[str, Any]]:
@@ -2264,14 +2541,21 @@ def read_claim_verifier_attempts(out_dir: Path | str) -> list[dict[str, Any]]:
 def _attempt_binding(
     rows: list[dict[str, Any]],
     event: dict[str, Any],
+    *,
+    ledger: _VerifierLedgerState | None = None,
 ) -> dict[str, Any]:
-    chain_rows = [row for row in rows if row["chain_id"] == event["chain_id"]]
+    if ledger is not None and ledger.rows is rows:
+        chain_rows = ledger.chain_rows(str(event["chain_id"]))
+        prefix_sha256 = ledger.ledger_sha256()
+    else:
+        chain_rows = [row for row in rows if row["chain_id"] == event["chain_id"]]
+        prefix_sha256 = _sha256_bytes(_jsonl_bytes(rows))
     latest_chain_rows = _latest_attempt_rows(chain_rows)
     return {
         "schema": CLAIM_VERIFIER_ATTEMPT_BINDING_SCHEMA,
         "ledger_file": CLAIM_VERIFIER_ATTEMPTS,
         "ledger_prefix_count": len(rows),
-        "ledger_prefix_sha256": _sha256_bytes(_jsonl_bytes(rows)),
+        "ledger_prefix_sha256": prefix_sha256,
         "chain_id": event["chain_id"],
         "attempt_id": event["attempt_id"],
         "attempt_count": len(latest_chain_rows),
@@ -2285,12 +2569,18 @@ def _attempt_binding(
 def _attempt_cost_chain(
     rows: list[dict[str, Any]],
     binding: dict[str, Any],
+    *,
+    ledger: _VerifierLedgerState | None = None,
 ) -> dict[str, Any]:
     chain_id = str(binding.get("chain_id") or "")
+    if ledger is not None and ledger.rows is rows:
+        chain_rows = ledger.chain_rows(chain_id)
+        full_ledger_sha256 = ledger.ledger_sha256()
+    else:
+        chain_rows = [row for row in rows if row.get("chain_id") == chain_id]
+        full_ledger_sha256 = _sha256_bytes(_jsonl_bytes(rows))
     latest_chain_rows = sorted(
-        _latest_attempt_rows([
-            row for row in rows if row.get("chain_id") == chain_id
-        ]),
+        _latest_attempt_rows(chain_rows),
         key=lambda row: int(row["chain_attempt_seq"]),
     )
     if not latest_chain_rows:
@@ -2300,7 +2590,7 @@ def _attempt_cost_chain(
         "schema": "claim-verifier-attempt-cost-chain/v1",
         "ledger_file": CLAIM_VERIFIER_ATTEMPTS,
         "validated_full_ledger_count": len(rows),
-        "validated_full_ledger_sha256": _sha256_bytes(_jsonl_bytes(rows)),
+        "validated_full_ledger_sha256": full_ledger_sha256,
         "chain_id": chain_id,
         "attempt_count": len(latest_chain_rows),
         "tail_attempt_id": str(tail["attempt_id"]),
@@ -2308,6 +2598,58 @@ def _attempt_cost_chain(
         "tail_attempt_status": str(tail["attempt_status"]),
         "cumulative_metrics": _attempt_cumulative_metrics(latest_chain_rows),
     }
+
+
+def _append_verifier_ledger_event_unlocked(
+    root: Path,
+    state: _VerifierLedgerState | None,
+    event: dict[str, Any],
+) -> _VerifierLedgerState:
+    """Append one fully validated event line with fsync, then memoize the state.
+
+    The new row is validated incrementally against the committed prefix's chain
+    state (same rules as the full pass); the canonical line is appended in
+    append mode so steady-state cost is O(len(event)), not a ledger rewrite.
+    """
+    rows: list[dict[str, Any]] = [] if state is None else state.rows
+    previous_hash = _EMPTY_SHA256 if state is None else state.previous_hash
+    chain_counts = {} if state is None else dict(state.chain_counts)
+    attempt_states = {} if state is None else dict(state.attempt_states)
+    expected_seq = len(rows) + 1
+    tail_hash = _validate_attempt_event_row(
+        event,
+        expected_seq,
+        previous_hash,
+        chain_counts,
+        attempt_states,
+    )
+    line = canonical_json_value_bytes(event) + b"\n"
+    path = claim_artifact_path(root, CLAIM_VERIFIER_ATTEMPTS)
+    _append_line_with_retry(path, line)
+    signature = _stat_signature(path)
+    expected_size = (0 if state is None else len(state.raw_bytes)) + len(line)
+    if signature is None or signature[0] != expected_size:
+        # Fail closed: an unexplained concurrent write invalidated the append;
+        # the next load rescans under a fresh signature.
+        raise ClaimArtifactError("verifier attempt append did not land durably")
+    updated_rows = [*rows, event]
+    updated = _VerifierLedgerState(
+        signature,
+        updated_rows,
+        (b"" if state is None else state.raw_bytes) + line,
+        line,
+        tail_hash,
+        chain_counts,
+        attempt_states,
+    )
+    # Reuse the committed-prefix hasher so full-ledger digests stay incremental.
+    if state is not None:
+        updated.hasher = state.hasher.copy()
+        updated.hasher.update(line)
+        updated.prefix_hashes = {**state.prefix_hashes, len(updated_rows): updated.ledger_sha256()}
+    with _VERIFIER_LEDGER_MEMO_GUARD:
+        _VERIFIER_LEDGER_MEMO[root] = updated
+    return updated
 
 
 def _append_claim_verifier_attempt_unlocked(
@@ -2321,7 +2663,8 @@ def _append_claim_verifier_attempt_unlocked(
     attempt_metrics: dict[str, Any],
     error: str = "",
 ) -> dict[str, Any]:
-    rows = _read_claim_verifier_attempts_unlocked(root, allow_missing=True)
+    state = _load_verifier_ledger_unlocked(root, allow_missing=True, for_write=True)
+    rows: list[dict[str, Any]] = [] if state is None else state.rows
     _validate_attempt_identity(chain_identity)
     _validate_attempt_policy_identity(attempt_policy_identity)
     _validate_attempt_source(source_locator, attempt_kind=attempt_kind)
@@ -2342,11 +2685,12 @@ def _append_claim_verifier_attempt_unlocked(
         }
         if any(existing.get(key) != value for key, value in expected.items()):
             raise ClaimArtifactError("verifier attempt id was reused with different evidence")
-        return _attempt_binding(rows, existing)
+        return _attempt_binding(rows, existing, ledger=state)
 
-    chain_attempt_seq = 1 + len(_latest_attempt_rows([
-        row for row in rows if row["chain_id"] == chain_id
-    ]))
+    chain_rows = (
+        [] if state is None else state.chain_rows(chain_id)
+    )
+    chain_attempt_seq = 1 + len(_latest_attempt_rows(chain_rows))
     event = {
         "schema": CLAIM_VERIFIER_ATTEMPT_SCHEMA,
         "event_seq": len(rows) + 1,
@@ -2365,10 +2709,8 @@ def _append_claim_verifier_attempt_unlocked(
         "error": str(error),
     }
     event["event_hash"] = _sha256_payload(event)
-    updated = [*rows, event]
-    _validate_attempt_rows(updated)
-    atomic_write_jsonl(claim_artifact_path(root, CLAIM_VERIFIER_ATTEMPTS), updated)
-    return _attempt_binding(updated, event)
+    updated = _append_verifier_ledger_event_unlocked(root, state, event)
+    return _attempt_binding(updated.rows, event, ledger=updated)
 
 
 def _correct_claim_verifier_attempt_unlocked(
@@ -2378,7 +2720,8 @@ def _correct_claim_verifier_attempt_unlocked(
     attempt_metrics: dict[str, Any],
     error: str,
 ) -> dict[str, Any]:
-    rows = _read_claim_verifier_attempts_unlocked(root, allow_missing=False)
+    state = _load_verifier_ledger_unlocked(root, allow_missing=False, for_write=True)
+    rows = state.rows
     matching = [row for row in rows if row["attempt_id"] == attempt_id]
     if not matching:
         raise ClaimArtifactError("cannot correct an unknown verifier attempt")
@@ -2388,7 +2731,7 @@ def _correct_claim_verifier_attempt_unlocked(
         prior["attempt_status"] == "failed"
         and prior["attempt_metrics"] == normalized_metrics
     ):
-        return _attempt_binding(rows, prior)
+        return _attempt_binding(rows, prior, ledger=state)
     event = {
         **{
             key: prior[key]
@@ -2412,10 +2755,77 @@ def _correct_claim_verifier_attempt_unlocked(
         "error": str(error),
     }
     event["event_hash"] = _sha256_payload(event)
-    updated = [*rows, event]
-    _validate_attempt_rows(updated)
-    atomic_write_jsonl(claim_artifact_path(root, CLAIM_VERIFIER_ATTEMPTS), updated)
-    return _attempt_binding(updated, event)
+    updated = _append_verifier_ledger_event_unlocked(root, state, event)
+    return _attempt_binding(updated.rows, event, ledger=updated)
+
+
+def compact_claim_verifier_attempts(
+    out_dir: Path | str,
+    *,
+    force: bool = False,
+) -> dict[str, Any]:
+    """Re-materialize the verifier-attempt ledger through the atomic path.
+
+    Startup/periodic compaction under the publication lock: heals torn tails
+    (via the write-side load) and rewrites canonical bytes when on-disk bytes
+    drift from the canonical rows or ``force`` is set. Rows are never dropped —
+    the ledger is the paid-work accounting history.
+
+    The skip decision is ``already canonical`` alone: compaction never drops
+    rows, so an over-threshold canonical ledger would previously rewrite
+    byte-identical history on every startup/periodic pass. The row/byte
+    thresholds stay as advisory reporting inputs only; a torn tail still heals
+    because the write-side load above truncates it before the canonical
+    comparison (canonical != raw bytes → rewrite would proceed).
+    """
+    root = Path(out_dir).expanduser().resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    with claim_publication_lock(root):
+        state = _load_verifier_ledger_unlocked(root, allow_missing=True, for_write=True)
+        if state is None:
+            return {"compacted": False, "rows": 0, "bytes": 0, "reason": "missing"}
+        canonical = _jsonl_bytes(state.rows)
+        over_threshold = (
+            len(state.rows) > _VERIFIER_LEDGER_COMPACT_MAX_ROWS
+            or len(canonical) > _VERIFIER_LEDGER_COMPACT_MAX_BYTES
+        )
+        if not force and canonical == state.raw_bytes:
+            # On-disk bytes already equal the canonical serialization of the
+            # committed rows (any torn tail was truncated by the write-side
+            # load above), so an atomic rewrite would be byte-identical output.
+            # Skip REGARDLESS of thresholds: compaction drops no rows, so an
+            # over-threshold canonical ledger must not rewrite itself on every
+            # pass. Thresholds stay advisory (reported via ``over_threshold``).
+            return {
+                "compacted": False,
+                "rows": len(state.rows),
+                "bytes": len(canonical),
+                "over_threshold": over_threshold,
+            }
+        path = claim_artifact_path(root, CLAIM_VERIFIER_ATTEMPTS)
+        atomic_write_jsonl(path, state.rows)
+        signature = _stat_signature(path)
+        if signature is None:
+            raise ClaimArtifactError(
+                "verifier attempt ledger vanished during compaction"
+            )
+        compacted = _VerifierLedgerState(
+            signature,
+            state.rows,
+            canonical,
+            canonical,
+            state.previous_hash,
+            state.chain_counts,
+            state.attempt_states,
+        )
+        with _VERIFIER_LEDGER_MEMO_GUARD:
+            _VERIFIER_LEDGER_MEMO[root] = compacted
+        return {
+            "compacted": True,
+            "rows": len(state.rows),
+            "bytes": len(canonical),
+            "over_threshold": over_threshold,
+        }
 
 
 def _requirements_attempt_metadata(root: Path) -> dict[str, Any]:
@@ -3019,7 +3429,17 @@ def load_catalog_probe(out_dir: Path | str) -> dict[str, Any]:
         return _load_catalog_probe_unlocked(root)
 
 
-def _load_catalog_probe_unlocked(root: Path) -> dict[str, Any]:
+def _load_catalog_probe_unlocked(
+    root: Path,
+    *,
+    catalog_sha256: str | None = None,
+) -> dict[str, Any]:
+    """Load the committed catalog probe.
+
+    ``catalog_sha256`` may carry an already-computed digest of the file at
+    ``claim_artifact_path(root, CLAIM_CATALOG)`` so callers that verified the
+    catalog hash moments earlier (base load) do not hash it a second time.
+    """
     committed = _read_json(claim_artifact_path(root, CLAIM_CATALOG_META), label="catalog commit meta")
     if committed.get("schema") != "claim-catalog-probe-meta/v1":
         raise ClaimArtifactError("unsupported catalog commit meta schema")
@@ -3029,12 +3449,18 @@ def _load_catalog_probe_unlocked(root: Path) -> dict[str, Any]:
             f"（committed={committed.get('artifact_protocol_version')!r}，"
             f"current={CLAIM_ARTIFACT_PROTOCOL_VERSION!r}），请重跑 atomize"
         )
-    _require_hash(
-        claim_artifact_path(root, CLAIM_CATALOG),
+    catalog_path = claim_artifact_path(root, CLAIM_CATALOG)
+    actual_catalog_sha256 = (
+        catalog_sha256
+        if catalog_sha256 is not None
+        else file_sha256(catalog_path)
+    )
+    _require_hash_value(
+        actual_catalog_sha256,
         committed.get("catalog_sha256"),
         label=CLAIM_CATALOG,
     )
-    catalog = _read_jsonl(claim_artifact_path(root, CLAIM_CATALOG), label="claim catalog")
+    catalog = _read_jsonl(catalog_path, label="claim catalog")
     if len(catalog) != int(committed.get("catalog_count", -1)):
         raise ClaimArtifactError("claim catalog count does not match committed meta")
     meta = dict(committed.get("catalog_meta") or {})
@@ -3477,7 +3903,7 @@ def _validate_committed_attempt_binding(
     metrics: dict[str, Any],
     *,
     validate_live_target: bool = True,
-) -> list[dict[str, Any]]:
+) -> _VerifierLedgerState:
     binding = generation.get("attempt_chain")
     if not isinstance(binding, dict) or set(binding) != _ATTEMPT_BINDING_FIELDS:
         raise ClaimArtifactError("invalid verifier attempt-chain binding")
@@ -3486,7 +3912,8 @@ def _validate_committed_attempt_binding(
         or binding.get("ledger_file") != CLAIM_VERIFIER_ATTEMPTS
     ):
         raise ClaimArtifactError("unsupported verifier attempt-chain binding")
-    rows = _read_claim_verifier_attempts_unlocked(root, allow_missing=False)
+    ledger = _load_verifier_ledger_unlocked(root, allow_missing=False)
+    rows = ledger.rows
     prefix_count = binding.get("ledger_prefix_count")
     if (
         not isinstance(prefix_count, int)
@@ -3496,7 +3923,7 @@ def _validate_committed_attempt_binding(
     ):
         raise ClaimArtifactError("verifier attempt ledger prefix count is stale")
     prefix = rows[:prefix_count]
-    if binding.get("ledger_prefix_sha256") != _sha256_bytes(_jsonl_bytes(prefix)):
+    if binding.get("ledger_prefix_sha256") != ledger.prefix_sha256(prefix_count):
         raise ClaimArtifactError("verifier attempt ledger prefix hash is stale")
     if binding.get("attempt_id") != prefix[-1].get("attempt_id"):
         raise ClaimArtifactError("verifier attempt binding is not the committed prefix tip")
@@ -3566,7 +3993,7 @@ def _validate_committed_attempt_binding(
         )
     ):
         raise ClaimArtifactError("verifier attempt chain identity is stale")
-    return rows
+    return ledger
 
 
 def load_committed_attempt_lineage(out_dir: Path | str) -> dict[str, Any]:
@@ -4673,6 +5100,248 @@ def load_committed_effective_snapshot_readonly(
     return {**base, **effective}
 
 
+# --- Read-only snapshot cache (stat-signature keyed) -------------------------
+#
+# Hot GET paths (/table-reviews, /document/pdf, the six claim views) reloaded
+# the full committed snapshot — re-hashing every claim artifact — per request.
+# The cache below memoizes the readonly snapshot per root, invalidated by a
+# layered revision key (same discipline as the claim_views context cache):
+#
+# 1. file identity — (size, mtime_ns, ctime_ns, st_ino, st_dev) per input file.
+#    The toolchain's only write path is atomic os.replace, which always mints a
+#    fresh file identity, so every toolchain write invalidates even when size
+#    and mtime_ns were somehow restored. Where st_ino is 0 (some network /
+#    reparse paths) the key degrades to the legacy (size, mtime_ns, ctime_ns)
+#    behavior.
+# 2. chain-head digest — the two hash-chained logs (claim ledger + verifier
+#    WAL) additionally hash their trailing line(s) (~8 KiB read). This catches
+#    in-place tail edits/appends/truncations — which preserve file identity —
+#    at near-stat cost.
+# 3. content digests — the two commit-anchor metas and the structural-decision
+#    sidecars are hashed in full (small files), plus recovery-journal presence
+#    flags.
+#
+# Residual (deliberate): a same-size in-place edit to the MIDDLE of a large
+# artifact with the original mtime restored defeats layers 1-2 — st_ino/st_dev
+# are preserved by in-place writes and the chain head only covers the tail.
+# Full-content verification (every committed artifact re-hashed against the
+# generation metas) happens on every cache miss, exactly as before; the cache
+# layers only bound how cheap an unchanged-looking hit is.
+#
+# The returned dict is SHARED: callers must treat it as read-only.
+_EFFECTIVE_SNAPSHOT_STAT_FILES = (
+    CLAIM_CATALOG,
+    CLAIM_CATALOG_META,
+    CLAIM_COVERAGE_GROUPS,
+    CLAIM_LEDGER,
+    CLAIM_SHADOW_METRICS,
+    CLAIM_GENERATION_META,
+    CLAIM_EFFECTIVE_LEDGER,
+    CLAIM_EFFECTIVE_META,
+    CLAIM_QUEUE_PROPOSALS,
+    "claim_review_events.jsonl",
+    CLAIM_VERIFIER_ATTEMPTS,
+    "claim_reextract_attempts.jsonl",
+    "claim_structural_overrides.jsonl",
+    "claim_structural_candidate_decisions.jsonl",
+    "claim_structural_operations.jsonl",
+    "omission_states.jsonl",
+    "blocks.jsonl",
+    "table_items.jsonl",
+    "table_cell_items.jsonl",
+    "atomic_requirements.jsonl",
+    "ai_requirements.jsonl",
+    "ai_requirements.meta.json",
+    "ai_review_states.jsonl",
+    "review_states.jsonl",
+    "claim_effective_health.json",
+)
+_EFFECTIVE_SNAPSHOT_CONTENT_DIRECTORIES = (
+    "claim_structural_decisions",
+)
+_EFFECTIVE_SNAPSHOT_CACHE_MAX_ENTRIES = 16
+_EFFECTIVE_SNAPSHOT_CACHE: "OrderedDict[tuple[Path, bool], tuple[tuple, dict[str, Any]]]" = (
+    OrderedDict()
+)
+_EFFECTIVE_SNAPSHOT_CACHE_GUARD = RLock()
+_EFFECTIVE_SNAPSHOT_INFLIGHT: dict[tuple[Path, bool], threading.Event] = {}
+# Hash-chained JSONL logs that additionally feed a chain-head digest into the
+# revision key (layer 2 above): in-place tail edits preserve file identity.
+_EFFECTIVE_SNAPSHOT_CHAIN_HEAD_FILES = (CLAIM_LEDGER, CLAIM_VERIFIER_ATTEMPTS)
+_CHAIN_HEAD_WINDOW_BYTES = 8 * 1024
+
+
+def _stat_identity_signature(path: Path) -> tuple[int, int, int, int, int] | None:
+    """Stat signature extended with file identity (st_ino/st_dev).
+
+    ``os.replace`` — the toolchain's only write path — always lands on a fresh
+    file identity, so a replaced file can never collide with a cached
+    signature even when size and mtime_ns are restored. Where the filesystem
+    reports ``st_ino == 0`` the extra fields are constant and the key degrades
+    to the legacy (size, mtime_ns, ctime_ns) behavior.
+    """
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return (
+        stat.st_size,
+        stat.st_mtime_ns,
+        stat.st_ctime_ns,
+        stat.st_ino,
+        stat.st_dev,
+    )
+
+
+def _chain_head_digest(path: Path) -> str | None:
+    """Cheap digest over the trailing line(s) of a hash-chained JSONL log.
+
+    Reads only the last ~8 KiB. The digest input starts at the last complete
+    line (including its newline); if the file does not end with ``\\n`` the
+    torn tail bytes are included as-is, so appends, tail edits, and
+    truncations all change the digest. Returns ``None`` only when the file
+    cannot be read (missing → distinct from the empty-file digest).
+    """
+    try:
+        with path.open("rb") as handle:
+            size = handle.seek(0, os.SEEK_END)
+            handle.seek(max(0, size - _CHAIN_HEAD_WINDOW_BYTES))
+            tail = handle.read()
+    except OSError:
+        return None
+    last_newline = tail.rfind(b"\n")
+    if last_newline < 0:
+        head = tail
+    else:
+        head = tail[tail.rfind(b"\n", 0, last_newline) + 1:]
+    return hashlib.sha256(head).hexdigest()
+
+
+def effective_snapshot_revision_key(root: Path) -> tuple:
+    """Build the invalidation key for the committed effective snapshot.
+
+    Every input that can change the readonly load result participates: the
+    identity-extended stat signature of each artifact file, a chain-head
+    digest of the two hash-chained logs (closes in-place tail edits), a
+    content digest of the two commit anchors (closes same-size/same-mtime
+    replacement holes without hashing every large JSONL), structural-decision
+    sidecar digests, and the presence of any recovery journal (which flips the
+    loader to recovery-pending). See the layered residual note above the
+    signature table: middle-of-file same-size edits with a restored mtime are
+    only caught by the full verification on the next cache miss (load path).
+    """
+    parts: list[tuple] = []
+    for name in _EFFECTIVE_SNAPSHOT_STAT_FILES:
+        path = governed_artifact_path(root, name, for_write=False)
+        signature = _stat_identity_signature(path) if path.is_file() else None
+        parts.append((name, signature))
+    # The two hash-chained logs take in-place appends/edits through the
+    # verifier/recovery paths (no os.replace, file identity preserved); the
+    # chain-head digest makes any tail change visible at near-stat cost.
+    for name in _EFFECTIVE_SNAPSHOT_CHAIN_HEAD_FILES:
+        path = governed_artifact_path(root, name, for_write=False)
+        try:
+            present = path.is_file()
+        except OSError:
+            present = False
+        digest = _chain_head_digest(path) if present else None
+        parts.append((f"{name}:chain_head", digest))
+    # Structural verifier decisions are compact content-addressed sidecars.
+    # Hash their bytes so deletion or same-size replacement cannot leave a
+    # previously validated snapshot resident in the cache.
+    for name in _EFFECTIVE_SNAPSHOT_CONTENT_DIRECTORIES:
+        directory = governed_artifact_path(root, name, for_write=False)
+        entries: list[tuple] | None = []
+        try:
+            if directory.is_dir():
+                for path in sorted(
+                    (item for item in directory.rglob("*") if item.is_file()),
+                    key=lambda item: item.relative_to(directory).as_posix(),
+                ):
+                    entries.append((
+                        path.relative_to(directory).as_posix(),
+                        hashlib.sha256(path.read_bytes()).hexdigest(),
+                    ))
+        except OSError:
+            entries = None
+        parts.append((name, None if entries is None else tuple(entries)))
+    # Meta files are small and anchor the committed generations.
+    for name in (CLAIM_GENERATION_META, CLAIM_EFFECTIVE_META):
+        path = governed_artifact_path(root, name, for_write=False)
+        try:
+            digest = (
+                hashlib.sha256(path.read_bytes()).hexdigest()
+                if path.is_file()
+                else None
+            )
+        except OSError:
+            digest = None
+        parts.append((f"{name}:sha256", digest))
+    for name in (
+        CLAIM_PUBLICATION_JOURNAL,
+        CLAIM_EFFECTIVE_PUBLICATION_JOURNAL,
+        CLAIM_VERIFIER_ATTEMPT_CHECKPOINT,
+        CLAIM_BUDGET_CHECKPOINT_OUTBOX,
+    ):
+        parts.append((
+            name,
+            governed_artifact_path(root, name, for_write=False).is_file(),
+        ))
+    return tuple(parts)
+
+
+def load_committed_effective_snapshot_cached(
+    out_dir: Path | str,
+    *,
+    require_v2: bool = True,
+) -> dict[str, Any]:
+    """Memoized :func:`load_committed_effective_snapshot_readonly`.
+
+    Two consecutive loads with unchanged inputs return the SAME snapshot
+    object; touching any input file invalidates the entry. A per-root
+    single-flight prevents concurrent callers from loading different
+    generations into the cache. The snapshot is shared — callers must treat
+    it (and every nested list/dict) as read-only.
+    """
+    root = Path(out_dir).expanduser().resolve()
+    cache_key = (root, bool(require_v2))
+    while True:
+        key = effective_snapshot_revision_key(root)
+        with _EFFECTIVE_SNAPSHOT_CACHE_GUARD:
+            cached = _EFFECTIVE_SNAPSHOT_CACHE.get(cache_key)
+            if cached is not None and cached[0] == key:
+                _EFFECTIVE_SNAPSHOT_CACHE.move_to_end(cache_key)
+                return cached[1]
+            inflight = _EFFECTIVE_SNAPSHOT_INFLIGHT.get(cache_key)
+            if inflight is None:
+                inflight = threading.Event()
+                _EFFECTIVE_SNAPSHOT_INFLIGHT[cache_key] = inflight
+                break
+        inflight.wait()
+
+    try:
+        snapshot = load_committed_effective_snapshot_readonly(
+            root,
+            require_v2=require_v2,
+        )
+        confirmed_key = effective_snapshot_revision_key(root)
+        if confirmed_key == key:
+            with _EFFECTIVE_SNAPSHOT_CACHE_GUARD:
+                _EFFECTIVE_SNAPSHOT_CACHE[cache_key] = (confirmed_key, snapshot)
+                _EFFECTIVE_SNAPSHOT_CACHE.move_to_end(cache_key)
+                while len(_EFFECTIVE_SNAPSHOT_CACHE) > _EFFECTIVE_SNAPSHOT_CACHE_MAX_ENTRIES:
+                    _EFFECTIVE_SNAPSHOT_CACHE.popitem(last=False)
+        # A mid-load input change means the result is not cacheable, but the
+        # loader's own anchor checks already validated this snapshot; return
+        # it uncached rather than failing a read-only GET.
+        return snapshot
+    finally:
+        with _EFFECTIVE_SNAPSHOT_CACHE_GUARD:
+            current = _EFFECTIVE_SNAPSHOT_INFLIGHT.pop(cache_key, None)
+            if current is not None:
+                current.set()
+
+
 def _load_committed_claim_base_unlocked(root: Path) -> dict[str, Any]:
     generation = _read_json(claim_artifact_path(root, CLAIM_GENERATION_META), label="claim generation meta")
     if generation.get("schema") != "claim-generation-meta/v1":
@@ -4686,6 +5355,39 @@ def _load_committed_claim_base_unlocked(root: Path) -> dict[str, Any]:
     if not _shadow_meta_is_well_formed(dict(generation.get("shadow_meta") or {})):
         raise ClaimArtifactError("invalid committed shadow result meta")
 
+    # 每个产物文件每次 base 加载只哈希一次：目录探针、cell 绑定、live target
+    # 匹配全部复用同一份摘要（此前 catalog/table_cell_items/ai_requirements
+    # 每次加载各被重复哈希两遍）。
+    content_sha_by_path: dict[Path, str] = {}
+
+    def _content_sha256(path: Path) -> str:
+        digest = content_sha_by_path.get(path)
+        if digest is None:
+            try:
+                digest = file_sha256(path)
+            except OSError as exc:
+                raise ClaimArtifactError(
+                    f"missing committed artifact: {path.name}"
+                ) from exc
+            content_sha_by_path[path] = digest
+        return digest
+
+    def _require_hash_cached(path: Path, expected: object, *, label: str) -> None:
+        wanted = str(expected or "")
+        if not wanted:
+            raise ClaimArtifactError(f"missing committed hash for {label}")
+        _require_hash_value(_content_sha256(path), wanted, label=label)
+
+    def _state_artifact(name: str) -> Path:
+        # 与 claim_artifact_path 的解析一致（category=state），但保持纯读
+        # （S6：只读路径不得创建目录）。
+        return governed_artifact_path(
+            root,
+            name,
+            category="state",
+            for_write=False,
+        )
+
     committed_files = {
         CLAIM_CATALOG: generation.get("catalog_sha256"),
         CLAIM_CATALOG_META: generation.get("catalog_meta_sha256"),
@@ -4694,7 +5396,7 @@ def _load_committed_claim_base_unlocked(root: Path) -> dict[str, Any]:
         CLAIM_SHADOW_METRICS: generation.get("shadow_metrics_sha256"),
     }
     for name, expected in committed_files.items():
-        _require_hash(governed_artifact_path(root, name, for_write=False), expected, label=name)
+        _require_hash_cached(_state_artifact(name), expected, label=name)
 
     for name, meta_key in (
         ("blocks.jsonl", "blocks_file_sha256"),
@@ -4703,14 +5405,21 @@ def _load_committed_claim_base_unlocked(root: Path) -> dict[str, Any]:
     ):
         expected = str(generation.get(meta_key) or "")
         if expected:
-            _require_hash(governed_artifact_path(root, name, for_write=False), expected, label=name)
+            _require_hash_cached(
+                governed_artifact_path(root, name, for_write=False),
+                expected,
+                label=name,
+            )
 
-    catalog_build = _load_catalog_probe_unlocked(root)
+    catalog_build = _load_catalog_probe_unlocked(
+        root,
+        catalog_sha256=content_sha_by_path.get(_state_artifact(CLAIM_CATALOG)),
+    )
     catalog_meta = dict(catalog_build["meta"])
     # 含表块的当前版本目录：cell 产物哈希绑定是硬义务（不是可选字段）——
     # 绑定缺失/文件被删除/内容被替换全部 fail-closed，绝不加载无绑定 base
     if _catalog_meta_requires_cell_binding(catalog_meta):
-        _require_hash(
+        _require_hash_cached(
             root / "table_cell_items.jsonl",
             generation.get("table_cell_items_file_sha256"),
             label="table_cell_items.jsonl",
@@ -4746,20 +5455,32 @@ def _load_committed_claim_base_unlocked(root: Path) -> dict[str, Any]:
     requirements_meta_hash = str(generation.get("requirements_meta_sha256") or "")
     requirements_path = root / "ai_requirements.jsonl"
     requirements_meta_path = root / "ai_requirements.meta.json"
+    # Hash each live target file once; the digest feeds both the live-target
+    # match and the generation-time binding below.
     try:
-        live_target_matches = (
-            bool(requirements_hash)
-            and requirements_path.is_file()
-            and file_sha256(requirements_path) == requirements_hash
-            and (
-                not requirements_meta_hash
-                or requirements_meta_path.is_file()
-                and file_sha256(requirements_meta_path) == requirements_meta_hash
-            )
+        requirements_live_sha = (
+            file_sha256(requirements_path) if requirements_path.is_file() else ""
         )
     except OSError:
-        live_target_matches = False
-    attempt_rows = _validate_committed_attempt_binding(
+        requirements_live_sha = ""
+    try:
+        requirements_meta_live_sha = (
+            file_sha256(requirements_meta_path)
+            if requirements_meta_path.is_file()
+            else ""
+        )
+    except OSError:
+        requirements_meta_live_sha = ""
+    live_target_matches = (
+        bool(requirements_hash)
+        and bool(requirements_live_sha)
+        and requirements_live_sha == requirements_hash
+        and (
+            not requirements_meta_hash
+            or requirements_meta_live_sha == requirements_meta_hash
+        )
+    )
+    attempt_ledger = _validate_committed_attempt_binding(
         root,
         generation,
         metrics,
@@ -4779,23 +5500,24 @@ def _load_committed_claim_base_unlocked(root: Path) -> dict[str, Any]:
     if generation.get("delivery_track") == "B" and not requirements_hash:
         raise ClaimArtifactError("B-track claim generation is not bound to requirements")
     bound_requirements: list[dict[str, Any]] | None = None
-    if requirements_hash and requirements_path.is_file():
+    if requirements_live_sha == requirements_hash and requirements_hash:
         try:
-            if file_sha256(requirements_path) == requirements_hash:
-                bound_requirements = _read_jsonl(
-                    requirements_path,
-                    label="generation-time AI requirements",
-                )
+            bound_requirements = _read_jsonl(
+                requirements_path,
+                label="generation-time AI requirements",
+            )
         except OSError:
             bound_requirements = None
     requirements_meta: dict[str, Any] | None = None
-    if requirements_meta_hash and requirements_meta_path.is_file():
+    if (
+        requirements_meta_hash
+        and requirements_meta_live_sha == requirements_meta_hash
+    ):
         try:
-            if file_sha256(requirements_meta_path) == requirements_meta_hash:
-                requirements_meta = _read_json(
-                    requirements_meta_path,
-                    label="generation-time AI requirements meta",
-                )
+            requirements_meta = _read_json(
+                requirements_meta_path,
+                label="generation-time AI requirements meta",
+            )
         except OSError:
             requirements_meta = None
 
@@ -4823,8 +5545,9 @@ def _load_committed_claim_base_unlocked(root: Path) -> dict[str, Any]:
         "generation_meta": generation,
         "structural_override_registry": live_structural_overrides,
         "attempt_cost_chain": _attempt_cost_chain(
-            attempt_rows,
+            attempt_ledger.rows,
             dict(generation.get("attempt_chain") or {}),
+            ledger=attempt_ledger,
         ),
     }
 

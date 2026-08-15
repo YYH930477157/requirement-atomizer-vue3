@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import os
+import time
 from dataclasses import replace
 from pathlib import Path
 
@@ -13,7 +14,7 @@ from typing import Any, Callable
 
 from ai_review_actions import read_ai_review_states, source_ai_requirement_id
 from compliance import build_compliance_payload, is_compliance_requirement
-from io_utils import read_jsonl
+from io_utils import read_jsonl, read_jsonl_recover_torn_tail
 from requirements_analysis_agent import build_analysis_prompt, validate_llm_item
 from requirements_analysis_excel import _fallback_lines, clarify_display_text, write_software_requirements_xlsx
 from requirements_analysis_rules import classify_ownership
@@ -47,8 +48,9 @@ ANALYZE_PROMPT_VERSION = "analyze-llm-v8"
 ANALYZE_NEGATIVE_K = int(os.environ.get("RATOMIZER_ANALYZE_NEGATIVE_K", "2"))
 # WP2 待澄清规则版本——确定性后处理（拒/无据 → 待澄清 + open_questions 同步）变更必须
 # bump 并进 analyze_enrich_cache 指纹与阶段 producer（AGENTS.md 缓存指纹纪律）
+# v4：编造编码字段级拒收（只拒含码字段,干净字段放行;同判据逐字段重检保防幻觉红线）
 # v3：归属护栏（software 项不采纳 LLM 写入的 hardware_dependency）+ 富化调用失败/返回非法同样标待澄清
-UNFOUNDED_RULE_VERSION = "analyze-unfounded-v3"  # v2:渲染兜底（clarify_fallback 原始候选标注透出）
+UNFOUNDED_RULE_VERSION = "analyze-unfounded-v4"  # v2:渲染兜底（clarify_fallback 原始候选标注透出）
 CLARIFY_MARK = "待澄清"
 # WP2 触发面（冻结点 4）：仅富化叙述字段；确定性 join 字段（id/归属/引句/模块）永不标待澄清
 _UNFOUNDED_TEXT_FIELDS = ("software_requirement_text", "hardware_dependency")
@@ -61,7 +63,27 @@ _UNFOUNDED_FIELD_LABELS = {
     "acceptance_criteria": "验收标准",
 }
 ANALYZE_MIN_MAX_TOKENS = 8192  # 连贯多段正文+更长输入;推理模型思维链挤占,低于下限 JSON 截断
-ANALYZE_ENRICH_CACHE = "analyze_enrich_cache.json"
+# 富化缓存（性能 2026-08-14）：v2 起为增量 JSONL（meta 行 + key/item 行）——旧版每完成一个
+# 任务把**整个** items dict json.dumps+整写,是 O(任务数×缓存体积) 的二次开销;现每任务
+# 只追加一行并 fsync（镜像 ai_extract.append_cache 的 JSONL 纪律）。读侧 last-write-wins。
+# 写入全在跨进程锁内（世代探测/撕裂尾行截断/追加/世代翻转整替,详见 _save_enrich_cache）。
+ANALYZE_ENRICH_CACHE = "analyze_enrich_cache.jsonl"
+ANALYZE_ENRICH_CACHE_LEGACY = "analyze_enrich_cache.json"   # v1 单 JSON：只读兼容,不再写出
+# 写入侧跨进程锁文件（process_file_lock 不删锁 inode 的 no-unlink 纪律；与
+# doc_map_cache/functional_extract_cache 等追加式缓存同款 sidecar 锁）。
+ANALYZE_ENRICH_CACHE_LOCK = "analyze_enrich_cache.lock"
+# 缓存**文件格式**版本（区别于内容指纹）：行形状/键方案变更必须 bump。同时折进 _enrich_key——
+# 旧形状的键永不与新形状的键碰撞,即使读侧兼容层缺失也不可能误读（AGENTS.md 缓存指纹纪律）。
+# v1=单 JSON 整写（隐含）;v2=JSONL 追加（meta 行 + key/item 行）,五段上下文 "".join 进键;
+# v3=JSONL 行形状不变,键方案改 canonical JSON 数组——"".join 有确定性边界碰撞
+# （("ab","c") vs ("a","bc") 同键 → 一条需求的富化结果可被错用到另一上下文）,
+# v2 中间文件不得在 v3 格式号下续读（meta format 不匹配 → 读侧弃用/写侧世代翻转）。
+ENRICH_CACHE_FORMAT_VERSION = "analyze-enrich-cache-v3"
+# 写侧 PermissionError 重试：8 次 × 线性退避 0.02..0.14s——Windows AV/索引器/杀毒对目标
+# 句柄的短占常超单次预算（review_state._REPLACE_ATTEMPTS 同口径,repo 标准）。
+_ENRICH_SAVE_ATTEMPTS = 8
+_ENRICH_SAVE_RETRY_DELAY_S = 0.02
+_ENRICH_SAVE_LOCK_TIMEOUT_S = 10.0
 # W1 上下文注入帽：条款原文与 prompt/指纹/校验三处用同一字符串（单一构造点）
 SECTION_CONTEXT_MAX_CHARS = 2000
 SIBLING_TITLES_MAX = 8
@@ -409,7 +431,7 @@ def run_requirements_analysis(
             out_dir, enrich_jobs, vocabulary, active_chat, enrich_cache, model,
             issues=issues, concurrency=concurrency, progress_callback=progress_callback,
             batch_size=analyze_batch)
-        _save_enrich_cache(out_dir, model, enrich_cache)
+        # 增量 JSONL 落盘已在 _run_enrichment 内逐任务完成（每任务追加新键一行）,无需收尾整写
         if enriched_count > 0:
             executed_route = "openai_compatible"
             if degraded_count > 0:
@@ -541,36 +563,168 @@ def _enrich_key(req: dict[str, Any], model: str, template_refs: str = "") -> str
         template_refs,   # 模板行内容变 → 缓存失效（镜像 spec_enrich 折 entry hash 的做法）
         ANALYZE_PROMPT_VERSION,
         UNFOUNDED_RULE_VERSION,   # WP2：待澄清确定性后处理变更必须使缓存失效（防旧产物漏标）
+        ENRICH_CACHE_FORMAT_VERSION,   # 文件格式版本随行：旧形状键永不与新形状键碰撞
         model,
     ])
     return hashlib.sha1(basis.encode("utf-8")).hexdigest()
 
 
 def _load_enrich_cache(out_dir: Path, model: str) -> dict[str, Any]:
-    path = governed_artifact_path(out_dir, ANALYZE_ENRICH_CACHE, category="cache")
+    """读富化缓存（read-both）：v2+ JSONL（meta 行 + key/item 行,撕裂尾行自愈）为主,
+    v1 单 JSON 只读兼容。同键冲突时 JSONL（新写入侧）后读覆盖；任一文件的
+    格式/prompt/模型 meta 不匹配 → 该文件整份弃用（防复用异模型/prompt/形状的产物）。"""
+    items: dict[str, Any] = {}
+    legacy_path = governed_artifact_path(out_dir, ANALYZE_ENRICH_CACHE_LEGACY,
+                                        category="cache", for_write=False)
+    if legacy_path.exists():
+        try:
+            data = json.loads(legacy_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            data = None
+        if isinstance(data, dict):
+            meta = data.get("_meta") or {}
+            if meta.get("prompt") == ANALYZE_PROMPT_VERSION and meta.get("model") == model:
+                cached = data.get("items")
+                if isinstance(cached, dict):
+                    items.update(cached)
+    path = governed_artifact_path(out_dir, ANALYZE_ENRICH_CACHE, category="cache", for_write=False)
     if not path.exists():
-        return {}
+        return items
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return {}
-    if not isinstance(data, dict):
-        return {}
-    # prompt 版本/模型漂移则弃用旧缓存（防复用不同模型/prompt 的产物）
-    meta = data.get("_meta") or {}
-    if meta.get("prompt") != ANALYZE_PROMPT_VERSION or meta.get("model") != model:
-        return {}
-    items = data.get("items")
-    return items if isinstance(items, dict) else {}
+        rows = read_jsonl_recover_torn_tail(path)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return items   # 中段损坏：JSONL 整份不可信——宁可重富化,不猜半份（宁漏勿错）
+    format_ok = False
+    for row in rows:
+        if not isinstance(row, dict):
+            return items
+        if row.get("_meta"):
+            meta = row
+            format_ok = (meta.get("format") == ENRICH_CACHE_FORMAT_VERSION
+                         and meta.get("prompt") == ANALYZE_PROMPT_VERSION
+                         and meta.get("model") == model)
+            if not format_ok:
+                return items
+            continue
+        if not format_ok:
+            return items   # 首行不是 meta 行 → 形状不可信
+        key = str(row.get("key") or "")
+        value = row.get("item")
+        if key and isinstance(value, dict):
+            items[key] = value   # 后写覆盖（last-write-wins）
+    return items
 
 
-def _save_enrich_cache(out_dir: Path, model: str, cache: dict[str, Any]) -> None:
+def _probe_enrich_cache_generation(path: Path, model: str) -> str:
+    """锁内探测缓存文件当前世代（与 _load_enrich_cache 同判据扫描 meta 行）：
+
+    - 'absent'：文件缺失/空 → 建文件（meta+行）；
+    - 'match'：所有 meta 行与当前 format/prompt/model 一致且首行即 meta → 撕裂尾行已被
+      read_jsonl_recover_torn_tail 原子截断,可直接追加；
+    - 'mismatch'：格式/prompt/模型漂移,或形状不可信（首行非 meta/中段坏行/无 meta）——
+      读侧本就整份弃用,写侧按世代翻转处理（原子整替,旧世代弃用）；
+    - 'unreadable'：瞬态读失败（如 Windows 读句柄短占）——不弃旧世代,本次写入如实失败,
+      调用方保留未落盘键待下次重试（宁漏勿错：读不出就不动旧文件）。
+    """
+    try:
+        if not path.exists() or path.stat().st_size == 0:
+            return "absent"
+        rows = read_jsonl_recover_torn_tail(path)
+    except (ValueError, json.JSONDecodeError):   # 含 UnicodeDecodeError：中段损坏,形状不可信
+        return "mismatch"
+    except OSError:
+        return "unreadable"
+    seen_meta = False
+    for row in rows:
+        if row.get("_meta"):
+            if not (row.get("format") == ENRICH_CACHE_FORMAT_VERSION
+                    and row.get("prompt") == ANALYZE_PROMPT_VERSION
+                    and row.get("model") == model):
+                return "mismatch"
+            seen_meta = True
+        elif not seen_meta:
+            return "mismatch"   # meta 行之前出现数据行 → 形状不可信（读侧同判据弃用）
+    return "match" if seen_meta else "mismatch"
+
+
+def _append_enrich_rows_with_retry(path: Path, lines: list[str]) -> None:
+    """锁内单次 fsync 追加（O(1) 稳态——不整写文件）：PermissionError 短占 8 次线性退避。"""
+    for attempt in range(_ENRICH_SAVE_ATTEMPTS):
+        try:
+            with path.open("a", encoding="utf-8", newline="\n") as handle:
+                for line in lines:
+                    handle.write(line + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            return
+        except PermissionError:
+            if attempt + 1 >= _ENRICH_SAVE_ATTEMPTS:
+                raise
+            time.sleep(_ENRICH_SAVE_RETRY_DELAY_S * (attempt + 1))
+
+
+def _replace_enrich_file_with_retry(path: Path, lines: list[str]) -> None:
+    """建文件/世代翻转：tmp+fsync+os.replace 原子整替（PermissionError 重试同口径）。"""
+    tmp_path = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    try:
+        with tmp_path.open("w", encoding="utf-8", newline="\n") as handle:
+            for line in lines:
+                handle.write(line + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        for attempt in range(_ENRICH_SAVE_ATTEMPTS):
+            try:
+                os.replace(tmp_path, path)
+                return
+            except PermissionError:
+                if attempt + 1 >= _ENRICH_SAVE_ATTEMPTS:
+                    raise
+                time.sleep(_ENRICH_SAVE_RETRY_DELAY_S * (attempt + 1))
+    finally:
+        try:
+            tmp_path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _save_enrich_cache(out_dir: Path, model: str,
+                       new_items: list[tuple[str, dict[str, Any]]]) -> bool:
+    """增量落盘（v3 JSONL,返回是否成功——失败时调用方保留未落盘键待重试,paid 结果不丢）。
+
+    跨进程锁（process_file_lock,不删锁 inode）内三态（2026-08-14 缺陷修复）：
+    (a) 文件缺失/空 → 写 meta 行 + 新行；
+    (b) meta 与当前 format/prompt/model 一致 → 撕裂尾行截断后单次 fsync 追加新行
+        （O(1) 每任务,不整写）；
+    (c) meta 不一致（模型/prompt/格式漂移）→ **世代翻转**：原子整替为新 meta + 新行,
+        旧世代弃用——与读侧 mismatch 整份弃用同语义。旧实现只在建文件时写 meta,
+        模型切换后把新行追加在旧 meta 之后 → 读侧永远整份弃用,缓存永久变砖。
+    并发纪律（缺陷修复）：世代探测/撕裂尾行截断/追加/整替全在锁内——裸 append 会交叉
+    追加或写双 meta 行,读侧命中中段损坏即整份弃用。"""
+    if not new_items:
+        return True
     path = governed_artifact_path(out_dir, ANALYZE_ENRICH_CACHE, category="cache")
-    payload = {"_meta": {"prompt": ANALYZE_PROMPT_VERSION, "model": model}, "items": cache}
+    lock_path = governed_artifact_path(out_dir, ANALYZE_ENRICH_CACHE_LOCK, category="cache")
+    meta_line = json.dumps({"_meta": True, "format": ENRICH_CACHE_FORMAT_VERSION,
+                            "prompt": ANALYZE_PROMPT_VERSION, "model": model},
+                           ensure_ascii=False)
+    item_lines = [json.dumps({"key": key, "item": llm_item}, ensure_ascii=False)
+                  for key, llm_item in new_items]
+    from process_file_lock import process_file_lock
     try:
-        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    except OSError as exc:  # pragma: no cover - 缓存写失败不致命
-        LOGGER.warning("富化缓存写入失败（忽略）: %s", exc)
+        with process_file_lock(lock_path, timeout_s=_ENRICH_SAVE_LOCK_TIMEOUT_S,
+                               label="analyze_enrich_cache"):
+            generation = _probe_enrich_cache_generation(path, model)
+            if generation == "unreadable":
+                LOGGER.warning("富化缓存暂时不可读，本批保留待下次重试: %s", path)
+                return False
+            if generation == "match":
+                _append_enrich_rows_with_retry(path, item_lines)
+            else:   # absent（建文件）或 mismatch（世代翻转）
+                _replace_enrich_file_with_retry(path, [meta_line] + item_lines)
+        return True
+    except OSError as exc:   # 含 TimeoutError（锁超时）：缓存写失败不致命,但要如实报告
+        LOGGER.warning("富化缓存写入失败（本批保留待下次重试）: %s", exc)
+        return False
 
 
 def _first_item(payload: Any) -> dict[str, Any] | None:
@@ -593,6 +747,7 @@ def _software_prompt_parts(
     vocabulary: dict[str, Any],
     model: str,
     ctx: dict[str, str],
+    vocab_memo: dict[str, tuple[dict[str, Any], str]] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any], str]:
     """key/prompt 载荷单一构造点（单条与合批共用）。
 
@@ -600,9 +755,20 @@ def _software_prompt_parts(
     与批组成无关——合批与否、批里还有谁，都不改变本条的缓存命中;
     软背景（doc_context/siblings/exemplars）不进 key（S3,见下方注释）。
     冻结归属注入（0714）：prompt 只写不判；归属变化（专家改判）→ key 变 → 重富化。
+
+    vocab_memo（性能 2026-08-14）：词表瘦身+序列化按 (run, module) 记忆化——memo 由
+    _run_enrichment 每次运行新建（词表对象随 run 重建,等价于按 (module, template) 键）,
+    同模块多条不再逐条重复 slim_vocabulary + json.dumps（结果确定性,逐字节等价,key 不变）。
     """
     from requirements_analysis_agent import slim_vocabulary
-    slim_vocab = slim_vocabulary(vocabulary, str(source_req.get("module") or ""))
+    module_name = str(source_req.get("module") or "")
+    if vocab_memo is not None and module_name in vocab_memo:
+        slim_vocab, serialized = vocab_memo[module_name]
+    else:
+        slim_vocab = slim_vocabulary(vocabulary, module_name)
+        serialized = json.dumps(slim_vocab, ensure_ascii=False)
+        if vocab_memo is not None:
+            vocab_memo[module_name] = (slim_vocab, serialized)
     frozen_ownership = str(item.get("ownership") or "")
     prompt_req = dict(source_req)
     prompt_req["ownership"] = frozen_ownership
@@ -611,9 +777,13 @@ def _software_prompt_parts(
     # 进 prompt 不进 key：它们只影响文风/粒度,验证每次运行按当前基线重跑（护栏不受缓存影响,
     # 背景码从不豁免,复用最多多出软标）;而背景漂移导致整库缓存报废（test18 事故:术语表
     # 一变全文档重富化、同模块加一条全模块重富化）的代价远大于文风陈旧。
-    context_basis = "".join([ctx.get(k, "") for k in (
-        "template_refs", "answers", "section_context"
-    )] + [json.dumps(slim_vocab, ensure_ascii=False), frozen_ownership])
+    # v3（2026-08-14 缺陷修复）：五段改 canonical JSON 数组编码（ensure_ascii+紧凑分隔符）——
+    # 旧 "".join 有确定性边界碰撞（("ab","c") vs ("a","bc") 同键）,一条需求的富化结果可被
+    # 错用到另一上下文;JSON 数组每段带引号/逗号定界,拼接永不歧义。
+    context_basis = json.dumps(
+        [ctx.get("template_refs", ""), ctx.get("answers", ""), ctx.get("section_context", ""),
+         serialized, frozen_ownership],
+        ensure_ascii=True, separators=(",", ":"))
     return slim_vocab, prompt_req, _enrich_key(source_req, model, context_basis)
 
 
@@ -641,19 +811,65 @@ def _mark_unfounded_field(item: dict[str, Any], field: str, reason: str) -> None
         questions.append(entry)
 
 
-def _mark_enrichment_rejected(item: dict[str, Any], reason: str) -> None:
-    """WP2 规则 1：富化被护栏整体拒绝（回退 base 值）→ 无依据字段写"待澄清"，
-    不再静默以 base 文本充当软件需求正文。
-
-    只标"本应由此番富化产出"的字段：软件需求正文恒标（base 是原始描述而非分析正文）；
-    硬件依赖仅协同项（纯软件项留空是设计语义,非缺失）；列表字段仅在 base 为空时标
+def _mark_rejected_enrichment_fields(item: dict[str, Any], fields: set[str], reason: str) -> None:
+    """按字段应用"整条拒绝"的单字段规则（v4 字段级拒收）：只标被点名字段,逐字段规则
+    与 _mark_enrichment_rejected 完全一致——正文恒标（base 是原始描述而非分析正文）;
+    硬件依赖仅协同项（纯软件项留空是设计语义,非缺失）;列表字段仅 base 为空时标
     （base 非空=源文有据内容——只对"无依据"下手,有据字段逐字节不动）。"""
-    _mark_unfounded_field(item, "software_requirement_text", reason)
-    if str(item.get("ownership") or "") == OWNERSHIP_CO_DESIGN:
+    if "software_requirement_text" in fields:
+        _mark_unfounded_field(item, "software_requirement_text", reason)
+    if "hardware_dependency" in fields and str(item.get("ownership") or "") == OWNERSHIP_CO_DESIGN:
         _mark_unfounded_field(item, "hardware_dependency", reason)
     for field in _UNFOUNDED_LIST_FIELDS:
-        if not item.get(field):
+        if field in fields and not item.get(field):
             _mark_unfounded_field(item, field, reason)
+
+
+def _mark_enrichment_rejected(item: dict[str, Any], reason: str) -> None:
+    """WP2 规则 1：富化被护栏整体拒绝（回退 base 值）→ 无依据字段写"待澄清"，
+    不再静默以 base 文本充当软件需求正文。（v4 起字段级拒收共享同一套单字段规则。）"""
+    _mark_rejected_enrichment_fields(
+        item, set(_UNFOUNDED_TEXT_FIELDS) | set(_UNFOUNDED_LIST_FIELDS), reason)
+
+
+# v4 字段级拒收的判定细节：编造码**绝不进 open_questions 文本**——码只进 run 级 issues
+# （engineering_analysis.json 审计行）,item 字段对编造码零容纳（防幻觉红线从严一档）。
+_FABRICATED_REJECT_REASON = "LLM 富化编造结构编码被护栏拒收"
+
+
+def _fabricated_code_fields(
+    llm_item: dict[str, Any],
+    source_req: dict[str, Any],
+    ctx: dict[str, str],
+) -> dict[str, list[str]]:
+    """逐字段重检编造编码（与 validate_llm_item **同基线同提取器**）：返回 {字段: [编造码]}。
+
+    正文侧（software_requirement_text/hardware_dependency/ownership_reason——validate 的
+    analysis_text 成员,除永不被采纳的 requirement 外）基线=源文并集∪条款原文,背景/模板
+    编码不豁免；交付列表侧（guidance 三件套+assumptions/open_questions——validate 的
+    delivery_text 成员）基线=源文并集∪模板注入。判据逐字段等价于整体检测：被整体检出的
+    编造码只要落在可采纳字段,必被归属到该字段——这是"字段级拒收不放走任何编造码"的安全
+    前提（宁漏勿错：拒错字段只是少富化,放走编造码是红线事故）。"""
+    from cosem_behavior_spec import extract_codes
+
+    union_text = " ".join(
+        str(source_req.get(field) or "")
+        for field in ("source_quote", "description", "requirement", "clarification_answers_text")
+    ) + " " + str(ctx.get("section_context") or "")
+    union_codes = extract_codes(union_text)
+    template_codes = extract_codes(str(ctx.get("template_refs") or ""))
+    fabricated: dict[str, list[str]] = {}
+    for field in _UNFOUNDED_TEXT_FIELDS + ("ownership_reason",):
+        codes = sorted(extract_codes(str(llm_item.get(field) or "")) - union_codes)
+        if codes:
+            fabricated[field] = codes
+    for field in _UNFOUNDED_LIST_FIELDS + ("open_questions", "assumptions"):
+        field_text = " ".join(str(value) for value in _as_list(llm_item.get(field))
+                              if str(value).strip())
+        codes = sorted(extract_codes(field_text) - union_codes - template_codes)
+        if codes:
+            fabricated[field] = codes
+    return fabricated
 
 
 def _replace_unfounded_adopted_fields(
@@ -714,14 +930,30 @@ def _apply_llm_item(
     （模型跨条借数即硬拒/软标）。
 
     WP2（Agent Phase 2）：无依据富化字段强制"待澄清"——整体拒绝（回退 base）
-    或采纳字段证据校验降级时,该字段写"待澄清"并同步 open_questions,不再静默放行。"""
+    或采纳字段证据校验降级时,该字段写"待澄清"并同步 open_questions,不再静默放行。
+
+    v4 字段级拒收（2026-08-14）：检出编造结构编码时只拒"自己的文本里就有该码"的字段
+    （_fabricated_code_fields 与整体检测同基线同提取器,归属完备）,干净字段照常采纳——
+    不再一条编造毁掉整条富化。安全前提：任何被整体检出的编造码,只要落在可采纳字段,
+    必被该字段的同判据重检拦下,绝不随采纳进交付物（防幻觉红线,宁漏勿错）。"""
     drift = validate_llm_item(llm_item, source_req, template_text=ctx.get("template_refs", ""),
                               section_context=ctx.get("section_context", ""),
                               context_text=ctx.get("doc_context", ""))
     fabricated_codes = [d for d in drift if d.startswith("fabricated code")]
+    blocked_fields: dict[str, list[str]] = (
+        _fabricated_code_fields(llm_item, source_req, ctx) if fabricated_codes else {})
+    fabricated_issues: list[str] = []
     if fabricated_codes:
-        _mark_enrichment_rejected(item, "LLM 富化编造结构编码被护栏整体拒绝")
-        return False, [f"LLM 富化编造结构编码，已拒绝并降级: {'; '.join(fabricated_codes)}"]
+        _mark_rejected_enrichment_fields(item, set(blocked_fields), _FABRICATED_REJECT_REASON)
+        fabricated_issues = [
+            f"{_UNFOUNDED_FIELD_LABELS.get(field, field)}含编造结构编码，已拒收该字段: "
+            f"{', '.join(codes)}"
+            for field, codes in blocked_fields.items()]
+        if not blocked_fields:
+            # 编造码只出现在不可采纳位置（如 llm 自带的 requirement 字段,本就不进交付物）——
+            # 干净字段照常采纳,但发现必须留痕（出处诚实,不静默吞护栏命中）
+            fabricated_issues.append(
+                "LLM 富化编造结构编码位于不可采纳字段（未进交付物）: " + "; ".join(fabricated_codes))
 
     accepted = False
     adopted_fields: set[str] = set()
@@ -729,6 +961,8 @@ def _apply_llm_item(
     # 被 LLM 写入硬件依赖属越权注入（内容护栏不管归属），确定性跳过；非空值如实留痕，不静默吞
     ownership_skips: list[str] = []
     for field in _ENRICH_FIELDS_TEXT:
+        if field in blocked_fields:   # 字段自身含编造码：不采纳（红线）
+            continue
         value = str(llm_item.get(field) or "").strip()
         if not value:
             continue
@@ -739,6 +973,8 @@ def _apply_llm_item(
         adopted_fields.add(field)
         accepted = True
     for field in _ENRICH_FIELDS_LIST:
+        if field in blocked_fields:   # 字段自身含编造码：不采纳（红线）
+            continue
         values = [str(x).strip() for x in _as_list(llm_item.get(field)) if str(x).strip()]
         if values:
             item[field] = values
@@ -751,8 +987,10 @@ def _apply_llm_item(
     # 采纳三条件：原因非空;LLM 若自带 ownership 须与冻结归属一致（不一致=模型想借"原因"
     # 字段改写归属叙事,保留规则原因并记 issue）;人工覆盖过的归属其叙事权威不被 LLM 冲掉。
     # 归属值/置信度仍冻结;reason 本就在 validate_llm_item 的 analysis_text 扫描内（编码硬拒）。
+    # v4：reason 自身含编造码（blocked_fields 点名）时不采纳,规则原因保留。
     reason_issues: list[str] = []
-    if reason and str(item.get("ownership_source") or "") != "reviewer_override":
+    if (reason and "ownership_reason" not in blocked_fields
+            and str(item.get("ownership_source") or "") != "reviewer_override"):
         llm_ownership = str(llm_item.get("ownership") or "").strip()
         consistent = True
         if llm_ownership:
@@ -768,8 +1006,13 @@ def _apply_llm_item(
             reason_issues.append(
                 f"LLM 归属叙述与冻结归属不一致（{llm_ownership} vs {item.get('ownership')}），保留规则原因")
     if not accepted:
-        _mark_enrichment_rejected(item, "LLM 富化未返回可采纳的叙述字段")
-        return False, ownership_skips + ["LLM 富化未返回可采纳的叙述字段，已降级为确定性"]
+        reject_reason = (_FABRICATED_REJECT_REASON if fabricated_codes
+                         else "LLM 富化未返回可采纳的叙述字段")
+        _mark_enrichment_rejected(item, reject_reason)
+        base_issues = ownership_skips + (
+            [f"LLM 富化编造结构编码，已拒绝并降级: {'; '.join(fabricated_codes)}"] if fabricated_codes
+            else ["LLM 富化未返回可采纳的叙述字段，已降级为确定性"])
+        return False, fabricated_issues + base_issues
     item["analysis_source"] = "llm"
     clarify_issues = _replace_unfounded_adopted_fields(item, source_req, ctx, adopted_fields)
 
@@ -781,7 +1024,7 @@ def _apply_llm_item(
         item["enrichment_warnings"] = warnings
     else:
         item.pop("enrichment_warnings", None)   # 重富化后旧警告不残留
-    issues = reason_issues + clarify_issues + ownership_skips + (
+    issues = fabricated_issues + reason_issues + clarify_issues + ownership_skips + (
         [f"富化软提示（数字/遗漏漂移，未阻断，请对照 source_quote 核）: {'; '.join(soft)}"] if soft else [])
     return True, issues
 
@@ -795,18 +1038,21 @@ def _llm_enrich_item(
     model: str,
     lock: Any = None,
     context: dict[str, str] | None = None,
+    vocab_memo: dict[str, tuple[dict[str, Any], str]] | None = None,
 ) -> tuple[bool, list[str]]:
     """用 LLM 填充叙述字段（software_requirement_text 等），结构字段一律不动。
 
-    防幻觉红线：validate_llm_item 检出**编造**的 OBIS/编码/数字（换位 OBIS 也逃不掉）→ 整条
-    富化拒绝、item 保持确定性空值、记 issue；**遗漏**类是软提示，不阻断富化。任何调用/解析失败
-    都非致命：该条降级为确定性，返回 (False, [原因])。lock：并发跑时保护共享 cache 的读写。
+    防幻觉红线：validate_llm_item 检出**编造**的 OBIS/编码/数字（换位 OBIS 也逃不掉）→ 编造
+    编码字段级拒收（v4）/编造数字软标，item 结构字段恒确定性；任何调用/解析失败都非致命：
+    该条降级为确定性，返回 (False, [原因])。lock：并发跑时保护共享 cache 的读写；
+    vocab_memo：模块词表瘦身+序列化的 run 级记忆（性能,输出逐字节不变）。
     """
     from contextlib import nullcontext
     guard = lock if lock is not None else nullcontext()
 
     ctx = context or {}
-    slim_vocab, prompt_req, key = _software_prompt_parts(item, source_req, vocabulary, model, ctx)
+    slim_vocab, prompt_req, key = _software_prompt_parts(item, source_req, vocabulary, model, ctx,
+                                                         vocab_memo=vocab_memo)
     with guard:
         llm_item = cache.get(key)
     if llm_item is None:
@@ -864,17 +1110,23 @@ def _llm_enrich_batch(
     cache: dict[str, Any],
     model: str,
     lock: Any = None,
-) -> list[tuple[dict[str, Any], bool, list[str]]]:
+    vocab_memo: dict[str, tuple[dict[str, Any], str]] | None = None,
+) -> tuple[list[tuple[dict[str, Any], bool, list[str]]],
+           list[tuple[dict[str, Any], dict[str, Any], dict[str, str], str]]]:
     """同模块软件/协同需求合批富化（0714 批次一 S1）。
 
     经济性：富化是调用量大头（EN 16314 实测 126 次调用累计 66 分钟），逐条调用把
     词表/文档背景/推理开销重复 N 遍；合批共享 prompt 骨架，条级上下文（条款原文/
     模板参考/答复）嵌进各自需求 JSON。正确性等价：缓存 key 逐条且与批组成无关；
     验证逐条同基线；槽位缺失/整批失败 → 该条回退单条路径重试，再失败才降级。
+
+    性能（2026-08-14）：缺槽不再在批任务内**串行**单条重试（一个降级批会把 N 次单发
+    连同放宽到 60×batch 的超时全部压在同一池线程上）——缺槽 job 原样返回给编排器
+    (第二个返回值),由其以独立单条任务重发到同一线程池,重试获得真正的并发度。
     """
     from contextlib import nullcontext
     guard = lock if lock is not None else nullcontext()
-    parts = [_software_prompt_parts(item, req, vocabulary, model, ctx)
+    parts = [_software_prompt_parts(item, req, vocabulary, model, ctx, vocab_memo=vocab_memo)
              for item, req, ctx, _mode in jobs]
     results: list = [None] * len(jobs)
     pending: list[int] = []
@@ -920,11 +1172,10 @@ def _llm_enrich_batch(
                 with guard:
                     cache[parts[i][2]] = llm_item
                 ok, item_issues = _apply_llm_item(item, req, llm_item, ctx)
-            else:
-                ok, item_issues = _llm_enrich_item(item, req, vocabulary, chat, cache, model,
-                                                   lock=lock, context=ctx)
-            results[i] = (item, ok, item_issues)
-    return [r for r in results if r is not None]
+                results[i] = (item, ok, item_issues)
+            # 缺槽：不在此串行重试——交还编排器以独立单条任务重发（见 docstring）
+    return ([r for r in results if r is not None],
+            [jobs[i] for slot, i in enumerate(pending) if mapped.get(slot) is None])
 
 
 def _build_hardware_prompt(source_reqs: list[dict[str, Any]]) -> dict[str, str]:
@@ -1014,8 +1265,10 @@ def _llm_enrich_hardware_batch(
     cache: dict[str, Any],
     model: str,
     lock: Any = None,
-) -> list[tuple[dict[str, Any], bool, list[str]]]:
-    """硬件翻译合批（0714 批次一 S1）——输出短，批量可比软件大；护栏/缓存语义同软件合批。"""
+) -> tuple[list[tuple[dict[str, Any], bool, list[str]]],
+           list[tuple[dict[str, Any], dict[str, Any], dict[str, str], str]]]:
+    """硬件翻译合批（0714 批次一 S1）——输出短，批量可比软件大；护栏/缓存语义同软件合批。
+    缺槽同样交还编排器以独立单条任务重发（2026-08-14,不再批任务内串行重试）。"""
     from contextlib import nullcontext
     guard = lock if lock is not None else nullcontext()
     keys = [_enrich_key(req, model, "hardware-only") for _item, req, _ctx, _mode in jobs]
@@ -1050,10 +1303,10 @@ def _llm_enrich_hardware_batch(
                 with guard:
                     cache[keys[i]] = llm_item
                 ok, item_issues = _apply_hardware_item(item, req, llm_item)
-            else:
-                ok, item_issues = _llm_enrich_hardware_item(item, req, chat, cache, model, lock=lock)
-            results[i] = (item, ok, item_issues)
-    return [r for r in results if r is not None]
+                results[i] = (item, ok, item_issues)
+            # 缺槽：交还编排器以独立单条任务重发
+    return ([r for r in results if r is not None],
+            [jobs[i] for slot, i in enumerate(pending) if mapped.get(slot) is None])
 
 
 def _run_enrichment(
@@ -1073,13 +1326,16 @@ def _run_enrichment(
 
     288 条 × 推理模型逐条串行 ≈ 数小时且全程零落盘/零进度——真实 ABNT 跑挂过。三个对策：
     - **并发**：线程池，并发度与 AI 抽取同一来源（GUI 设置 → RATOMIZER_LLM_CONCURRENCY）。
-    - **增量缓存**：每完成一个任务落一次 analyze_enrich_cache.json——中途被杀/断网不丢已完成的调用。
+    - **增量缓存**：每完成一个任务把**新增**键追加进 analyze_enrich_cache.jsonl（v2 起
+      一行一键 + fsync,替代整 dict 重写的二次开销）——中途被杀/断网不丢已完成的调用。
     - **进度回调**：每完成一批上报（GUI 显示 n/total，不再像卡死）。
     0714 批次一 S1：batch_size>1 时同模块软件/协同需求合批、硬件翻译合批（输出短，
     批量 ×2 封顶 8）；批与批之间仍并发。单条尾巴走原单条路径。
+    2026-08-14：合批缺槽/整批失败由编排器以**独立单条任务重发到同一线程池**（work_single），
+    不再在批任务内串行重试——一个降级批不再占死一个池线程。
     每个任务相互独立：各线程只写自己的 item dict；cache/计数由锁保护。单任务失败不影响其余。
     """
-    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
     from threading import Lock
 
     from ai_extract import resolve_concurrency
@@ -1089,20 +1345,32 @@ def _run_enrichment(
     degraded = 0
     completed = 0
     total = len(jobs)
+    flushed_keys = set(cache.keys())   # 已在盘上的键不重放——每任务只追加本 run 新增键
+    vocab_memo: dict[str, tuple[dict[str, Any], str]] = {}   # 模块词表瘦身+序列化记忆（FIX 6）
 
     def emit(done: int) -> None:
         if progress_callback is not None and total:
             progress_callback({"stage": "analyze", "completed": done, "total": total,
                                "percent": int(round(done * 100 / total)), "model": model})
 
-    def work_single(job: tuple[dict[str, Any], dict[str, Any], dict[str, str], str]) -> list:
+    def work_single(job: tuple[dict[str, Any], dict[str, Any], dict[str, str], str]
+                    ) -> tuple[list, list]:
         item, reviewed_req, ctx, mode = job
         if mode == "hardware":
             ok, item_issues = _llm_enrich_hardware_item(item, reviewed_req, chat, cache, model, lock=lock)
         else:
             ok, item_issues = _llm_enrich_item(item, reviewed_req, vocabulary, chat, cache, model,
-                                               lock=lock, context=ctx)
-        return [(item, ok, item_issues)]
+                                               lock=lock, context=ctx, vocab_memo=vocab_memo)
+        return [(item, ok, item_issues)], []
+
+    def flush_new_cache_rows() -> None:
+        with lock:
+            new_items = [(key, value) for key, value in cache.items() if key not in flushed_keys]
+        # 先存后记（2026-08-14 缺陷修复）：只有真正落盘的键才进 flushed_keys——瞬态写失败
+        # 时本批保留,下次 flush 原样重试（一次失败绝不把已付费结果当作已落盘而丢失）。
+        if _save_enrich_cache(out_dir, model, new_items):
+            with lock:
+                flushed_keys.update(key for key, _value in new_items)
 
     tasks: list = []
     if batch_size <= 1:
@@ -1119,7 +1387,8 @@ def _run_enrichment(
                 if len(chunk) == 1:
                     tasks.append(lambda j=chunk[0]: work_single(j))
                 else:
-                    tasks.append(lambda c=chunk: _llm_enrich_batch(c, vocabulary, chat, cache, model, lock))
+                    tasks.append(lambda c=chunk: _llm_enrich_batch(
+                        c, vocabulary, chat, cache, model, lock, vocab_memo))
         hw_batch = min(8, batch_size * 2)
         for k in range(0, len(hardware), hw_batch):
             chunk = hardware[k:k + hw_batch]
@@ -1132,27 +1401,35 @@ def _run_enrichment(
     with ThreadPoolExecutor(max_workers=resolve_concurrency(concurrency)) as executor:
         from context_submit import submit_with_context
 
-        futures = [submit_with_context(executor, task) for task in tasks]
-        for future in as_completed(futures):
-            outcomes = future.result()
-            dones: list[int] = []
-            with lock:
-                for item, ok, item_issues in outcomes:
-                    enriched += 1 if ok else 0
-                    degraded += 0 if ok else 1
-                    completed += 1
-                    dones.append(completed)
-                    if item_issues:
-                        issues.append({
-                            "analysis_id": item.get("analysis_id"),
-                            "source_requirement_ids": item.get("source_requirement_ids") or [],
-                            "issues": item_issues,
-                        })
-                cache_snapshot = dict(cache)
-            # 增量落盘：合批一次 ≥4 条真实调用，丢不起——每任务完成即写
-            _save_enrich_cache(out_dir, model, cache_snapshot)
-            for done in dones:   # 进度契约保持逐条（GUI n/total 逐条推进）
-                emit(done)
+        futures = {submit_with_context(executor, task) for task in tasks}
+        while futures:
+            done_now, futures = wait(futures, return_when=FIRST_COMPLETED)
+            for future in done_now:
+                outcomes, retry_jobs = future.result()
+                dones: list[int] = []
+                with lock:
+                    for item, ok, item_issues in outcomes:
+                        enriched += 1 if ok else 0
+                        degraded += 0 if ok else 1
+                        completed += 1
+                        dones.append(completed)
+                        if item_issues:
+                            issues.append({
+                                "analysis_id": item.get("analysis_id"),
+                                "source_requirement_ids": item.get("source_requirement_ids") or [],
+                                "issues": item_issues,
+                            })
+                # 增量落盘：合批一次 ≥4 条真实调用，丢不起——每任务完成即追加新键
+                flush_new_cache_rows()
+                for done in dones:   # 进度契约保持逐条（GUI n/total 逐条推进）
+                    emit(done)
+                # 缺槽/整批失败重发：独立单条任务回同一线程池（不占批任务线程串行等待）
+                for job in retry_jobs:
+                    futures.add(submit_with_context(executor, work_single, job))
+    # 终局 flush（2026-08-15 P2）：循环内最后一次 flush 失败时,其后不再有任务完成事件,
+    # 本 run 已付费键会全部丢失、下个 run 重付费——循环结束后（含重发单条路径）必须再
+    # 补一次。已全部落盘时 new_items 为空,save 直接短路返回,零额外开销。
+    flush_new_cache_rows()
     return enriched, degraded
 
 
@@ -1327,6 +1604,9 @@ def _write_compliance_report(path: Path, rows: list[dict[str, Any]]) -> None:
 
 
 def _as_list(value: Any) -> list[Any]:
+    """载荷归一为 list 形态（None→[]、list 原样、tuple→list、其它标量含 str→单元素列表）。
+    与 requirements_analysis_agent._as_list 同口径（防幻觉红线 2026-08-15：str 列表字段
+    载荷绝不逐字符迭代）——两处实现必须保持一致，tests.test_analyze_unfounded 有 parity 钉。"""
     if value is None:
         return []
     if isinstance(value, list):

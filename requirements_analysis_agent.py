@@ -2,6 +2,24 @@ import json
 from typing import Any
 
 
+def _as_list(value: Any) -> list[Any]:
+    """列表字段载荷归一（防幻觉红线修复 2026-08-15）：LLM 偶发把列表字段写成纯 str
+    （如 design_options="方案引用 G-SGX-EY 事件对象"），而 _first_item 不做 schema
+    校验——直接迭代 str 会逐字符拆散，受保护编码（OBIS/事件号/hex）被空格打碎后
+    extract_codes 永不命中，编造码零检测直达交付/澄清通道。任何把列表字段渲染成
+    文本做编码检测/采纳的路径都必须先过这里：None→[]；list 原样；tuple→list
+    （JSON 载荷无 tuple，防御性接纳——与 requirements_analysis._as_list 同口径，
+    两处实现必须保持一致）；其它标量（含 str）→ 单元素列表，使 str 载荷与等价
+    list 载荷行为逐字节一致。"""
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, tuple):
+        return list(value)
+    return [value]
+
+
 def slim_vocabulary(vocabulary: dict[str, Any], module: str) -> dict[str, Any]:
     """全量词表 → 本模块视图（W1-4，2026-07-12）：旧行为把所有模块的 submodule 全量 JSON
     逐条重复注入（~500-2000 tok/条），但内容只是分类名、零知识含量。瘦身为
@@ -145,8 +163,10 @@ def validate_llm_item(item: dict[str, Any], source: dict[str, Any],
     # 成文 xlsx「说明示例」列（2026-07-08 审计）。guidance 按设计允许公司模板做法，
     # 所以其编码/数字基线是 源文 ∪ 模板注入；正文 analysis_text 基线仍不含模板（防搬运）。
     # open_questions 同为 LLM 可写、直达交付「待确认」列（2026-07-11 评审补漏），纳入扫描。
+    # 载荷先 _as_list 归一（2026-08-15 P1）：模型把列表字段写成纯 str 时逐字符迭代会
+    # 把编码空格打碎（extract_codes 永不命中）——str 载荷必须与等价 list 载荷同判。
     delivery_text = " ".join(
-        " ".join(str(x) for x in (item.get(field) or []) if str(x).strip())
+        " ".join(str(x) for x in _as_list(item.get(field)) if str(x).strip())
         for field in ("developer_guidance", "design_options", "acceptance_criteria",
                       "assumptions", "open_questions")
     )

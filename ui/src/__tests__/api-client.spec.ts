@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from "vitest"
-import { RequirementApiClient, RequirementApiError, isNeedsReconfirmationError } from "../api-client"
+import {
+  RequirementApiClient,
+  RequirementApiError,
+  isClaimRecoveryPendingError,
+  isNeedsReconfirmationError,
+} from "../api-client"
 import { runDesktopTask } from "../desktop-bridge"
 
 describe("RequirementApiClient", () => {
@@ -692,6 +697,263 @@ describe("RequirementApiClient", () => {
       available: false,
       document_effective_revision: null,
     })
+  })
+})
+
+describe("RequirementApiClient claim-maintenance auto-recovery", () => {
+  const recoveryPending = {
+    ok: false,
+    status: 503,
+    json: async () => ({
+      error: "effective_recovery_pending",
+      detail: "claim effective snapshot recovery is pending",
+      retryable: true,
+    }),
+  }
+
+  const claimEnvelope = {
+    schema: "claim-metrics-view/v1",
+    available: true,
+    phase: "production-dual-write-v1",
+    document_effective_revision: "sha256:effective-1",
+    base_generation_id: "sha256:base-1",
+    event_prefix_sha256: "sha256:events-1",
+    effective_fresh: true,
+  }
+
+  it("recovers a GET by posting /claim-maintenance once and replaying the request", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(recoveryPending)
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => claimEnvelope })
+    const client = new RequirementApiClient({
+      baseUrl: "http://127.0.0.1:8770", token: "local-token", fetchImpl: fetchMock,
+    })
+
+    await expect(client.loadClaimMetrics()).resolves.toMatchObject({
+      document_effective_revision: "sha256:effective-1",
+    })
+
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      "http://127.0.0.1:8770/claim-metrics",
+      "http://127.0.0.1:8770/claim-maintenance",
+      "http://127.0.0.1:8770/claim-metrics",
+    ])
+    expect(fetchMock.mock.calls[1][1]).toEqual({
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Requirement-Atomizer-Token": "local-token",
+      },
+      body: "{}",
+    })
+    // 重放的是原始 GET（无 method）
+    expect(fetchMock.mock.calls[2][1]).toEqual({
+      headers: { "X-Requirement-Atomizer-Token": "local-token" },
+    })
+  })
+
+  it("accepts the nested {error:{code}} envelope shape", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 503,
+        json: async () => ({
+          error: { code: "claim_artifact_recovery_required" },
+          retryable: true,
+        }),
+      })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true }) })
+      .mockResolvedValue({ ok: true, json: async () => [{ stable_req_id: "SREQ-1" }] })
+    const client = new RequirementApiClient({
+      baseUrl: "http://127.0.0.1:8770", token: "", fetchImpl: fetchMock,
+    })
+
+    await expect(client.loadRequirements()).resolves.toEqual([{ stable_req_id: "SREQ-1" }])
+    expect(fetchMock.mock.calls[1][0]).toBe("http://127.0.0.1:8770/claim-maintenance")
+  })
+
+  it("shares one maintenance POST across concurrent failing GETs", async () => {
+    let recovered = false
+    const maintenanceCalls: number[] = []
+    const fetchMock = vi.fn((url: string) => {
+      if (url.endsWith("/claim-maintenance")) {
+        maintenanceCalls.push(1)
+        expect(recovered).toBe(false)
+        recovered = true
+        return Promise.resolve({ ok: true, json: async () => ({ ok: true }) })
+      }
+      if (!recovered) {
+        return Promise.resolve({
+          ok: false,
+          status: 503,
+          json: async () => ({
+            error: "effective_recovery_pending",
+            retryable: true,
+          }),
+        })
+      }
+      return Promise.resolve({ ok: true, json: async () => claimEnvelope })
+    })
+    const client = new RequirementApiClient({
+      baseUrl: "http://127.0.0.1:8770",
+      token: "t",
+      fetchImpl: fetchMock as unknown as typeof fetch,
+    })
+
+    const [first, second] = await Promise.all([
+      client.loadClaimMetrics(),
+      client.loadClaimMetrics(),
+    ])
+
+    expect(first).toMatchObject({ available: true })
+    expect(second).toMatchObject({ available: true })
+    expect(maintenanceCalls).toHaveLength(1)
+    expect(fetchMock.mock.calls.filter((call) => call[0].endsWith("/claim-metrics"))).toHaveLength(4)
+  })
+
+  it("does not re-trigger maintenance for a slow GET whose 503 predates a completed recovery", async () => {
+    // 时间线：GET-A（慢）在维护开始前派发 → GET-B（快）命中 503 触发维护并恢复 →
+    // GET-A 这才带着旧 503 返回。世代已前进：A 不再触发第二个维护 POST，只重放一次并成功。
+    // （否则 180ms 轮询下每个迟到的旧 503 都会重复昂贵的恢复/fold 操作。）
+    let maintenanceCalls = 0
+    let metricsCalls = 0
+    let releaseSlowGet: () => void = () => {}
+    const slowGet = new Promise<void>((resolve) => {
+      releaseSlowGet = resolve
+    })
+    const fetchMock = vi.fn((url: string) => {
+      if (url.endsWith("/claim-maintenance")) {
+        maintenanceCalls += 1
+        return Promise.resolve({ ok: true, json: async () => ({ ok: true }) })
+      }
+      metricsCalls += 1
+      if (metricsCalls === 1) {
+        // GET-A 首发：挂起，待恢复完成后才交付旧 503
+        return slowGet.then(() => ({
+          ok: false,
+          status: 503,
+          json: async () => ({ error: "effective_recovery_pending", retryable: true }),
+        }))
+      }
+      if (metricsCalls === 2) {
+        // GET-B 首发：立刻 503（此刻尚无恢复 → 触发维护）
+        return Promise.resolve({
+          ok: false,
+          status: 503,
+          json: async () => ({ error: "effective_recovery_pending", retryable: true }),
+        })
+      }
+      // 重放（GET-B 与 GET-A 各一次）：恢复后的新服务端视图 → 成功
+      return Promise.resolve({ ok: true, json: async () => claimEnvelope })
+    })
+    const client = new RequirementApiClient({
+      baseUrl: "http://127.0.0.1:8770",
+      token: "t",
+      fetchImpl: fetchMock as unknown as typeof fetch,
+    })
+
+    const slowPromise = client.loadClaimMetrics()
+    const fastPromise = client.loadClaimMetrics()
+    await expect(fastPromise).resolves.toMatchObject({ available: true })
+    expect(maintenanceCalls).toBe(1)
+
+    releaseSlowGet()
+    await expect(slowPromise).resolves.toMatchObject({ available: true })
+    // 旧 503 迟到：不再有第二个维护 POST，但 GET-A 仍重放了一次并成功
+    expect(maintenanceCalls).toBe(1)
+    expect(fetchMock.mock.calls.filter((call) => call[0].endsWith("/claim-metrics"))).toHaveLength(4)
+  })
+
+  it("triggers maintenance again for a fresh 503 dispatched after a completed recovery", async () => {
+    // 恢复完成后新派发的 GET 再次命中恢复码：世代相等（派发后无人恢复过）→ 照常触发新一轮维护
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(recoveryPending)
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => claimEnvelope })
+      .mockResolvedValueOnce(recoveryPending)
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => claimEnvelope })
+    const client = new RequirementApiClient({
+      baseUrl: "http://127.0.0.1:8770", token: "t", fetchImpl: fetchMock,
+    })
+
+    await expect(client.loadClaimMetrics()).resolves.toMatchObject({ available: true })
+    await expect(client.loadClaimMetrics()).resolves.toMatchObject({ available: true })
+
+    expect(
+      fetchMock.mock.calls.filter((call) => call[0].endsWith("/claim-maintenance")),
+    ).toHaveLength(2)
+  })
+
+  it("surfaces the original error when maintenance does not fix it", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(recoveryPending)
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true }) })
+      .mockResolvedValue(recoveryPending)
+    const client = new RequirementApiClient({
+      baseUrl: "http://127.0.0.1:8770", token: "t", fetchImpl: fetchMock,
+    })
+
+    const error = await client.loadClaimMetrics().catch((caught: unknown) => caught)
+
+    expect(error).toBeInstanceOf(RequirementApiError)
+    expect(isClaimRecoveryPendingError(error)).toBe(true)
+    expect((error as RequirementApiError).status).toBe(503)
+    expect((error as RequirementApiError).details.error).toBe("effective_recovery_pending")
+    // 重放失败不再二次触发维护
+    const maintenanceCalls = fetchMock.mock.calls.filter(
+      (call) => call[0] === "http://127.0.0.1:8770/claim-maintenance",
+    )
+    expect(maintenanceCalls).toHaveLength(1)
+  })
+
+  it("does not trigger maintenance for ordinary retryable errors", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 503,
+      json: async () => ({ error: "claim_artifact_unavailable", retryable: true }),
+    })
+    const client = new RequirementApiClient({
+      baseUrl: "http://127.0.0.1:8770", token: "t", fetchImpl: fetchMock,
+    })
+
+    await expect(client.loadClaimMetrics()).rejects.toBeInstanceOf(RequirementApiError)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it("does not trigger maintenance without the retryable flag", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 503,
+      json: async () => ({ error: "effective_recovery_pending", retryable: false }),
+    })
+    const client = new RequirementApiClient({
+      baseUrl: "http://127.0.0.1:8770", token: "t", fetchImpl: fetchMock,
+    })
+
+    await expect(client.loadClaimMetrics()).rejects.toMatchObject({ status: 503 })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it("never auto-recovers POST requests", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 503,
+      json: async () => ({
+        error: "claim_artifact_recovery_required",
+        retryable: true,
+      }),
+    })
+    const client = new RequirementApiClient({
+      baseUrl: "http://127.0.0.1:8770", token: "t", fetchImpl: fetchMock,
+    })
+
+    await expect(
+      client.applyAiReviewAction({ aiReqId: "AIR-1", status: "accepted" }),
+    ).rejects.toMatchObject({ status: 503 })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fetchMock.mock.calls[0][0]).toBe("http://127.0.0.1:8770/ai-review-actions")
   })
 })
 

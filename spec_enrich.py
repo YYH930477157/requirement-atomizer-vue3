@@ -18,7 +18,7 @@ import hashlib
 import json
 import logging
 import re
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import replace
 from pathlib import Path
 
@@ -31,7 +31,6 @@ from io_utils import read_jsonl_recover_torn_tail
 from llm_client import LLMClientConfig, LLMConnectionError, LLMError, chat_json
 from llm_pipeline import (
     DEFAULT_PIPELINE_PATH,
-    FAST_FAIL_SAMPLE_SIZE,
     PROGRESS_INTERVAL,
     llm_config_from_route,
     load_review_pipeline,
@@ -39,7 +38,9 @@ from llm_pipeline import (
 )
 
 LOGGER = logging.getLogger("requirement_atomizer")
-ENRICH_PROMPT_VERSION = "enrich-v3"   # v3：合批模式（0714 批次一 S1b）；v2：单条改写
+# v4：合批 user prompt 紧凑 JSON（separators 去缩进换行,token 成本下降;2026-08-14）。
+# v3：合批模式（0714 批次一 S1b）；v2：单条改写。版本进 fingerprint → 键自动轮换。
+ENRICH_PROMPT_VERSION = "enrich-v4"
 # 缓存保存的是漂移/出处护栏处理后的最终结果。护栏行为变化必须提升此版本，
 # 否则旧缓存会绕过新的 check_drift/citation_mismatch 行为。
 ENRICH_GUARDS_VERSION = "enrich-guards-v1"
@@ -53,6 +54,10 @@ ENRICH_MIN_MAX_TOKENS = 2048
 ENRICH_BATCH_ENV = "RATOMIZER_ENRICH_BATCH"
 DEFAULT_ENRICH_BATCH = 6
 MAX_ENRICH_BATCH = 10
+# 快速失败探测样本（性能 2026-08-14）：llm_pipeline.FAST_FAIL_SAMPLE_SIZE=5 面向章节抽取的
+# 重调用；描述富化单条轻量,5 连串行把线程池的打开推迟太久——2 个样本已足以判定"服务不可达"
+# 并走既有整体降级路径（失败语义不变）。
+SPEC_ENRICH_FAST_FAIL_SAMPLE_SIZE = 2
 
 
 def _resolve_enrich_batch(explicit: int | None = None) -> int:
@@ -282,33 +287,35 @@ def _build_batch_user_prompt(reqs: list[dict[str, Any]]) -> str:
             "labels": req.get("labels"),
             "threshold_table_summary": table_text(req)[:1200],
         })
-    return json.dumps(entries, ensure_ascii=False, indent=2)
+    # 紧凑分隔符（性能 2026-08-14）：indent=2 的换行+缩进把每批 token 放大一截,而模型解析
+    # JSON 不需要排版空白;ENRICH_PROMPT_VERSION=v4 随行,缓存键自动轮换（护栏版本不变）。
+    return json.dumps(entries, ensure_ascii=False, separators=(",", ":"))
 
 
 def _enrich_batch_unit(
     unit: list[tuple[dict[str, Any], str, dict[str, Any] | None]],
     config: LLMClientConfig,
-) -> list[tuple[str, str] | None]:
-    """无蓝皮书条目的合批改写。返回与 unit 对齐的 (description, note) 列表；
-    槽位缺失的条目回退单条 enrich_one，单条再失败记 None（调用方计 failed，不进缓存）。
+) -> tuple[list[tuple[str, str] | None], list[int]]:
+    """无蓝皮书条目的合批改写。返回 (outcomes, missing_slots)：outcomes 与 unit 对齐,
+    缺槽位记 None 占位并连同槽号一并返回——由调用方以独立单条任务重发到同一线程池
+    （2026-08-14：不再在批任务内串行回退,一个缺槽批不再占死一个池线程;单条重试失败
+    由调用方按单条语义计 failed 并驱动熔断,不进缓存）。
     整批调用失败直接抛 LLMError——由调用方按单元降级并驱动熔断（语义同单条路径）。"""
     reqs = [req for req, _fp, _bb in unit]
     payload = chat_json(config, SYSTEM_PROMPT_BATCH, _build_batch_user_prompt(reqs))
     from requirements_analysis import _map_batch_items   # 槽位映射与软需合批同一实现
     mapped = _map_batch_items(payload, len(unit))
     outcomes: list[tuple[str, str] | None] = []
+    missing: list[int] = []
     for slot, (req, _fp, blue_book_entry) in enumerate(unit):
         entry = mapped.get(slot)
         new_desc = str((entry or {}).get("description") or "").strip()
         if new_desc:
             outcomes.append(_finalize_description(req, new_desc, blue_book_entry))
-            continue
-        try:
-            outcomes.append(enrich_one(req, config, blue_book_entry))   # 缺槽回退单条
-        except LLMError as exc:
-            append_note(req, f"描述富化失败：{exc}")
-            outcomes.append(None)
-    return outcomes
+        else:
+            outcomes.append(None)   # 占位——等编排器单条重试回填
+            missing.append(slot)
+    return outcomes, missing
 
 
 # --- 批处理（镜像 llm_pipeline 的缓存/并发/快速失败/熔断/降级）------------------
@@ -382,7 +389,7 @@ def enrich_descriptions(
     done = 0
 
     # 2) 快速失败探测：前 N 条串行，全连不上即判定服务不可达、整体降级（不抛出 assemble）
-    sample = pending[:FAST_FAIL_SAMPLE_SIZE]
+    sample = pending[:SPEC_ENRICH_FAST_FAIL_SAMPLE_SIZE]
     sample_conn_fail = 0
     for req, fp, blue_book_entry in sample:
         try:
@@ -406,7 +413,7 @@ def enrich_descriptions(
 
     # 3) 其余并发 + 熔断。合批（0714 批次一 S1b）：无蓝皮书条目按 RATOMIZER_ENRICH_BATCH
     # 成批（默认 6）,带蓝皮书条目保持单发（条款长、出处校验逐条）;批与批之间仍并发。
-    remaining = pending[FAST_FAIL_SAMPLE_SIZE:]
+    remaining = pending[SPEC_ENRICH_FAST_FAIL_SAMPLE_SIZE:]
     if remaining:
         batch_size = _resolve_enrich_batch()
         units: list[list[tuple[dict[str, Any], str, dict[str, Any] | None]]] = []
@@ -418,47 +425,56 @@ def enrich_descriptions(
             units = [[entry] for entry in with_book]
             units += [plain[k:k + batch_size] for k in range(0, len(plain), batch_size)]
 
-        def run_unit(unit: list[tuple[dict[str, Any], str, dict[str, Any] | None]]):
+        def run_unit(unit: list[tuple[dict[str, Any], str, dict[str, Any] | None]]
+                     ) -> tuple[list[tuple[str, str] | None], list[int]]:
             if len(unit) == 1:
                 req, _fp, blue_book_entry = unit[0]
-                return [enrich_one(req, config, blue_book_entry)]
+                return [enrich_one(req, config, blue_book_entry)], []
             return _enrich_batch_unit(unit, config)
 
         consecutive_conn_fail = 0
         with ThreadPoolExecutor(max_workers=max(1, concurrency)) as executor:
             from context_submit import submit_with_context
 
-            futures = {submit_with_context(executor, run_unit, unit): unit for unit in units}
-            for future in as_completed(futures):
-                unit = futures[future]
-                try:
-                    outcomes = future.result()
-                except LLMConnectionError as exc:
-                    failed += len(unit)
-                    consecutive_conn_fail += 1
-                    for req, _fp, _bb in unit:
-                        append_note(req, f"描述富化失败（服务不可达）：{exc}")
-                    if consecutive_conn_fail >= connection_failure_abort:
-                        LOGGER.warning("描述富化：连续 %s 次连接失败，熔断", consecutive_conn_fail)
-                        executor.shutdown(wait=False, cancel_futures=True)
-                        break
-                    continue
-                except LLMError as exc:
-                    failed += len(unit)
-                    consecutive_conn_fail = 0
-                    for req, _fp, _bb in unit:
-                        append_note(req, f"描述富化失败：{exc}")
-                    continue
-                consecutive_conn_fail = 0
-                for (req, fp, _bb), outcome in zip(unit, outcomes):
-                    if outcome is None:          # 批内单条回退仍失败：计失败,不进缓存
-                        failed += 1
+            unit_by_future = {submit_with_context(executor, run_unit, unit): unit
+                              for unit in units}
+            while unit_by_future:
+                done_now, _not_done = wait(set(unit_by_future), return_when=FIRST_COMPLETED)
+                for future in done_now:
+                    unit = unit_by_future.pop(future)
+                    try:
+                        outcomes, missing_slots = future.result()
+                    except LLMConnectionError as exc:
+                        failed += len(unit)
+                        consecutive_conn_fail += 1
+                        for req, _fp, _bb in unit:
+                            append_note(req, f"描述富化失败（服务不可达）：{exc}")
+                        if consecutive_conn_fail >= connection_failure_abort:
+                            LOGGER.warning("描述富化：连续 %s 次连接失败，熔断", consecutive_conn_fail)
+                            executor.shutdown(wait=False, cancel_futures=True)
+                            unit_by_future.clear()
+                            break
                         continue
-                    desc, note = outcome
-                    apply_and_record(req, fp, desc, note)
-                    done += 1
-                    if done % PROGRESS_INTERVAL == 0:
-                        LOGGER.info("spec enrich %s/%s", done, total)
+                    except LLMError as exc:
+                        failed += len(unit)
+                        consecutive_conn_fail = 0
+                        for req, _fp, _bb in unit:
+                            append_note(req, f"描述富化失败：{exc}")
+                        continue
+                    consecutive_conn_fail = 0
+                    for (req, fp, _bb), outcome in zip(unit, outcomes):
+                        if outcome is None:          # 缺槽占位——由下方独立单条任务重试
+                            continue
+                        desc, note = outcome
+                        apply_and_record(req, fp, desc, note)
+                        done += 1
+                        if done % PROGRESS_INTERVAL == 0:
+                            LOGGER.info("spec enrich %s/%s", done, total)
+                    # 缺槽重发（2026-08-14）：独立单条任务回同一线程池——单条失败按单条
+                    # 语义计 failed（LLMError）并驱动熔断（LLMConnectionError）,不进缓存。
+                    for slot in missing_slots:
+                        retry_unit = (unit[slot],)
+                        unit_by_future[submit_with_context(executor, run_unit, retry_unit)] = retry_unit
 
     append_cache(cache_path, new_rows)
     return enriched, rejected, failed

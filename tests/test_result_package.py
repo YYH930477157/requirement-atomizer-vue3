@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -1394,6 +1395,177 @@ class MarkerContractHardeningTests(unittest.TestCase):
 
             self.assertTrue(claim_views._has_no_generation(analysis_root))
             self.assertFalse((root / ".ratomizer" / "state").exists())
+
+
+class MarkerContractCacheTests(unittest.TestCase):
+    """2026-08-14 性能：marker 校验经 stat 签名缓存，marker 改动立即重新校验。"""
+
+    def _initialize(self, root: Path) -> dict:
+        source = root / "standard.docx"
+        source.write_bytes(b"docx-fixture")
+        return initialize_result_package(
+            root, input_path=source, requested_stages=["atomize"],
+        )
+
+    def test_load_result_package_validates_once_until_marker_changes(self) -> None:
+        import result_package
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._initialize(root)
+            original = result_package._validate_package
+            calls: list[int] = []
+
+            def counting(package):
+                calls.append(1)
+                return original(package)
+
+            with patch.object(result_package, "_validate_package", counting):
+                first = load_result_package(root)
+                # 顶层浅拷贝：调用方改顶层键不污染缓存
+                first["analysis_status"] = "completed"
+                second = load_result_package(root)
+                self.assertEqual(len(calls), 1)
+                self.assertEqual(second["analysis_status"], "running")
+
+                # marker 任何改动（stat 变化）→ 立即重新读取校验，不吐陈旧契约
+                marker = root / RESULT_PACKAGE_FILE
+                payload = json.loads(marker.read_text(encoding="utf-8"))
+                payload["unknown_extra_field"] = 1
+                marker.write_text(
+                    json.dumps(payload, ensure_ascii=False), encoding="utf-8",
+                )
+                with self.assertRaises(ResultPackageCorrupt):
+                    load_result_package(root)
+            self.assertEqual(len(calls), 2)
+
+    def test_detect_result_layout_shares_the_cached_contract(self) -> None:
+        import result_package
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._initialize(root)
+            original = result_package._validate_package
+            calls: list[int] = []
+
+            def counting(package):
+                calls.append(1)
+                return original(package)
+
+            with patch.object(result_package, "_validate_package", counting):
+                self.assertEqual(detect_result_layout(root), "package_v1")
+                self.assertEqual(resolve_analysis_root(root).name, "pipeline")
+                self.assertEqual(load_result_package(root)["schema"], RESULT_PACKAGE_SCHEMA)
+                package_artifact_path(root, "blocks")
+            self.assertEqual(len(calls), 1)
+
+            # marker 损坏仍然 fail-closed（不会因缓存把坏目录当 package_v1）
+            (root / RESULT_PACKAGE_FILE).write_text("{broken", encoding="utf-8")
+            with self.assertRaises(ResultPackageCorrupt):
+                detect_result_layout(root)
+
+
+class MarkerContentDigestCacheTests(unittest.TestCase):
+    """完整性封堵（2026-08-14）：marker 的 stat-only 缓存键（size/mtime；Windows
+    ctime=创建时间，原地覆写不变）可被「同尺寸原地覆写+还原 mtime」伪造——复查者
+    实测复现：改坏的 result-package.json 仍被缓存里的旧有效契约放行。缓存键改为
+    内容 SHA-256（marker 仅 KB 级）：stat 无论怎么还原，内容一变摘要必变 →
+    必然重新走 jsonschema+契约校验，fail-closed。"""
+
+    def setUp(self) -> None:
+        import result_package
+        result_package._MARKER_CONTRACT_CACHE.clear()
+
+    def tearDown(self) -> None:
+        import result_package
+        result_package._MARKER_CONTRACT_CACHE.clear()
+
+    def _initialize(self, root: Path) -> dict:
+        source = root / "standard.docx"
+        source.write_bytes(b"docx-fixture")
+        return initialize_result_package(
+            root, input_path=source, requested_stages=["atomize"],
+        )
+
+    def _samesize_inplace_overwrite(self, marker: Path, mutate) -> None:
+        """复查者的绕过手法：同尺寸原地覆写（保留文件标识/创建时间）+ os.utime
+        还原 mtime，使 (mtime_ns, ctime_ns, size) 统计签名与覆写前完全一致。"""
+        before = marker.stat()
+        original = marker.read_text(encoding="utf-8")
+        mutated = mutate(original)
+        self.assertEqual(
+            len(original.encode("utf-8")), len(mutated.encode("utf-8")),
+            "test mutation must preserve marker byte length",
+        )
+        with open(marker, "r+b") as handle:
+            handle.write(mutated.encode("utf-8"))
+        os.utime(marker, ns=(before.st_atime_ns, before.st_mtime_ns))
+        after = marker.stat()
+        # 前置断言：stat 签名确实被伪造（否则本测试没有击中目标缺陷路径）
+        self.assertEqual(
+            (before.st_mtime_ns, before.st_ctime_ns, before.st_size),
+            (after.st_mtime_ns, after.st_ctime_ns, after.st_size),
+        )
+
+    def test_invalid_samesize_spoof_is_revalidated_and_rejected(self) -> None:
+        import result_package
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._initialize(root)
+            original = result_package._validate_package
+            calls: list[int] = []
+
+            def counting(package):
+                calls.append(1)
+                return original(package)
+
+            with patch.object(result_package, "_validate_package", counting):
+                load_result_package(root)
+                self.assertEqual(len(calls), 1)
+
+                # 同尺寸原地改坏 marker（合法值 "running" → 非法值 "runninc"，
+                # 两处出现都在 schema 约束内）+ 还原 mtime：内容摘要变化 →
+                # 必须重新校验并拒绝，不得吐缓存里的旧有效契约
+                marker = root / RESULT_PACKAGE_FILE
+                self._samesize_inplace_overwrite(
+                    marker, lambda text: text.replace('"running"', '"runninc"', 1),
+                )
+                with self.assertRaises(ResultPackageCorrupt):
+                    load_result_package(root)
+            self.assertEqual(len(calls), 2)
+
+    def test_valid_samesize_mutation_is_reparsed(self) -> None:
+        import result_package
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._initialize(root)
+            original = result_package._validate_package
+            calls: list[int] = []
+
+            def counting(package):
+                calls.append(1)
+                return original(package)
+
+            with patch.object(result_package, "_validate_package", counting):
+                first = load_result_package(root)
+                self.assertEqual(
+                    first["active_attempt"]["requested_stages"], ["atomize"],
+                )
+
+                # 同尺寸但仍然合法的改动（"atomize" → "compose"，同为 7 字符，
+                # marker 中恰出现一次）：缓存契约必须反映新内容并重新校验，
+                # 而不是继续返回 stat 命中的旧契约
+                marker = root / RESULT_PACKAGE_FILE
+                self._samesize_inplace_overwrite(
+                    marker, lambda text: text.replace('"atomize"', '"compose"', 1),
+                )
+                second = load_result_package(root)
+            self.assertEqual(len(calls), 2)
+            self.assertEqual(
+                second["active_attempt"]["requested_stages"], ["compose"],
+            )
 
 
 if __name__ == "__main__":

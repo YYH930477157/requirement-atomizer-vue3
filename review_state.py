@@ -6,10 +6,11 @@ import logging
 import os
 import time
 from contextlib import contextmanager
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from threading import RLock
+from threading import Condition, RLock
 from typing import Any, Iterator, Sequence
 
 from process_file_lock import process_file_lock
@@ -32,9 +33,12 @@ VALID_TRANSITIONS = {
 
 EXPERT_DECISION_STATUSES = {"accepted", "rejected", "needs_discussion", "expert_pending"}
 EXPERT_ACTORS = {"expert", "vue3-test", "gui", "vue3-ui"}
-_PROCESS_LOCKS: dict[Path, RLock] = {}
+_PROCESS_LOCKS: dict[tuple[Path, str], RLock] = {}
 _PROCESS_LOCKS_GUARD = RLock()
-_REPLACE_ATTEMPTS = 5
+# 8 次 × 线性退避（0.02..0.14s，共约 0.56s）：Windows AV/索引器对被读文件的目标句柄
+# 常常超过旧 5×0.02（80ms）预算，把用户刚点保存的操作顶成 PermissionError。
+# 与 claim_artifacts._replace_with_retry / ai_review_actions._replace_ai_review_bytes 同口径。
+_REPLACE_ATTEMPTS = 8
 _REPLACE_RETRY_DELAY_S = 0.02
 CLAIM_AUTHORITY_WRITE_PROTOCOL_VERSION = "claim-authority-write-v1"
 ATOMIC_TARGET_AUTHORITY_WRITE_REVISION_VERSION = "atomic-target-authority-write-revision-v1"
@@ -234,21 +238,11 @@ def apply_expert_decision(
     if governed_artifact_path(
         out_dir, "claim_generation.meta.json", category="state"
     ).is_file():
-        try:
-            from claim_review_actions import fold_effective_ledger
-
-            fold_effective_ledger(
-                out_dir,
-                actor_trigger="requirement-review-action",
-                authority_hook_track="A",
-            )
-        except Exception as exc:
-            # The requirement-level authority is already atomically committed.
-            # Effective materialization is derived and may catch up later.
-            logging.getLogger("requirement_atomizer").warning(
-                "expert decision saved; claim effective fold lagged: %s",
-                exc,
-            )
+        cover_effective_fold_after_decision(
+            out_dir,
+            actor_trigger="requirement-review-action",
+            authority_hook_track="A",
+        )
     return result
 
 
@@ -526,6 +520,65 @@ def read_review_authority_snapshot_readonly(out_dir: Path) -> dict[str, Any]:
     return snapshot
 
 
+def _hash_state_row_and_history(raw_state: dict[str, Any]) -> tuple[str, str]:
+    """(row hash, history prefix hash) for one authority state row."""
+    from claim_artifacts import hash_json
+
+    history = raw_state.get("history")
+    history = history if isinstance(history, list) else []
+    return (
+        hash_json(
+            f"{ATOMIC_TARGET_AUTHORITY_WRITE_REVISION_VERSION}:row",
+            raw_state,
+        ),
+        hash_json(
+            f"{ATOMIC_TARGET_AUTHORITY_WRITE_REVISION_VERSION}:history",
+            history,
+        ),
+    )
+
+
+# GET /requirements 富集（api_server.enrich_requirements）对同一份
+# review_states 快照逐行调用 atomic_target_authority_write_revision，旧行为每次
+# 重新 hash_json 整行 + 全部 history，O(行数×状态数)/请求。这里按快照内容签名
+# （source_store + authority_file_sha256，比 stat 签名更强——绑定精确字节）缓存
+# 逐 ordinal 的行哈希：同一未变化快照内重复富集不再重算。快照字节一变（任何
+# 裁决写入都会原子替换文件）→ 新 sha → 新键，旧条目被淘汰，不存在陈旧命中。
+_AUTHORITY_REVISION_HASH_CACHE_MAX_SNAPSHOTS = 8
+_AUTHORITY_REVISION_HASH_CACHE: OrderedDict[tuple[str, str], dict[int, tuple[str, str]]] = OrderedDict()
+_AUTHORITY_REVISION_HASH_CACHE_GUARD = RLock()
+
+
+def _authority_revision_row_hashes(
+    snapshot_or_states: dict[str, Any] | list[dict[str, Any]],
+) -> dict[int, tuple[str, str]] | None:
+    """Return a fillable per-ordinal hash cache for a content-addressed snapshot.
+
+    Only the snapshot (dict) form is cacheable: its ``authority_file_sha256``
+    binds the exact bytes the ``states`` list was parsed from, and production
+    callers treat the snapshot as read-only after load. The bare-list form
+    (apply_expert_decision / llm_pipeline pass the in-memory list they are
+    mutating) is never cached.
+    """
+    if not isinstance(snapshot_or_states, dict):
+        return None
+    store = str(snapshot_or_states.get("source_store") or "")
+    file_sha = str(snapshot_or_states.get("authority_file_sha256") or "")
+    if not store or not file_sha:
+        return None
+    key = (store, file_sha)
+    with _AUTHORITY_REVISION_HASH_CACHE_GUARD:
+        cached = _AUTHORITY_REVISION_HASH_CACHE.get(key)
+        if cached is not None:
+            _AUTHORITY_REVISION_HASH_CACHE.move_to_end(key)
+            return cached
+        fresh: dict[int, tuple[str, str]] = {}
+        _AUTHORITY_REVISION_HASH_CACHE[key] = fresh
+        while len(_AUTHORITY_REVISION_HASH_CACHE) > _AUTHORITY_REVISION_HASH_CACHE_MAX_SNAPSHOTS:
+            _AUTHORITY_REVISION_HASH_CACHE.popitem(last=False)
+        return fresh
+
+
 def atomic_target_authority_write_revision(
     requirement_id: str,
     snapshot_or_states: dict[str, Any] | list[dict[str, Any]],
@@ -544,6 +597,7 @@ def atomic_target_authority_write_revision(
         states = snapshot_or_states.get("states") or []
     else:
         states = snapshot_or_states
+    row_hashes = _authority_revision_row_hashes(snapshot_or_states)
     wanted = str(requirement_id or "").strip()
     bindings: list[dict[str, Any]] = []
     for ordinal, raw_state in enumerate(states, start=1):
@@ -551,18 +605,17 @@ def atomic_target_authority_write_revision(
             continue
         if wanted not in requirement_identity_keys(raw_state):
             continue
-        history = raw_state.get("history")
-        history = history if isinstance(history, list) else []
+        if row_hashes is not None:
+            hashes = row_hashes.get(ordinal)
+            if hashes is None:
+                hashes = _hash_state_row_and_history(raw_state)
+                row_hashes[ordinal] = hashes
+        else:
+            hashes = _hash_state_row_and_history(raw_state)
         bindings.append({
             "state_ordinal": ordinal,
-            "state_row_hash": hash_json(
-                f"{ATOMIC_TARGET_AUTHORITY_WRITE_REVISION_VERSION}:row",
-                raw_state,
-            ),
-            "history_prefix_hash": hash_json(
-                f"{ATOMIC_TARGET_AUTHORITY_WRITE_REVISION_VERSION}:history",
-                history,
-            ),
+            "state_row_hash": hashes[0],
+            "history_prefix_hash": hashes[1],
         })
     return hash_json(
         ATOMIC_TARGET_AUTHORITY_WRITE_REVISION_VERSION,
@@ -617,7 +670,7 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
 def review_state_lock(out_dir: Path, *, timeout_s: float = 10.0, stale_after_s: float = 300.0) -> Iterator[None]:
     out_dir = out_dir.expanduser().resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
-    process_lock = _process_lock_for(out_dir)
+    process_lock = _process_lock_for(out_dir, "review_states")
     with process_lock:
         lock_path = governed_artifact_path(out_dir, "review_states.lock", category="state")
         del stale_after_s
@@ -629,9 +682,211 @@ def review_state_lock(out_dir: Path, *, timeout_s: float = 10.0, stale_after_s: 
             yield
 
 
-def _process_lock_for(out_dir: Path) -> RLock:
+def _process_lock_for(out_dir: Path, name: str) -> RLock:
+    """Per-(root, lock family) in-process serializer.
+
+    Keyed by the lock name as well as the root（与 omission_actions._process_lock_for
+    同构）：review_states 与 verification_states 是两把不同的跨进程文件锁，若共享
+    同一把进程内 RLock，线程化 GET 的大快照扫描会无谓阻塞另一家族的 POST。
+    """
     with _PROCESS_LOCKS_GUARD:
-        return _PROCESS_LOCKS.setdefault(out_dir, RLock())
+        return _PROCESS_LOCKS.setdefault((out_dir, name), RLock())
+
+
+# ===========================================================================
+# 裁决后 effective fold 合并（2026-08-14 性能修复）
+# ---------------------------------------------------------------------------
+# 此前每次专家裁决 POST 都在请求内同步跑一次 fold_effective_ledger（claim_
+# publication_lock + 全量 committed base 加载 + effective/queue 重发布），评审员
+# 连续点击时每一下都卡。本合并器不引入后台线程/定时器/延迟语义：并发突发的 K
+# 次裁决合并为 1-2 个 fold pass，且每个裁决线程仍等待一个「在其裁决写入之后
+# 启动」的同步 fold pass 完成才返回——读后写可见性契约与旧实现完全一致
+# （claim_views / claim_queue_execution / 桌面导出闸门在裁决返回后立即读
+# committed effective 快照；这些消费方不在本模块可改范围，异步延迟会让
+# document_ready 间歇闪断）。fold 失败保持 logged-and-continue：权威裁决行已
+# 落盘，effective 追平由 assess_effective_freshness 如实标记，下一次裁决 /
+# 队列执行 / api 启动维护恢复。
+# ===========================================================================
+_EFFECTIVE_FOLD_DRAIN_PASSES = 3
+# P2 活性修复（2026-08-15）：单槽被两轨共享且让位无公平时，持续同轨突发可让
+# 异轨等待者零进展饿死（实测 10s+），且 cover() 无超时会让 HTTP 工作线程无限
+# 挂起。等待因此有界：超时是诚实失败（TimeoutError 子类 → 调用方既有
+# except (TimeoutError, OSError) 分支映射 retryable 503），裁决本身在 cover()
+# 之前已原子提交、绝不回滚；fold 落后由 assess_effective_freshness 如实标记，
+# 下一次裁决 / 队列执行 / 启动维护追平。
+EFFECTIVE_FOLD_COVER_TIMEOUT_S = 30.0
+_EFFECTIVE_FOLD_COORDINATORS: dict[Path, "_EffectiveFoldCoordinator"] = {}
+_EFFECTIVE_FOLD_COORDINATORS_GUARD = RLock()
+
+
+class EffectiveFoldCoverTimeout(TimeoutError):
+    """cover() 等待覆盖性 fold pass 超过 ``EFFECTIVE_FOLD_COVER_TIMEOUT_S``。
+
+    语义：调用方的权威裁决在注册等待之前已经持久提交，本异常只表示「在其
+    之后编号的覆盖性 pass」在时限内没有完成——派生 effective 快照暂时落后，
+    由 assess_effective_freshness 标记并由下一次裁决 / 队列执行 / 启动维护
+    追平。继承 TimeoutError 使 api_server 既有 except (TimeoutError, OSError)
+    分支直接把它映射为 retryable 503，无需调用方逐点改造。
+    """
+
+
+class _EffectiveFoldCoordinator:
+    """Per-root single-flight fold cover with per-track pass accounting.
+
+    Invariant: ``cover(track, run_pass)`` returns only after at least one fold
+    pass of ``track`` that was *numbered after* the caller registered has
+    completed (or honestly raised — the pass still counts, matching the old
+    catch-and-continue hook).  Pass numbers are allocated under the condition
+    lock immediately before a pass runs, and every caller's authority write is
+    durably committed *before* it registers, so any pass numbered at or above
+    the caller's target necessarily folds that caller's write.  The pass owner
+    drains re-queued same-track decisions (bounded by ``_EFFECTIVE_FOLD_DRAIN_
+    PASSES``), which is what collapses a burst of K racing decisions into one
+    or two folds instead of K serialized in-request folds.
+
+    Fairness + bounded wait (2026-08-15): the slot handoff prefers a DIFFERENT
+    track than the one that just ran whenever cross-track waiters exist (both
+    tracks waiting → alternation); a same-track re-acquire stays allowed when
+    no other-track waiter exists, preserving steady-state burst coalescing.
+    Waiting is bounded by ``EFFECTIVE_FOLD_COVER_TIMEOUT_S`` — on expiry the
+    waiter deregisters and raises ``EffectiveFoldCoverTimeout`` (the authority
+    write it already made is never rolled back).
+    """
+
+    def __init__(self) -> None:
+        self._cond = Condition()
+        self._in_flight: str | None = None
+        self._dirty: set[str] = set()
+        self._waiting: dict[str, int] = {}
+        self._preferred: str | None = None
+        self._last_allocated = 0
+        self._completed: dict[str, int] = {}
+
+    def _handoff_allows(self, track: str) -> bool:
+        preferred = self._preferred
+        if preferred is None or preferred == track:
+            return True
+        # 首选轨已无等待者（被覆盖/超时离场）时不让旧偏好卡住空槽。
+        return self._waiting.get(preferred, 0) <= 0
+
+    def _next_preferred(self, owner_track: str) -> str | None:
+        others = sorted(
+            track for track, count in self._waiting.items()
+            if count > 0 and track != owner_track
+        )
+        return others[0] if others else None
+
+    def cover(self, track: str, run_pass) -> None:
+        timed_out = False
+        with self._cond:
+            target = self._last_allocated + 1
+            self._dirty.add(track)
+            self._waiting[track] = self._waiting.get(track, 0) + 1
+            try:
+                deadline = time.monotonic() + EFFECTIVE_FOLD_COVER_TIMEOUT_S
+                while self._completed.get(track, 0) < target:
+                    if self._in_flight is None and self._handoff_allows(track):
+                        self._in_flight = track
+                        self._preferred = None
+                        break
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        timed_out = True
+                        break
+                    self._cond.wait(remaining)
+                else:
+                    return
+            finally:
+                self._waiting[track] -= 1
+                if self._waiting.get(track, 0) <= 0:
+                    self._waiting.pop(track, None)
+                    if self._preferred == track:
+                        self._preferred = None
+                        self._cond.notify_all()
+        if timed_out:
+            raise EffectiveFoldCoverTimeout(
+                f"effective fold cover timed out on track {track!r} after "
+                f"{EFFECTIVE_FOLD_COVER_TIMEOUT_S}s waiting for a covering "
+                "pass; the decision was already committed and the fold lag "
+                "will be flagged by freshness assessment and re-folded on "
+                "the next decision/queue execution/startup maintenance"
+            )
+        try:
+            for _ in range(_EFFECTIVE_FOLD_DRAIN_PASSES):
+                with self._cond:
+                    self._last_allocated += 1
+                    number = self._last_allocated
+                    self._dirty.discard(track)
+                run_pass()
+                with self._cond:
+                    if self._completed.get(track, 0) < number:
+                        self._completed[track] = number
+                    if track not in self._dirty:
+                        return
+        finally:
+            with self._cond:
+                self._in_flight = None
+                self._preferred = self._next_preferred(track)
+                self._cond.notify_all()
+
+
+def _effective_fold_coordinator_for(out_dir: Path) -> _EffectiveFoldCoordinator:
+    with _EFFECTIVE_FOLD_COORDINATORS_GUARD:
+        coordinator = _EFFECTIVE_FOLD_COORDINATORS.get(out_dir)
+        if coordinator is None:
+            coordinator = _EffectiveFoldCoordinator()
+            _EFFECTIVE_FOLD_COORDINATORS[out_dir] = coordinator
+        return coordinator
+
+
+def cover_effective_fold_after_decision(
+    out_dir: Path,
+    *,
+    actor_trigger: str,
+    authority_hook_track: str,
+    fold_lag_log_template: str = "expert decision saved; claim effective fold lagged: %s",
+) -> None:
+    """Coalesced replacement for the per-decision synchronous fold hook.
+
+    Both review_state (A-track) and ai_review_actions (B-track) decisions funneled
+    through the same per-root coordinator, so a mixed burst still folds once per
+    track at most per drain window.  The decision itself is already durable
+    before this runs; a fold failure only lags the derived effective snapshot,
+    which freshness assessment surfaces and the next decision re-triggers.
+    """
+    from claim_review_actions import fold_effective_ledger
+
+    def _run_pass() -> None:
+        try:
+            fold_effective_ledger(
+                out_dir,
+                actor_trigger=actor_trigger,
+                authority_hook_track=authority_hook_track,
+            )
+        except Exception as exc:
+            # The requirement-level authority is already atomically committed.
+            # Effective materialization is derived and may catch up later.
+            logging.getLogger("requirement_atomizer").warning(
+                fold_lag_log_template, exc)
+
+    try:
+        _effective_fold_coordinator_for(out_dir).cover(
+            authority_hook_track, _run_pass
+        )
+    except EffectiveFoldCoverTimeout as exc:
+        # 裁决已原子提交；只诚实记录 fold 覆盖等待超时（落后事实），超时异常
+        # 向上抛给调用方映射 retryable 503——绝不把已提交的裁决伪装成失败回滚。
+        logging.getLogger("requirement_atomizer").warning(
+            "decision saved; claim effective fold cover timed out "
+            "(actor_trigger=%s, track=%s, waited %ss): fold lag will be "
+            "flagged by freshness assessment and re-folded on the next "
+            "decision/queue execution/startup maintenance: %s",
+            actor_trigger,
+            authority_hook_track,
+            EFFECTIVE_FOLD_COVER_TIMEOUT_S,
+            exc,
+        )
+        raise
 
 
 def _atomic_write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
@@ -657,7 +912,7 @@ def _replace_with_retry(source: Path, target: Path) -> None:
         except PermissionError:
             if attempt + 1 >= _REPLACE_ATTEMPTS:
                 raise
-            time.sleep(_REPLACE_RETRY_DELAY_S)
+            time.sleep(_REPLACE_RETRY_DELAY_S * (attempt + 1))
 
 
 def _append_review_state_event(path: Path, state: dict[str, Any], event: dict[str, Any]) -> None:
@@ -713,7 +968,7 @@ def verification_state_lock(out_dir: Path, *, timeout_s: float = 10.0) -> Iterat
     """verification/手工/依赖状态文件的跨进程锁（独立锁文件，避免与 review_states 抢锁）。"""
     root = out_dir.expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
-    process_lock = _process_lock_for(root)
+    process_lock = _process_lock_for(root, "verification_states")
     with process_lock:
         lock_path = governed_artifact_path(root, VERIFICATION_STATES_LOCK, category="state")
         with process_file_lock(lock_path, timeout_s=timeout_s, label="verification state lock"):

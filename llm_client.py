@@ -5,6 +5,7 @@ import logging
 import os
 import threading
 import time
+from collections.abc import Iterable
 import http.client
 import urllib.error
 import urllib.request
@@ -682,6 +683,7 @@ def chat_with_tools(
     max_rounds: int = TOOL_LOOP_DEFAULT_MAX_ROUNDS,
     on_tool_call: Callable[[str, dict[str, Any]], dict[str, Any]],
     token_budget: int | None = None,
+    initial_banned_tools: Iterable[str] | None = None,
     _usage_sink: list[dict[str, Any]] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """OpenAI 兼容 tools 有界 tool-loop：返回 (final_dict, meta)。
@@ -690,20 +692,38 @@ def chat_with_tools(
     结果以 role=tool 回灌 → 下一轮；无 tool_calls 则按 chat_json 同口径解析最终 JSON
     （解析失败修复重发一次，占一轮）。硬顶 max_rounds（默认 8，含首轮）；轮顶耗尽抛
     LLMResponseError。非法 tool_call（结构畸形/未知工具/参数非法/执行异常）以
-    {"error": ...} 回灌一次让其纠正；同一工具同一轮连续错 2 次视为轮顶耗尽同等处理。
-    端点不支持 tools（4xx）响亮报错，不静默降级为无工具审查。token_budget（tokens 上限）
-    按全部轮次 usage 累计，超限即抛 LLMResponseError；usage 缺失计 0（无法计量即无法
-    超限），meta.usage_complete 标 partial。
+    {"error": ...} 回灌一次让其纠正；同一工具**连续**错 2 次（跨轮累计，该工具成功即
+    重置）→ 该工具从本循环剩余请求的 tools 面移除，并为该次调用回灌最终处置消息
+    （指示不再用它、直接产出最终 JSON）——不中止循环、不丢弃已完成的付费轮次；模型
+    此后仍不产出最终 JSON 则由轮顶/token 预算耗尽抛 LLMResponseError（调用方进 stub，
+    绝不伪装已审）。端点不支持 tools（4xx）或传输层硬错误响亮上抛，不静默降级。
+    token_budget（tokens 上限）按全部轮次 usage 累计，超限即抛 LLMResponseError；
+    usage 缺失计 0（无法计量即无法超限），meta.usage_complete 标 partial。
+    initial_banned_tools：续接外环禁用集（同一工具宇宙的再入轮，如 schema 修复轮
+    重调本函数）——这些工具自首轮请求起即从 tools 面移除、再点名不执行直接回灌
+    不可用消息，不为重新发现同一错误再付付费轮。全新独立审查不传（禁用是循环内
+    取证状态，不得跨需求串扰）。
 
     meta = {"usage": {...}, "usage_complete": bool, "tool_calls": [{"round","name"}...],
-    "rounds": n, "history": [...]}——tool_calls 摘要是审查结果行的审计锚（产出过程
-    可解释性）；history 为收敛时的完整 transcript（含 assistant tool_calls 与 role=tool
+    "rounds": n, "banned_tools": [...], "history": [...]}——tool_calls 摘要是审查结果行
+    的审计锚（产出过程可解释性）；banned_tools 为终态禁用工具名（排序），供调用方在
+    续接轮携带；history 为收敛时的完整 transcript（含 assistant tool_calls 与 role=tool
     回灌，不含最终 assistant JSON 消息），供调用方续接（如 schema 修复轮）。"""
     if max_rounds < 1:
         raise ValueError("max_rounds must be >= 1")
     usage_sink = _usage_sink if _usage_sink is not None else []
     history = [dict(message) for message in messages]
     tool_call_summary: list[dict[str, Any]] = []
+    active_tools = list(tools)   # 禁用只动副本：调用方传入的 TOOLS 定义不可变更
+    banned_tools: set[str] = set(initial_banned_tools or ())   # 外环禁用续接（schema 修复轮）
+    if banned_tools:
+        active_tools = [
+            tool for tool in active_tools
+            if not (isinstance(tool, dict)
+                    and str((tool.get("function") or {}).get("name") or "") in banned_tools)
+        ]
+    # 续接禁用的工具视为已连续两错（与环内禁用同处置口径：再点名回灌最终处置消息）
+    error_streak: dict[str, int] = {name: 2 for name in banned_tools}   # 跨轮累计；成功一次即清零
     round_no = 0
     while True:
         round_no += 1
@@ -711,7 +731,7 @@ def chat_with_tools(
             raise LLMResponseError(
                 f"tool loop did not converge within max_rounds={max_rounds} "
                 f"(model kept requesting tools or never returned final JSON)")
-        response = _chat_tools_once(config, history, tools, usage_sink)
+        response = _chat_tools_once(config, history, active_tools, usage_sink)
         if token_budget is not None:
             spent = _aggregate_usage(usage_sink)["usage"]["total_tokens"]
             if spent > token_budget:
@@ -754,14 +774,17 @@ def chat_with_tools(
                 **_aggregate_usage(usage_sink),
                 "tool_calls": tool_call_summary,
                 "rounds": round_no,
+                "banned_tools": sorted(banned_tools),
                 "history": list(history),
             }
         # 工具轮：assistant 消息原样回灌（含 tool_calls，tool_call_id 需逐字对应）
         history.append({"role": "assistant", "content": message.get("content"), "tool_calls": tool_calls})
-        error_streak: dict[str, int] = {}
         for call in tool_calls:
             name, arguments, parse_error = _parse_tool_call(call)
-            if parse_error is not None:
+            if name in banned_tools:
+                # 已禁用工具的再次点名：不执行，直接回灌不可用消息（处置口径与禁用时一致）
+                result = {"error": _tool_banned_message(name)}
+            elif parse_error is not None:
                 result = {"error": parse_error}
             else:
                 try:
@@ -774,9 +797,17 @@ def chat_with_tools(
             if "error" in result:
                 error_streak[name] = error_streak.get(name, 0) + 1
                 if error_streak[name] >= 2:
-                    raise LLMResponseError(
-                        f"tool {name} failed twice in a row within round {round_no} "
-                        f"(invalid tool_call correction exhausted): {result['error']}")
+                    # 连续两错（2026-08-14 收口）：旧路径在此抛错中止整条循环——已完成的
+                    # 付费轮次连同取证上下文整体丢弃、需求进 stub。现改为禁用该工具
+                    # （剩余请求的 tools 面移除）+ 该次调用回灌最终处置消息；模型若仍
+                    # 无法收敛，轮顶/预算耗尽路径照旧抛错（stub 不伪装已审）。
+                    banned_tools.add(name)
+                    active_tools = [
+                        tool for tool in active_tools
+                        if not (isinstance(tool, dict)
+                                and str((tool.get("function") or {}).get("name") or "") == name)
+                    ]
+                    result = {"error": _tool_banned_message(name, detail=str(result["error"]))}
             else:
                 error_streak[name] = 0
             history.append({
@@ -784,6 +815,15 @@ def chat_with_tools(
                 "tool_call_id": str(call.get("id") or "") if isinstance(call, dict) else "",
                 "content": json.dumps(result, ensure_ascii=False),
             })
+
+
+def _tool_banned_message(name: str, *, detail: str = "") -> str:
+    """工具禁用的最终处置消息：指示模型不再用它、立即产出最终 JSON。"""
+    suffix = f" (last error: {detail})" if detail else ""
+    return (
+        f"tool {name} is unavailable for the rest of this review due to repeated failures"
+        f"{suffix}; proceed without it and produce your final JSON now"
+    )
 
 
 def _parse_tool_call(call: Any) -> tuple[str, dict[str, Any], str | None]:
@@ -817,13 +857,16 @@ def _chat_tools_once(
     """一轮 tools 请求（含截断/空响应的 max_tokens 升级重试，口径同 _chat_content）。
 
     不带 response_format——json_object 模式与 tool_calls 在多数端点互斥。空 content +
-    无 tool_calls 才视为空响应（模型调工具时 content 常为 null，那是正常工具轮）。"""
+    无 tool_calls 才视为空响应（模型调工具时 content 常为 null，那是正常工具轮）。
+    tools 为空列表（全部工具已被连续错误禁用）时不携带 tools 键——等价普通 chat 请求，
+    端点不会收到空 tools 数组而被拒。"""
     payload: dict[str, Any] = {
         "model": config.model,
         "messages": messages,
         "temperature": config.temperature,
-        "tools": tools,
     }
+    if tools:
+        payload["tools"] = tools
     max_tokens = int(config.max_tokens)
     while True:
         payload["max_tokens"] = max_tokens

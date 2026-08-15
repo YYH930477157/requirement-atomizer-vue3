@@ -17,7 +17,10 @@ from docx.table import Table, _Cell
 from docx.text.paragraph import Paragraph
 
 
-DOCX_TABLE_PHYSICAL_VERSION = "docx-table-physical-v1"
+# v2（2026-08-14）：row_width_conflict 在宽度调和被运行时证明零丢失时降级为
+# 审计注记（issue.reconciled=True，不再置 parse_incomplete）；merge_conflict /
+# merge_text_conflict 与任何未证明可调和的 row_width_conflict 仍然阻塞。
+DOCX_TABLE_PHYSICAL_VERSION = "docx-table-physical-v2"
 
 
 @dataclass(frozen=True)
@@ -151,7 +154,7 @@ def _cell_style_evidence(tc: Any, paragraphs: list[Paragraph]) -> dict[str, Any]
 
 
 def _parse_cell_content(tc: Any, parent_table: Table) -> tuple[
-    ParsedCellContent, str, str, list[ParsedDocxTable]
+    ParsedCellContent, str, str, list[ParsedDocxTable], list[Paragraph]
 ]:
     cell_parent = _Cell(tc, parent_table)
     parsed_paragraphs: list[ParsedParagraph] = []
@@ -186,6 +189,7 @@ def _parse_cell_content(tc: Any, parent_table: Table) -> tuple[
         "\n".join(normalized_parts),
         "\n".join(raw_parts),
         nested_tables,
+        paragraph_objects,
     )
 
 
@@ -245,7 +249,9 @@ def parse_docx_table(table: Table) -> ParsedDocxTable:
         for tc in tr.tc_lst:
             column_span, vmerge = _span_and_vmerge(tc)
             columns = set(range(cursor, cursor + column_span))
-            content, text, raw_text, nested_tables = _parse_cell_content(tc, table)
+            content, text, raw_text, nested_tables, paragraph_objects = (
+                _parse_cell_content(tc, table)
+            )
             if vmerge == "continue":
                 keys = {active_by_column.get(column) for column in columns}
                 if None in keys or len(keys) != 1:
@@ -287,11 +293,9 @@ def parse_docx_table(table: Table) -> ParsedDocxTable:
                 for key in overlapping:
                     close_anchor(key)
                 key = (row_index, cursor)
-                paragraph_objects = [
-                    Paragraph(child, _Cell(tc, table))
-                    for child in tc.iterchildren()
-                    if isinstance(child, CT_P)
-                ]
+                # 复用 _parse_cell_content 已构造的 Paragraph 对象（同一批 CT_P
+                # 子节点、同序），消除每个单元格的二次 _Cell/Paragraph 重建；
+                # _cell_style_evidence 只读 CT_P 派生属性，输出逐字节不变。
                 cells[key] = ParsedCell(
                     row_index=row_index,
                     column_index=cursor,
@@ -343,6 +347,27 @@ def parse_docx_table(table: Table) -> ParsedDocxTable:
     width = declared_width or observed_width
     if observed_width > width:
         width = observed_width
+
+    # 宽度调和的安全性在运行时复核（宁漏勿错）：仅当每个观测列位与每个合并
+    # 范围都落在调和宽度之内（内容零丢失、坐标零越界的充要条件）时，
+    # row_width_conflict 才降级为已调和审计注记；任一越界——今日代码路径
+    # 理论不可达，防未来回归——保持阻塞。merge_conflict / merge_text_conflict
+    # 恒为未解决状态，不受此判定影响。
+    width_reconciled = all(
+        1 <= column <= width
+        for row_values in rows_payload
+        for column in row_values
+    ) and all(
+        1 <= start_column and end_column <= width
+        for _start_row, start_column, _end_row, end_column in merge_ranges
+    )
+    blocking_issues: list[dict[str, Any]] = []
+    for issue in issues:
+        if str(issue.get("code") or "") == "row_width_conflict" and width_reconciled:
+            issue["reconciled"] = True
+        if not issue.get("reconciled"):
+            blocking_issues.append(issue)
+
     matrix: list[list[str]] = []
     raw_matrix: list[list[str]] = []
     for row_values in rows_payload:
@@ -383,7 +408,7 @@ def parse_docx_table(table: Table) -> ParsedDocxTable:
         merge_ranges=ordered_ranges,
         explicit_header_rows=explicit_header_rows,
         nested_tables=nested_refs,
-        parse_incomplete=bool(issues),
+        parse_incomplete=bool(blocking_issues),
         parse_incomplete_reason=reason,
         raw_text=raw_text,
     )

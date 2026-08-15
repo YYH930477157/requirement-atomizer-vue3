@@ -103,6 +103,35 @@ class OperationExecutorMapTests(unittest.TestCase):
         self.assertFalse(tool_loop_enabled(pipeline))
 
 
+class CompactPromptContractTests(unittest.TestCase):
+    """FIX 3（2026-08-14）：审查 prompt 用紧凑 JSON 序列化（separators=(",", ":")）——
+    indent=2 的换行与缩进在每次调用/每轮回灌/缓存指纹载荷里白耗 token
+    （requirements_analysis_agent.build_analysis_prompt 同口径）。"""
+
+    def test_user_prompt_is_compact_json(self) -> None:
+        from llm_pipeline import build_user_prompt
+
+        row = requirement("SREQ-00000000000000P1", confidence=0.70)
+        text = build_user_prompt(row)
+
+        self.assertNotIn("\n", text)                       # 无换行/缩进
+        self.assertIn('"requirement_id":"', text)          # 键值紧凑分隔
+        payload = json.loads(text)
+        self.assertEqual(payload["requirement_id"], row["stable_req_id"])
+
+    def test_batch_prompt_is_compact_json(self) -> None:
+        from llm_pipeline import build_batch_review_prompt
+
+        rows = [requirement("SREQ-00000000000000P2", confidence=0.70),
+                requirement("SREQ-00000000000000P3", confidence=0.70)]
+        text = build_batch_review_prompt(rows)
+
+        self.assertNotIn("\n", text)
+        self.assertIn('"prompt_version":"', text)
+        payload = json.loads(text)
+        self.assertEqual(len(payload["requirements"]), 2)
+
+
 class ToolLoopReviewEndToEndTests(unittest.TestCase):
     def test_user_prompt_injects_only_top_three_trimmed_kb_definitions(self) -> None:
         from llm_pipeline import build_user_prompt
@@ -202,6 +231,51 @@ class ToolLoopReviewEndToEndTests(unittest.TestCase):
         tool_msgs = [m for m in service.requests[1]["messages"] if m.get("role") == "tool"]
         self.assertEqual(len(tool_msgs), 1)
         self.assertEqual(tool_msgs[0]["tool_call_id"], "c1")
+
+    def test_double_bad_block_id_no_longer_discards_paid_rounds(self) -> None:
+        """同一工具连续两错（如两次都拿错 block_id）不再中止整条审查——旧路径把
+        已完成的付费轮整体丢弃进 stub；现行为：禁用该工具 + 回灌最终处置消息，
+        模型下一轮收敛则正常产出已审结果（取证上下文保留在 transcript 里）。"""
+        responses = [
+            # 第 1 轮：两次 source_read 都拿错 block_id
+            {"body": tool_call_response([("c1", "source_read", {"block_id": "NOPE-1"}),
+                                         ("c2", "source_read", {"block_id": "NOPE-2"})],
+                                        usage={"prompt_tokens": 5, "completion_tokens": 1,
+                                               "total_tokens": 6})},
+            # 第 2 轮：tools 面已移除 source_read（五工具面剩四个）,模型直接收敛
+            {"body": final_json_response(
+                {"decision": "accept", "risk": "low_risk", "confidence": 0.9,
+                 "review_notes": ["proceeded without source_read"], "expert_questions": []},
+                usage={"prompt_tokens": 9, "completion_tokens": 2, "total_tokens": 11})},
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            out_dir = tmp_path / "out"
+            seed_out(out_dir, [requirement("SREQ-00000000000000B1", confidence=0.70)])
+            pipeline_path = tmp_path / "review_pipeline.yaml"
+            with ScriptedOpenAIService(lambda body, count: responses.pop(0)) as service:
+                write_tool_loop_pipeline_config(pipeline_path, service.base_url)
+                summary = run_review_pipeline(
+                    out_dir, pipeline_path=pipeline_path, domain_pack_path=None,
+                    route="openai_compatible")
+            reviews = read_jsonl(out_dir / "llm_review_results.jsonl")
+
+        self.assertEqual(summary["llm_reviewed"], 1)      # 不再丢弃进 stub
+        self.assertEqual(summary["llm_failed"], 0)
+        review = reviews[0]
+        self.assertEqual(review["generated_by"], "llm:mock-review-model")
+        # 两次错误调用都如实进审计摘要
+        self.assertEqual(review["tool_calls"],
+                         [{"round": 1, "name": "source_read"}] * 2)
+        # 第 2 轮请求：source_read 已从 tools 面移除,其余四工具仍在
+        round2_tools = [tool["function"]["name"] for tool in service.requests[1]["tools"]]
+        self.assertNotIn("source_read", round2_tools)
+        self.assertEqual(len(round2_tools), 4)
+        # 第 2 轮回灌含两条 role=tool 消息（首错原文 + 最终处置消息）
+        tool_msgs = [m for m in service.requests[1]["messages"] if m.get("role") == "tool"]
+        self.assertEqual(len(tool_msgs), 2)
+        self.assertIn("unknown block_id", json.loads(tool_msgs[0]["content"])["error"])
+        self.assertIn("final JSON", json.loads(tool_msgs[1]["content"])["error"])
 
     def test_deterministic_policy_layer_still_applies_after_tool_loop(self) -> None:
         """确定性政策层照旧：mandatory_review 类型即使模型 accept 也强制 needs_expert。"""
@@ -506,6 +580,61 @@ class SchemaRepairTranscriptTests(unittest.TestCase):
         self.assertIn("schema validation failed", repair_request["messages"][-1]["content"])
         # 首轮取证仍如实进 tool_calls 审计摘要
         self.assertEqual(reviews[0]["tool_calls"], [{"round": 1, "name": "source_read"}])
+
+    def test_schema_repair_carries_banned_tools_into_repair_round(self) -> None:
+        """P3 效率缺陷（2026-08-15）：主环已禁用的工具（连续两错）在 schema 修复轮继续
+        禁用——修复轮首个请求 tools 面即不含它；模型修复轮首个动作再次点名该工具时
+        不执行、回灌不可用处置消息,不为重新发现同一错误再付一轮。"""
+        responses = [
+            # 主环第 1 轮：source_read 连续两错（bad block_id）→ 主环内禁用
+            {"body": tool_call_response([("c1", "source_read", {"block_id": "NOPE-1"}),
+                                         ("c2", "source_read", {"block_id": "NOPE-2"})],
+                                        usage={"prompt_tokens": 5, "completion_tokens": 1,
+                                               "total_tokens": 6})},
+            # 主环第 2 轮：schema 非法 JSON（decision 枚举外）→ 触发 schema 修复轮
+            {"body": final_json_response(
+                {"decision": "bogus-decision", "risk": "low_risk", "confidence": 0.9,
+                 "review_notes": [], "expert_questions": []},
+                usage={"prompt_tokens": 9, "completion_tokens": 2, "total_tokens": 11})},
+            # 修复轮首个动作：再次点名已禁用的 source_read → 不执行（禁用状态已续接）
+            {"body": tool_call_response([("c3", "source_read", {"block_id": "NOPE-3"})],
+                                        usage={"prompt_tokens": 5, "completion_tokens": 1,
+                                               "total_tokens": 6})},
+            # 修复轮收敛
+            {"body": final_json_response(
+                {"decision": "accept", "risk": "low_risk", "confidence": 0.9,
+                 "review_notes": ["proceeded without source_read"], "expert_questions": []},
+                usage={"prompt_tokens": 9, "completion_tokens": 2, "total_tokens": 11})},
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            out_dir = tmp_path / "out"
+            seed_out(out_dir, [requirement("SREQ-00000000000000R4", confidence=0.70)])
+            pipeline_path = tmp_path / "review_pipeline.yaml"
+            with ScriptedOpenAIService(lambda body, count: responses.pop(0)) as service:
+                write_tool_loop_pipeline_config(pipeline_path, service.base_url)
+                summary = run_review_pipeline(
+                    out_dir, pipeline_path=pipeline_path, domain_pack_path=None,
+                    route="openai_compatible")
+            reviews = read_jsonl(out_dir / "llm_review_results.jsonl")
+
+        self.assertEqual(summary["llm_reviewed"], 1)
+        self.assertEqual(summary["llm_failed"], 0)
+        self.assertEqual(reviews[0]["decision"], "accept")
+        # 付费请求恰 4 个：主环 2 轮 + 修复轮 2 轮（禁用续接不触发重新执行/额外轮）
+        self.assertEqual(len(service.requests), 4)
+        # 修复轮首个请求：source_read 仍处禁用（主环状态续接）——tools 面不含它
+        repair_tools = [tool["function"]["name"] for tool in service.requests[2]["tools"]]
+        self.assertNotIn("source_read", repair_tools)
+        self.assertEqual(len(repair_tools), 4)
+        # 修复轮再点名不执行：回灌不可用处置消息,而非第三次真实执行的错误结果
+        banned_msg = [m for m in service.requests[3]["messages"]
+                      if m.get("role") == "tool" and m.get("tool_call_id") == "c3"][-1]
+        self.assertIn("unavailable", json.loads(banned_msg["content"])["error"])
+        # 审计摘要如实记录三次点名（主环两次真实执行 + 修复轮一次被拦截,轮次续接编号）
+        self.assertEqual(reviews[0]["tool_calls"],
+                         [{"round": 1, "name": "source_read"}] * 2
+                         + [{"round": 3, "name": "source_read"}])
 
 
 if __name__ == "__main__":

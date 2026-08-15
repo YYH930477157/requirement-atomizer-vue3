@@ -613,6 +613,29 @@ class LLMPipelineRouteTests(unittest.TestCase):
                 with self.assertRaises(LLMConnectionError):
                     run_review_pipeline(out_dir, pipeline_path=pipeline_path, route="openai_compatible")
 
+    def test_fast_fail_probe_serializes_two_samples_before_concurrency(self) -> None:
+        """FIX 5（2026-08-14）：可用性快探 5→2 条——探测价值几乎不变,串行等待减半以上。
+        全部样本连接失败 → 恰好 2 次请求后按既有失败路径抛 LLMConnectionError。"""
+        from llm_pipeline import REVIEW_FAST_FAIL_SAMPLE_SIZE
+
+        self.assertEqual(REVIEW_FAST_FAIL_SAMPLE_SIZE, 2)
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            out_dir = tmp_path / "out"
+            out_dir.mkdir()
+            write_jsonl(
+                out_dir / "atomic_requirements.jsonl",
+                [requirement(f"SREQ-00000000000006{index:02X}", confidence=0.70) for index in range(4)],
+            )
+
+            with ScriptedOpenAIService(lambda body, count: {"status": 500, "body": {"error": "down"}}) as service:
+                pipeline_path = tmp_path / "review_pipeline.yaml"
+                write_pipeline_config(pipeline_path, service.base_url)
+                with self.assertRaises(LLMConnectionError):
+                    run_review_pipeline(out_dir, pipeline_path=pipeline_path, route="openai_compatible")
+
+        self.assertEqual(len(service.requests), 2)   # 快探两条即判不可用,不再串行五条
+
     def test_small_batch_all_connection_failures_abort_as_service_unavailable(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -1144,7 +1167,15 @@ class ReviewBatchOptimizationTests(unittest.TestCase):
                         requirements[i], config.model, pipeline, scope_config,
                         batch_member_ids=sub_ids, batch_config=batch_config, evidence=evidence,
                     )
-                    cache[key] = _make_cached_review(requirements[i])
+                    # v7 起缓存值是完整行（read_llm_review_cache 契约）：review 在行内,
+                    # 命中经 cached_review_or_none 做证据依赖校验
+                    cache[key] = {
+                        "stable_req_id": requirements[i]["stable_req_id"],
+                        "model": config.model,
+                        "prompt_version": REVIEW_BATCH_PROMPT_VERSION_CONSTANT,
+                        "input_fingerprint": key[3],
+                        "review": _make_cached_review(requirements[i]),
+                    }
 
             # 若 _dispatch_batch_with_splits 被调用，说明缓存未全部命中
             with patch("llm_pipeline._dispatch_batch_with_splits",

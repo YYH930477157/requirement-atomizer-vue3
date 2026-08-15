@@ -99,7 +99,8 @@
             "table-structure-v5",
             "table-structure-v6",
             "table-structure-v7",
-            "table-structure-v8"
+            "table-structure-v8",
+            "table-structure-v9"
           ]
         }
       },
@@ -417,7 +418,8 @@
         "table-structure-v5",
         "table-structure-v6",
         "table-structure-v7",
-        "table-structure-v8"
+        "table-structure-v8",
+        "table-structure-v9"
       ]
     }
   },

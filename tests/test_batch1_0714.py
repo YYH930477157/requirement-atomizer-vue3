@@ -344,9 +344,10 @@ class BatchEnrichmentTests(unittest.TestCase):
                 {"enrich_slot": 1, "software_requirement_text": "读取对象 0-0:96.1.0.255。"},
             ]}
 
-        results = _llm_enrich_batch(
+        results, _retries = _llm_enrich_batch(   # v2（2026-08-14）：返回 (outcomes, 缺槽重试 jobs)
             [(item_a, req_a, ctx_a, "software"), (item_b, req_b, ctx_b, "software")],
             {"modules": ["安全"]}, chat, {}, "m")
+        self.assertEqual(_retries, [])                       # 两槽齐回,无缺槽重试
         by_id = {r[0]["analysis_id"]: r for r in results}
         self.assertTrue(by_id["SRA-001"][1])                 # A 有据 → 采纳
         self.assertFalse(by_id["SRA-002"][1])                # B 跨条借码 → 硬拒降级
@@ -417,9 +418,9 @@ class SpecEnrichBatchTests(unittest.TestCase):
         self.assertEqual((enriched, rejected, failed), (10, 0, 0))
         batch_calls = [s for s in calls if s == spec_enrich.SYSTEM_PROMPT_BATCH]
         single_calls = [s for s in calls if s == spec_enrich.SYSTEM_PROMPT]
-        self.assertEqual(len(single_calls), 5)           # 快速失败探测样本保持单发
-        self.assertEqual(len(batch_calls), 1)            # 其余 5 条一批（batch=6 装得下）
-        for req in reqs[5:]:
+        self.assertEqual(len(single_calls), 2)           # 快速失败探测样本保持单发（2026-08-14 起 2 条）
+        self.assertEqual(len(batch_calls), 2)            # 其余 8 条按 batch=6 分两批
+        for req in reqs[2:]:
             self.assertIn("改写后的行为描述", req["description"])   # 槽位映射逐条落对
 
     def test_batch_drift_rejected_per_item(self) -> None:
@@ -474,7 +475,8 @@ class SpecEnrichBatchTests(unittest.TestCase):
                 cache_path=Path(td) / "c.jsonl", concurrency=1)
         self.assertEqual((enriched, rejected, failed), (8, 0, 0))
         self.assertEqual(reqs[7]["description"], "单条回退的改写描述")
-        self.assertEqual(len([s for s in calls if s == spec_enrich.SYSTEM_PROMPT]), 6)  # 5 样本+1 回退
+        # 2 探测样本 + 1 缺槽独立单条重试（2026-08-14：重试由编排器发回线程池,不再批内串行）
+        self.assertEqual(len([s for s in calls if s == spec_enrich.SYSTEM_PROMPT]), 3)
 
     def test_batch_env_one_restores_per_item(self) -> None:
         import os

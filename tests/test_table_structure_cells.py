@@ -37,8 +37,13 @@ from requirement_kb import KnowledgeRepository
 from table_structure import (
     TABLE_CELL_ITEM_SCHEMA,
     TABLE_STRUCTURE_VERSION,
+    analyze_table,
+    build_cell_items,
     cell_context_text,
+    effective_headers,
     physical_data_row_indexes,
+    plan_table_leaves,
+    table_geometry_context,
 )
 
 
@@ -1523,6 +1528,202 @@ class BlockSequenceStabilityTests(unittest.TestCase):
         self.assertTrue(all(item["table_block_id"] == "BLK-000003" for item in items))
         self.assertTrue(all(cell["table_block_id"] == "BLK-000003" for cell in cells))
         self.assertTrue(all(cell["schema"] == TABLE_CELL_ITEM_SCHEMA for cell in cells))
+
+
+class SharedGeometryEquivalenceTests(unittest.TestCase):
+    """性能修复（set 提升/共享几何/预计算角色集与最近分组标题）不得改变输出。
+
+    PINNED_PLAN / PINNED_CELL_PROJECTION 于 2026-08-14 在性能改动前捕获（同一
+    fixture）；plan 与 cell 投影逐字节不变即证 fix 1-4 是纯性能优化。fixture 覆盖：
+    全宽合并标题、表头结构行、分组标题行、事实列 marker 格、多义务格、未类型化
+    冒号规格、元数据行、unsignaled 数据格、纵向合并 anchor 身份继承。"""
+
+    MATRIX = [
+        ["Electrical requirements", "", "", "", ""],
+        ["Parameter", "Requirement", "Note", "GET", "SET"],
+        ["General group", "", "", "", ""],
+        ["Voltage", "The meter shall operate at 230 V. The meter shall tolerate 10%.", "", "X", ""],
+        ["", "Mode: AUTO", "see manual", "", ""],
+        ["Current", "Owner: ACME", "", "", ""],
+    ]
+    MERGES = [(1, 1, 1, 5), (3, 1, 3, 5), (4, 1, 5, 1)]
+    HEADERS = ["Parameter", "Requirement", "Note", "GET", "SET"]
+
+    PINNED_PLAN = {
+        "mode": "mixed",
+        "row_leaves": [6],
+        "cell_leaves": [(4, 4), (4, 2)],
+        "context_cells": [
+            (1, 1), (2, 1), (2, 2), (2, 3), (2, 4), (2, 5),
+            (3, 1), (4, 1), (5, 2), (5, 3),
+        ],
+        "multi_duty_cells": [(4, 2)],
+        "weak_signal_cells": [],
+        "unsignaled_data_cells": [(5, 3)],
+        "ambiguous_structure_cells": [],
+        "untyped_colon_spec_cells": [(5, 2)],
+        "tender_commercial_cells": [],
+    }
+
+    PINNED_CELL_PROJECTION = [
+        ("TBL-000001-R000001-C000001", "title", "context", []),
+        ("TBL-000001-R000002-C000001", "header", "context", []),
+        ("TBL-000001-R000002-C000002", "header", "context", [{"header": "Parameter", "value": "Parameter"}]),
+        ("TBL-000001-R000002-C000003", "header", "context", [{"header": "Parameter", "value": "Parameter"}, {"header": "Requirement", "value": "Requirement"}]),
+        ("TBL-000001-R000002-C000004", "header", "context", [{"header": "Parameter", "value": "Parameter"}, {"header": "Requirement", "value": "Requirement"}, {"header": "Note", "value": "Note"}]),
+        ("TBL-000001-R000002-C000005", "header", "context", [{"header": "Parameter", "value": "Parameter"}, {"header": "Requirement", "value": "Requirement"}, {"header": "Note", "value": "Note"}, {"header": "GET", "value": "GET"}]),
+        ("TBL-000001-R000003-C000001", "group_header", "context", []),
+        ("TBL-000001-R000004-C000001", "data", "context", [{"header": "", "value": "General group"}]),
+        ("TBL-000001-R000004-C000002", "data", "cell", [{"header": "", "value": "General group"}, {"header": "Parameter", "value": "Voltage"}]),
+        ("TBL-000001-R000004-C000004", "data", "cell", [{"header": "", "value": "General group"}, {"header": "Parameter", "value": "Voltage"}]),
+        ("TBL-000001-R000005-C000002", "data", "context", [{"header": "", "value": "General group"}, {"header": "Parameter", "value": "Voltage"}]),
+        ("TBL-000001-R000005-C000003", "data", "context", [{"header": "", "value": "General group"}, {"header": "Parameter", "value": "Voltage"}, {"header": "Requirement", "value": "Mode: AUTO"}]),
+        ("TBL-000001-R000006-C000001", "data", "row", [{"header": "", "value": "General group"}]),
+        ("TBL-000001-R000006-C000002", "data", "row", [{"header": "", "value": "General group"}, {"header": "Parameter", "value": "Current"}]),
+    ]
+
+    def _structure(self) -> dict:
+        return analyze_table(self.MATRIX, merge_ranges=self.MERGES)
+
+    def _plan(self, structure: dict, geometry: dict | None = None) -> dict:
+        return plan_table_leaves(
+            structure,
+            self.MATRIX,
+            table_kind="parameter",
+            merge_ranges=self.MERGES,
+            headers=self.HEADERS,
+            fact_columns={3, 4},
+            geometry=geometry,
+        )
+
+    def _cells(self, structure: dict, plan: dict, geometry: dict | None = None) -> list[dict]:
+        return build_cell_items(
+            self.MATRIX,
+            None,
+            structure,
+            plan,
+            table_id="TBL-000001",
+            block_id="BLK-000002",
+            table_title="T",
+            section_path=["S"],
+            headers=self.HEADERS,
+            table_kind="parameter",
+            source_format="docx",
+            merge_ranges=self.MERGES,
+            geometry=geometry,
+        )
+
+    def test_plan_matches_pre_change_baseline(self) -> None:
+        self.assertEqual(self._plan(self._structure()), self.PINNED_PLAN)
+
+    def test_cell_projection_matches_pre_change_baseline(self) -> None:
+        cells = self._cells(self._structure(), self._plan(self._structure()))
+        projection = [
+            (cell["cell_id"], cell["structural_role"], cell["leaf_kind"], cell["row_header_entries"])
+            for cell in cells
+        ]
+        self.assertEqual(projection, self.PINNED_CELL_PROJECTION)
+
+    def test_shared_geometry_outputs_identical(self) -> None:
+        structure = self._structure()
+        geometry = table_geometry_context(
+            self.MATRIX,
+            width=structure["width"],
+            data_rows=structure["data_row_indexes"],
+            merge_ranges=self.MERGES,
+        )
+        plan_plain = self._plan(structure)
+        plan_shared = self._plan(structure, geometry=geometry)
+        self.assertEqual(plan_plain, plan_shared)
+        cells_plain = self._cells(structure, plan_plain)
+        cells_shared = self._cells(structure, plan_plain, geometry=geometry)
+        self.assertEqual(cells_plain, cells_shared)
+        # atomize 主路径（build_table_artifacts 内部走共享几何）同样与基准一致
+        block, _items, block_cells = _artifacts(
+            self.MATRIX, merges=self.MERGES, title="T"
+        )
+        self.assertEqual(block["leaf_plan"]["mode"], self.PINNED_PLAN["mode"])
+        self.assertEqual(block["leaf_plan"]["cell_leaves"], [
+            f"TBL-000001-R{row:06d}-C{column:06d}"
+            for row, column in self.PINNED_PLAN["cell_leaves"]
+        ])
+        self.assertEqual(block["leaf_plan"]["context_cells"], [
+            f"TBL-000001-R{row:06d}-C{column:06d}"
+            for row, column in self.PINNED_PLAN["context_cells"]
+        ])
+        self.assertEqual(
+            [(cell["cell_id"], cell["leaf_kind"]) for cell in block_cells],
+            [(cell_id, leaf) for cell_id, _role, leaf, _entries in self.PINNED_CELL_PROJECTION],
+        )
+
+
+class LetteredCompositeHeaderBeyondJTests(unittest.TestCase):
+    """table-structure-v9：字母复合表头从 (a)..(j) 扩到 (a)..(z)。
+
+    第 11 列 (k) 起可识别为显式复合表头且前缀从有效列名中剥离；序列仍必须
+    从 (a) 起连续——续表 (b).. 不触发（设计红线）。"""
+
+    NAMES = [
+        "Voltage", "Current", "Power", "Energy", "Demand", "Frequency",
+        "Phase", "Time", "Tariff", "Load", "Status",
+    ]
+    DATA_ROW = [
+        "Meter", "230 V", "10 A", "100 W", "50 kWh", "6 kW",
+        "50 Hz", "3", "24 h", "T1", "80%", "OK",
+    ]
+
+    def test_version_bumped_to_v9(self) -> None:
+        self.assertEqual(TABLE_STRUCTURE_VERSION, "table-structure-v9")
+
+    def test_inline_lettered_headers_through_k(self) -> None:
+        matrix = [
+            ["Item"] + [f"({letter}) {name}" for letter, name in zip("abcdefghijk", self.NAMES)],
+            list(self.DATA_ROW),
+        ]
+        structure = analyze_table(matrix)
+        self.assertEqual(structure["header_row_indexes"], [1])
+        self.assertEqual(structure["header_detection_status"], "explicit")
+        self.assertIn(
+            "lettered_composite_header:inline:a,b,c,d,e,f,g,h,i,j,k",
+            structure["header_detection_evidence"],
+        )
+        # 字母前缀只进结构 evidence，不进有效列名
+        self.assertEqual(
+            effective_headers([matrix[0]], structure["width"]),
+            ["Item", *self.NAMES],
+        )
+
+    def test_stacked_lettered_headers_through_k(self) -> None:
+        matrix = [
+            ["Item"] + [f"({letter})" for letter in "abcdefghijk"],
+            [""] + self.NAMES,
+            list(self.DATA_ROW),
+        ]
+        structure = analyze_table(matrix)
+        self.assertEqual(structure["header_row_indexes"], [1, 2])
+        self.assertEqual(structure["header_detection_status"], "explicit")
+        self.assertIn(
+            "lettered_composite_header:stacked:a,b,c,d,e,f,g,h,i,j,k",
+            structure["header_detection_evidence"],
+        )
+        self.assertEqual(
+            effective_headers([matrix[0], matrix[1]], structure["width"]),
+            ["Item", *self.NAMES],
+        )
+
+    def test_sequence_not_starting_at_a_stays_unrecognized(self) -> None:
+        matrix = [
+            ["Item"] + [f"({letter}) {name}" for letter, name in zip("bcdefghijkl", self.NAMES)],
+            list(self.DATA_ROW),
+        ]
+        structure = analyze_table(matrix)
+        self.assertNotEqual(structure["header_detection_status"], "explicit")
+        self.assertFalse(
+            any(
+                "lettered_composite_header" in item
+                for item in structure["header_detection_evidence"]
+            )
+        )
 
 
 if __name__ == "__main__":

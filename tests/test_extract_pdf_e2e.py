@@ -109,6 +109,53 @@ class ExtractPdfE2ETests(unittest.TestCase):
             _starts_new_paragraph(previous, custom_heading, page_height=1000, document_profile=custom_profile)
         )
 
+    def test_page_word_memo_and_fallback_paths_produce_identical_output(self) -> None:
+        """页词 memo（紧凑元组形）与超页数上限的回退路径必须产出逐字节一致的结果。
+
+        回退触发方式：把 PDF_PAGE_WORD_MEMO_MAX_PAGES 压到 0 强制放弃 memo，
+        主循环回到每页现抽的旧版 2x 行为。同时用 _extract_page_words 调用计数
+        证明两条路径确实走了不同分支（memo=检测遍一遍；回退=检测+主循环两遍），
+        避免"两条路径其实同路"的空通过。"""
+        import pdfplumber
+        from unittest import mock
+
+        from parsers import pdf_parser
+
+        input_path = FIXTURES / "sample_text_tables.pdf"
+        with pdfplumber.open(input_path) as probe:
+            page_count = len(probe.pages)
+        self.assertGreaterEqual(page_count, 1)
+
+        original_extract = pdf_parser._extract_page_words
+
+        def run(threshold: int | None) -> tuple[tuple[list, list, list], int]:
+            calls = {"count": 0}
+
+            def counting(page: object, **kwargs: object) -> list[dict]:
+                calls["count"] += 1
+                return original_extract(page, **kwargs)
+
+            with mock.patch.object(pdf_parser, "_extract_page_words", new=counting):
+                if threshold is None:
+                    result = extract_pdf(input_path, knowledge_bases=[], document_profile=None)
+                else:
+                    with mock.patch.object(pdf_parser, "PDF_PAGE_WORD_MEMO_MAX_PAGES", threshold):
+                        result = extract_pdf(input_path, knowledge_bases=[], document_profile=None)
+            return result, calls["count"]
+
+        memo_result, memo_calls = run(None)
+        fallback_result, fallback_calls = run(0)
+
+        self.assertTrue(memo_result[0])   # 非空文档，等价断言不空转
+        self.assertEqual(memo_calls, page_count)          # 检测遍一遍，主循环走 memo
+        self.assertEqual(fallback_calls, 2 * page_count)  # memo 放弃，主循环每页现抽
+
+        for memo_part, fallback_part in zip(memo_result, fallback_result):
+            self.assertEqual(
+                json.dumps(memo_part, ensure_ascii=False, sort_keys=True),
+                json.dumps(fallback_part, ensure_ascii=False, sort_keys=True),
+            )
+
     def test_run_atomizer_pipeline_dispatches_pdf_and_writes_manifest_format(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

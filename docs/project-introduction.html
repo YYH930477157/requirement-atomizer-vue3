@@ -1,0 +1,1547 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Requirement Atomizer 项目介绍：从技术标准解析、证据审查到研发需求交付的本地需求工程流水线。">
+  <title>Requirement Atomizer | 项目介绍</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #182033;
+      --ink-soft: #49556a;
+      --muted: #748096;
+      --line: #dfe4ec;
+      --line-strong: #c8d0dc;
+      --paper: #ffffff;
+      --canvas: #f4f6f9;
+      --blue: #2b56f5;
+      --blue-soft: #eef2ff;
+      --green: #197a55;
+      --green-soft: #e8f5ef;
+      --amber: #a66709;
+      --amber-soft: #fff3d9;
+      --red: #bb3038;
+      --red-soft: #fdebed;
+      --teal: #176f73;
+      --teal-soft: #e6f4f4;
+      --code: #101827;
+      --shadow: 0 18px 48px rgba(31, 42, 68, 0.10);
+      --radius: 8px;
+      --content: 1180px;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      margin: 0;
+      background: var(--paper);
+      color: var(--ink);
+      font-family: "Segoe UI", "Microsoft YaHei", "PingFang SC", Arial, sans-serif;
+      font-size: 16px;
+      line-height: 1.65;
+      letter-spacing: 0;
+    }
+
+    a {
+      color: inherit;
+      text-decoration-color: #a9b7d7;
+      text-underline-offset: 4px;
+    }
+
+    a:hover {
+      color: var(--blue);
+    }
+
+    code,
+    pre {
+      font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+    }
+
+    code {
+      overflow-wrap: anywhere;
+    }
+
+    .skip-link {
+      position: fixed;
+      top: 8px;
+      left: 8px;
+      z-index: 100;
+      padding: 8px 12px;
+      background: var(--ink);
+      color: #fff;
+      border-radius: 6px;
+      transform: translateY(-140%);
+    }
+
+    .skip-link:focus {
+      transform: translateY(0);
+    }
+
+    .shell {
+      width: min(calc(100% - 40px), var(--content));
+      margin: 0 auto;
+    }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      border-bottom: 1px solid rgba(223, 228, 236, 0.92);
+      background: rgba(255, 255, 255, 0.96);
+      backdrop-filter: blur(14px);
+    }
+
+    .topbar-inner {
+      min-height: 58px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 24px;
+    }
+
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      color: var(--ink);
+      text-decoration: none;
+      font-weight: 750;
+      white-space: nowrap;
+    }
+
+    .brand-mark {
+      width: 30px;
+      height: 30px;
+      display: grid;
+      place-items: center;
+      border-radius: 6px;
+      background: var(--ink);
+      color: #fff;
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .topnav {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 4px 18px;
+      flex-wrap: wrap;
+      font-size: 13px;
+      color: var(--ink-soft);
+    }
+
+    .topnav a {
+      text-decoration: none;
+    }
+
+    .cover {
+      padding: 68px 0 48px;
+      background: var(--canvas);
+      border-bottom: 1px solid var(--line);
+    }
+
+    .eyebrow {
+      margin: 0 0 14px;
+      color: var(--blue);
+      font-size: 13px;
+      font-weight: 750;
+      text-transform: uppercase;
+    }
+
+    h1,
+    h2,
+    h3,
+    p {
+      overflow-wrap: anywhere;
+    }
+
+    h1 {
+      margin: 0;
+      max-width: 900px;
+      font-size: 46px;
+      line-height: 1.1;
+      font-weight: 780;
+      letter-spacing: 0;
+    }
+
+    .cover-subtitle {
+      margin: 14px 0 0;
+      font-size: 24px;
+      line-height: 1.35;
+      font-weight: 650;
+      color: var(--ink-soft);
+    }
+
+    .cover-summary {
+      max-width: 900px;
+      margin: 18px 0 0;
+      color: var(--ink-soft);
+      font-size: 17px;
+    }
+
+    .fact-strip {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 0;
+      margin-top: 34px;
+      border-top: 1px solid var(--line-strong);
+      border-bottom: 1px solid var(--line-strong);
+    }
+
+    .fact {
+      min-height: 86px;
+      padding: 16px 20px 14px 0;
+    }
+
+    .fact + .fact {
+      padding-left: 20px;
+      border-left: 1px solid var(--line-strong);
+    }
+
+    .fact strong {
+      display: block;
+      font-size: 22px;
+      line-height: 1.2;
+      color: var(--ink);
+    }
+
+    .fact span {
+      display: block;
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .product-preview {
+      margin-top: 38px;
+      overflow: hidden;
+      border: 1px solid var(--line-strong);
+      border-radius: var(--radius);
+      background: var(--paper);
+      box-shadow: var(--shadow);
+    }
+
+    .preview-bar {
+      min-height: 50px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+      padding: 10px 16px;
+      border-bottom: 1px solid var(--line);
+      background: #fbfcfe;
+    }
+
+    .preview-title {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      min-width: 0;
+      font-weight: 700;
+      font-size: 13px;
+    }
+
+    .preview-title-dot {
+      width: 9px;
+      height: 9px;
+      flex: 0 0 auto;
+      border-radius: 50%;
+      background: var(--green);
+      box-shadow: 0 0 0 4px var(--green-soft);
+    }
+
+    .preview-file {
+      min-width: 0;
+      overflow: hidden;
+      color: var(--muted);
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 12px;
+    }
+
+    .relay {
+      padding: 18px 20px 16px;
+      border-bottom: 1px solid var(--line);
+      background: #fff;
+    }
+
+    .relay-meta {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 10px;
+      font-size: 11px;
+      color: var(--muted);
+    }
+
+    .relay-meta strong {
+      color: var(--blue);
+      font-size: 12px;
+    }
+
+    .relay-rail {
+      position: relative;
+      height: 6px;
+      overflow: hidden;
+      border-radius: 3px;
+      background: #e8ecf3;
+    }
+
+    .relay-fill {
+      position: absolute;
+      inset: 0 auto 0 0;
+      width: 63%;
+      background: var(--blue);
+    }
+
+    .relay-runner {
+      position: absolute;
+      top: 50%;
+      left: 4px;
+      width: 11px;
+      height: 11px;
+      border: 2px solid #fff;
+      border-radius: 50%;
+      background: var(--amber);
+      box-shadow: 0 0 0 3px rgba(166, 103, 9, 0.18);
+      transform: translateY(-50%);
+      animation: relay-run 4.2s ease-in-out infinite;
+    }
+
+    @keyframes relay-run {
+      0% { left: 4px; }
+      16% { left: 20%; }
+      34% { left: 39%; }
+      52% { left: 62%; }
+      72%, 100% { left: calc(63% - 9px); }
+    }
+
+    .relay-labels {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+      gap: 8px;
+      margin-top: 9px;
+      font-size: 10px;
+      color: var(--muted);
+      text-align: center;
+    }
+
+    .relay-labels .done {
+      color: var(--green);
+      font-weight: 700;
+    }
+
+    .relay-labels .active {
+      color: var(--blue);
+      font-weight: 750;
+    }
+
+    .workspace-preview {
+      display: grid;
+      grid-template-columns: minmax(0, 1.45fr) minmax(310px, 0.8fr);
+      min-height: 410px;
+    }
+
+    .source-pane,
+    .result-pane {
+      min-width: 0;
+      padding: 22px;
+    }
+
+    .source-pane {
+      border-right: 1px solid var(--line);
+      background: #fff;
+    }
+
+    .result-pane {
+      background: #fafbfd;
+    }
+
+    .pane-heading {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .pane-heading strong {
+      font-size: 13px;
+    }
+
+    .pane-heading span {
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .source-content {
+      max-width: 720px;
+      margin: 22px auto 0;
+      color: #394459;
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: 14px;
+      line-height: 1.75;
+    }
+
+    .source-content h3 {
+      margin: 0 0 12px;
+      font-size: 18px;
+      color: #222a3b;
+    }
+
+    .source-content p {
+      margin: 0 0 15px;
+    }
+
+    .source-highlight {
+      position: relative;
+      margin: 18px -12px;
+      padding: 13px 132px 13px 15px;
+      border-left: 3px solid var(--blue);
+      background: var(--blue-soft);
+    }
+
+    .annotation-ref {
+      position: absolute;
+      top: 13px;
+      right: 12px;
+      padding: 2px 7px;
+      border: 1px solid #b9c8fb;
+      border-radius: 6px;
+      color: var(--blue);
+      background: #fff;
+      font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+      font-size: 10px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .result-kicker {
+      margin: 18px 0 4px;
+      color: var(--blue);
+      font-size: 11px;
+      font-weight: 750;
+    }
+
+    .result-title {
+      margin: 0;
+      color: var(--ink);
+      font-size: 18px;
+      line-height: 1.35;
+    }
+
+    .status-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 7px;
+      margin: 14px 0 18px;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 24px;
+      padding: 2px 8px;
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 650;
+    }
+
+    .pill.blue { color: var(--blue); background: var(--blue-soft); }
+    .pill.green { color: var(--green); background: var(--green-soft); }
+    .pill.amber { color: var(--amber); background: var(--amber-soft); }
+
+    .detail-list {
+      margin: 0;
+      display: grid;
+      grid-template-columns: 92px minmax(0, 1fr);
+      border-top: 1px solid var(--line);
+      font-size: 12px;
+    }
+
+    .detail-list dt,
+    .detail-list dd {
+      margin: 0;
+      padding: 9px 0;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .detail-list dt {
+      color: var(--muted);
+    }
+
+    .detail-list dd {
+      color: var(--ink-soft);
+    }
+
+    .evidence-quote {
+      margin: 18px 0 0;
+      padding-left: 12px;
+      border-left: 3px solid #b8c1cf;
+      color: var(--ink-soft);
+      font-size: 12px;
+      font-style: italic;
+    }
+
+    .section {
+      padding: 76px 0;
+      scroll-margin-top: 64px;
+    }
+
+    .section.alt {
+      background: var(--canvas);
+      border-top: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+    }
+
+    .section-heading {
+      max-width: 820px;
+      margin-bottom: 34px;
+    }
+
+    .section-number {
+      margin: 0 0 8px;
+      color: var(--blue);
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    h2 {
+      margin: 0;
+      font-size: 32px;
+      line-height: 1.22;
+      font-weight: 760;
+      letter-spacing: 0;
+    }
+
+    .section-heading p {
+      margin: 13px 0 0;
+      color: var(--ink-soft);
+      font-size: 16px;
+    }
+
+    .problem-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 20px;
+    }
+
+    .problem-item,
+    .capability,
+    .track,
+    .principle {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: #fff;
+    }
+
+    .problem-item {
+      padding: 24px;
+    }
+
+    .problem-index {
+      display: grid;
+      width: 32px;
+      height: 32px;
+      place-items: center;
+      margin-bottom: 18px;
+      border-radius: 6px;
+      color: #fff;
+      background: var(--ink);
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    h3 {
+      margin: 0;
+      font-size: 18px;
+      line-height: 1.35;
+      font-weight: 730;
+      letter-spacing: 0;
+    }
+
+    .problem-item p,
+    .capability p,
+    .principle p {
+      margin: 10px 0 0;
+      color: var(--ink-soft);
+      font-size: 14px;
+    }
+
+    .track-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 22px;
+    }
+
+    .track {
+      overflow: hidden;
+    }
+
+    .track-head {
+      padding: 22px 24px 18px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .track-a .track-head { border-top: 4px solid var(--teal); }
+    .track-b .track-head { border-top: 4px solid var(--amber); }
+
+    .track-label {
+      display: block;
+      margin-bottom: 6px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 750;
+      text-transform: uppercase;
+    }
+
+    .track-body {
+      padding: 20px 24px 24px;
+    }
+
+    .track-body dl {
+      display: grid;
+      grid-template-columns: 96px minmax(0, 1fr);
+      gap: 9px 14px;
+      margin: 0;
+      font-size: 13px;
+    }
+
+    .track-body dt {
+      color: var(--muted);
+    }
+
+    .track-body dd {
+      margin: 0;
+      color: var(--ink-soft);
+    }
+
+    .flow {
+      position: relative;
+      display: grid;
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .flow::before {
+      content: "";
+      position: absolute;
+      top: 22px;
+      left: 5%;
+      right: 5%;
+      height: 2px;
+      background: var(--line-strong);
+    }
+
+    .flow-step {
+      position: relative;
+      min-width: 0;
+      text-align: center;
+    }
+
+    .flow-dot {
+      position: relative;
+      z-index: 1;
+      display: grid;
+      width: 44px;
+      height: 44px;
+      place-items: center;
+      margin: 0 auto 14px;
+      border: 5px solid var(--paper);
+      border-radius: 50%;
+      background: var(--blue);
+      color: #fff;
+      box-shadow: 0 0 0 1px var(--line-strong);
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .flow-step:nth-child(2) .flow-dot { background: var(--teal); }
+    .flow-step:nth-child(3) .flow-dot { background: var(--amber); }
+    .flow-step:nth-child(4) .flow-dot { background: var(--red); }
+    .flow-step:nth-child(5) .flow-dot { background: var(--green); }
+    .flow-step:nth-child(6) .flow-dot { background: var(--ink); }
+
+    .flow-step h3 {
+      font-size: 14px;
+    }
+
+    .flow-step p {
+      margin: 7px 0 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.55;
+    }
+
+    .capability-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 18px;
+    }
+
+    .capability {
+      padding: 22px;
+    }
+
+    .capability-tag {
+      display: inline-flex;
+      min-height: 24px;
+      align-items: center;
+      margin-bottom: 14px;
+      padding: 2px 8px;
+      border-radius: 6px;
+      color: var(--blue);
+      background: var(--blue-soft);
+      font-size: 10px;
+      font-weight: 800;
+      text-transform: uppercase;
+    }
+
+    .capability:nth-child(2) .capability-tag,
+    .capability:nth-child(5) .capability-tag { color: var(--teal); background: var(--teal-soft); }
+    .capability:nth-child(3) .capability-tag,
+    .capability:nth-child(6) .capability-tag { color: var(--amber); background: var(--amber-soft); }
+
+    .principle-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 18px;
+    }
+
+    .principle {
+      display: grid;
+      grid-template-columns: 42px minmax(0, 1fr);
+      gap: 15px;
+      padding: 20px;
+    }
+
+    .principle-mark {
+      display: grid;
+      width: 38px;
+      height: 38px;
+      place-items: center;
+      border-radius: 7px;
+      color: var(--green);
+      background: var(--green-soft);
+      font-size: 16px;
+      font-weight: 850;
+    }
+
+    .principle:nth-child(2) .principle-mark { color: var(--amber); background: var(--amber-soft); }
+    .principle:nth-child(3) .principle-mark { color: var(--blue); background: var(--blue-soft); }
+    .principle:nth-child(4) .principle-mark { color: var(--teal); background: var(--teal-soft); }
+    .principle:nth-child(5) .principle-mark { color: var(--red); background: var(--red-soft); }
+    .principle:nth-child(6) .principle-mark { color: var(--ink); background: #e9edf3; }
+
+    .architecture {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 80px minmax(0, 1.25fr) 80px minmax(0, 1fr);
+      align-items: stretch;
+      gap: 12px;
+    }
+
+    .arch-column {
+      min-width: 0;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: #fff;
+      overflow: hidden;
+    }
+
+    .arch-head {
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--line);
+      color: #fff;
+      background: var(--ink);
+      font-size: 13px;
+      font-weight: 750;
+    }
+
+    .arch-column:nth-of-type(3) .arch-head { background: var(--blue); }
+    .arch-column:nth-of-type(5) .arch-head { background: var(--teal); }
+
+    .arch-list {
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .arch-list li {
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--line);
+      color: var(--ink-soft);
+      font-size: 12px;
+    }
+
+    .arch-list li:last-child {
+      border-bottom: 0;
+    }
+
+    .arch-list strong {
+      display: block;
+      color: var(--ink);
+      font-size: 13px;
+    }
+
+    .arch-arrow {
+      display: grid;
+      place-items: center;
+      color: var(--muted);
+      font-size: 24px;
+      font-weight: 400;
+    }
+
+    .table-wrap {
+      overflow-x: auto;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: #fff;
+      font-size: 13px;
+    }
+
+    th,
+    td {
+      padding: 13px 15px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      color: var(--ink);
+      background: #f8f9fc;
+      font-weight: 750;
+      white-space: nowrap;
+    }
+
+    td {
+      color: var(--ink-soft);
+    }
+
+    tbody tr:last-child td {
+      border-bottom: 0;
+    }
+
+    .file-name {
+      color: var(--blue);
+      font-family: "Cascadia Code", Consolas, monospace;
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    .ops-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.1fr) minmax(300px, 0.9fr);
+      gap: 28px;
+      align-items: start;
+    }
+
+    .ops-grid > *,
+    .stack-list > * {
+      min-width: 0;
+    }
+
+    .stack-list {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .stack-item {
+      padding: 14px 16px;
+      border-left: 3px solid var(--blue);
+      background: #fff;
+    }
+
+    .stack-item:nth-child(2) { border-color: var(--teal); }
+    .stack-item:nth-child(3) { border-color: var(--amber); }
+    .stack-item:nth-child(4) { border-color: var(--green); }
+
+    .stack-item strong {
+      display: block;
+      font-size: 13px;
+    }
+
+    .stack-item span {
+      display: block;
+      margin-top: 3px;
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .boundary-box {
+      border: 1px solid var(--line-strong);
+      border-radius: var(--radius);
+      background: #fff;
+      overflow: hidden;
+    }
+
+    .boundary-head {
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--line);
+      color: var(--amber);
+      background: var(--amber-soft);
+      font-size: 13px;
+      font-weight: 750;
+    }
+
+    .boundary-list {
+      margin: 0;
+      padding: 14px 18px 16px 34px;
+      color: var(--ink-soft);
+      font-size: 12px;
+    }
+
+    .boundary-list li + li {
+      margin-top: 8px;
+    }
+
+    .quick-start {
+      min-width: 0;
+      max-width: 100%;
+      margin-top: 30px;
+      overflow: hidden;
+      border-radius: var(--radius);
+      background: var(--code);
+      color: #e6edf7;
+    }
+
+    .quick-start-head {
+      padding: 12px 16px;
+      border-bottom: 1px solid #2a3547;
+      color: #aab7ca;
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    .quick-start pre {
+      max-width: 100%;
+      margin: 0;
+      padding: 18px;
+      overflow-x: auto;
+      color: #edf3ff;
+      font-size: 12px;
+      line-height: 1.75;
+    }
+
+    .footer {
+      padding: 30px 0 44px;
+      border-top: 1px solid var(--line);
+      background: #fff;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .footer-inner {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 24px;
+    }
+
+    .footer strong {
+      display: block;
+      margin-bottom: 4px;
+      color: var(--ink);
+      font-size: 13px;
+    }
+
+    .footer-links {
+      display: flex;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+
+    @media (max-width: 980px) {
+      .topbar-inner {
+        align-items: flex-start;
+        padding: 12px 0;
+      }
+
+      .fact-strip,
+      .problem-grid,
+      .capability-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .fact:nth-child(3) {
+        padding-left: 0;
+        border-left: 0;
+        border-top: 1px solid var(--line-strong);
+      }
+
+      .fact:nth-child(4) {
+        border-top: 1px solid var(--line-strong);
+      }
+
+      .workspace-preview {
+        grid-template-columns: 1fr;
+      }
+
+      .source-pane {
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .flow {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        row-gap: 28px;
+      }
+
+      .flow::before {
+        display: none;
+      }
+
+      .architecture {
+        grid-template-columns: 1fr;
+      }
+
+      .arch-arrow {
+        height: 38px;
+        transform: rotate(90deg);
+      }
+    }
+
+    @media (max-width: 720px) {
+      .shell {
+        width: min(calc(100% - 24px), var(--content));
+      }
+
+      .topbar {
+        position: static;
+      }
+
+      .topbar-inner,
+      .footer-inner {
+        display: block;
+      }
+
+      .topnav {
+        justify-content: flex-start;
+        margin-top: 10px;
+      }
+
+      .cover {
+        padding: 38px 0 30px;
+      }
+
+      h1 {
+        font-size: 35px;
+      }
+
+      .cover-subtitle {
+        font-size: 20px;
+      }
+
+      .cover-summary {
+        margin-top: 14px;
+        font-size: 16px;
+        line-height: 1.6;
+      }
+
+      .problem-grid,
+      .track-grid,
+      .capability-grid,
+      .principle-grid,
+      .ops-grid,
+      .stack-list {
+        grid-template-columns: 1fr;
+      }
+
+      .fact-strip {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        margin-top: 24px;
+      }
+
+      .fact,
+      .fact + .fact,
+      .fact:nth-child(3) {
+        min-height: 78px;
+        padding: 13px 10px;
+        border-left: 0;
+        border-top: 1px solid var(--line-strong);
+      }
+
+      .fact:nth-child(-n + 2) {
+        border-top: 0;
+      }
+
+      .fact:nth-child(odd) {
+        padding-left: 0;
+      }
+
+      .fact:nth-child(even) {
+        padding-right: 0;
+        border-left: 1px solid var(--line-strong);
+      }
+
+      .fact strong {
+        font-size: 20px;
+      }
+
+      .product-preview {
+        margin-top: 28px;
+      }
+
+      .preview-bar {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+
+      .relay-labels {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        row-gap: 6px;
+      }
+
+      .source-pane,
+      .result-pane {
+        padding: 16px;
+      }
+
+      .source-highlight {
+        padding: 13px 15px 42px;
+      }
+
+      .annotation-ref {
+        top: auto;
+        right: auto;
+        bottom: 10px;
+        left: 15px;
+      }
+
+      .section {
+        padding: 56px 0;
+      }
+
+      h2 {
+        font-size: 27px;
+      }
+
+      .flow {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .track-body dl {
+        grid-template-columns: 1fr;
+        gap: 3px;
+      }
+
+      .track-body dd + dt {
+        margin-top: 8px;
+      }
+
+      .footer-links {
+        margin-top: 12px;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      html {
+        scroll-behavior: auto;
+      }
+
+      .relay-runner {
+        left: calc(63% - 9px);
+        animation: none;
+      }
+    }
+
+    @media print {
+      :root {
+        --canvas: #fff;
+      }
+
+      body {
+        color: #000;
+        font-size: 11pt;
+      }
+
+      .topbar,
+      .relay-runner {
+        display: none;
+      }
+
+      .cover,
+      .section {
+        padding: 24px 0;
+      }
+
+      .product-preview,
+      .problem-item,
+      .capability,
+      .track,
+      .principle,
+      .arch-column,
+      .table-wrap,
+      .boundary-box,
+      .quick-start {
+        break-inside: avoid;
+        box-shadow: none;
+      }
+
+      a {
+        text-decoration: none;
+      }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#main">跳到正文</a>
+
+  <header class="topbar">
+    <div class="shell topbar-inner">
+      <a class="brand" href="#top" aria-label="返回项目介绍顶部">
+        <span class="brand-mark" aria-hidden="true">RA</span>
+        <span>Requirement Atomizer</span>
+      </a>
+      <nav class="topnav" aria-label="页面导航">
+        <a href="#positioning">项目定位</a>
+        <a href="#workflow">工作流</a>
+        <a href="#capabilities">核心能力</a>
+        <a href="#quality">质量护栏</a>
+        <a href="#architecture">架构</a>
+        <a href="#deliverables">交付物</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="cover" id="top">
+      <div class="shell">
+        <p class="eyebrow">Local-first requirements engineering</p>
+        <h1>Requirement Atomizer</h1>
+        <p class="cover-subtitle">技术标准需求解析与研发交付平台</p>
+        <p class="cover-summary">
+          将 DOCX、XLSX 和文字层 PDF 中分散的条款、表格、对象定义与协议描述，转化为可审查、可追溯、可交付的研发需求。系统以确定性解析建立事实骨架，以受护栏约束的 LLM 补充语义理解，并让专家裁决成为最终质量关口。
+        </p>
+
+        <div class="fact-strip" aria-label="项目概览指标">
+          <div class="fact"><strong>3 类输入</strong><span>DOCX / XLSX / 文字层 PDF</span></div>
+          <div class="fact"><strong>2 条主轨</strong><span>DLMS 对象表轨 / 行为散文轨</span></div>
+          <div class="fact"><strong>5 个审查工具</strong><span>知识库、蓝皮书、原文与覆盖检查</span></div>
+          <div class="fact"><strong>1664+ 回归</strong><span>后端 unittest + 前端契约测试</span></div>
+        </div>
+
+        <div class="product-preview" aria-label="文档批注工作台示意">
+          <div class="preview-bar">
+            <div class="preview-title"><span class="preview-title-dot" aria-hidden="true"></span>文档批注工作台</div>
+            <div class="preview-file">sample-meter-profile.pdf · 本地会话已连接</div>
+          </div>
+
+          <div class="relay" aria-label="流水线进度示意">
+            <div class="relay-meta"><span>运行中的交付链</span><strong>软件需求分析 36 / 58</strong></div>
+            <div class="relay-rail" aria-hidden="true">
+              <span class="relay-fill"></span>
+              <span class="relay-runner"></span>
+            </div>
+            <div class="relay-labels">
+              <span class="done">解析</span>
+              <span class="done">AI 抽取</span>
+              <span class="done">功能重组</span>
+              <span class="active">需求分析</span>
+              <span>模板成文</span>
+              <span>澄清清单</span>
+            </div>
+          </div>
+
+          <div class="workspace-preview">
+            <article class="source-pane">
+              <div class="pane-heading"><strong>PDF 原文</strong><span>第 12 页 · 4.3 Energy registers</span></div>
+              <div class="source-content">
+                <h3>4.3.2 Active energy import</h3>
+                <p>The register represents the cumulative active energy imported by the meter.</p>
+                <p class="source-highlight">
+                  The meter shall expose the cumulative value through OBIS 1-0:1.8.0.255 and shall preserve the value after loss of supply.
+                  <span class="annotation-ref">查看批注 03</span>
+                </p>
+                <p>The value shall remain available to authorized clients according to the configured access rights.</p>
+              </div>
+            </article>
+
+            <aside class="result-pane">
+              <div class="pane-heading"><strong>解析结果</strong><span>03 / 58</span></div>
+              <p class="result-kicker">电能计量</p>
+              <h3 class="result-title">累计正向有功电能与掉电保持</h3>
+              <div class="status-row">
+                <span class="pill blue">软件需求</span>
+                <span class="pill green">编码有据</span>
+                <span class="pill amber">待专家确认</span>
+              </div>
+              <dl class="detail-list">
+                <dt>结构对象</dt><dd><code>OBIS 1-0:1.8.0.255</code></dd>
+                <dt>行为</dt><dd>提供累计正向有功电能，并在掉电后保持该值。</dd>
+                <dt>验收关注</dt><dd>读值可用性、掉电保持、授权访问。</dd>
+                <dt>来源定位</dt><dd>第 12 页，4.3.2，原文块 BLK-000147。</dd>
+              </dl>
+              <p class="evidence-quote">“The meter shall expose ... and shall preserve the value after loss of supply.”</p>
+            </aside>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="positioning">
+      <div class="shell">
+        <div class="section-heading">
+          <p class="section-number">01 / 项目定位</p>
+          <h2>解决的不是“把文档变成文本”，而是把标准变成可执行需求</h2>
+          <p>技术标准的难点在于信息分散、结构混合、引用复杂和责任边界模糊。项目把解析、语义判断、证据核对和专家裁决组织为同一条可审计流水线。</p>
+        </div>
+        <div class="problem-grid">
+          <article class="problem-item">
+            <span class="problem-index">01</span>
+            <h3>从异构文档恢复结构</h3>
+            <p>统一处理章节、段落、表格、对象字段与来源坐标，保留原文块和表格单元格证据，而不是只输出一段不可追溯的摘要。</p>
+          </article>
+          <article class="problem-item">
+            <span class="problem-index">02</span>
+            <h3>从描述中拆出可评审需求</h3>
+            <p>将一段中的行为、条件、数值、例外和验证要求拆成审查单元，同时保留跨条款引用、术语上下文与原文锚点。</p>
+          </article>
+          <article class="problem-item">
+            <span class="problem-index">03</span>
+            <h3>从需求条目走到研发交付</h3>
+            <p>通过专家裁决、功能重组、软硬件归属、模板成文与澄清闭环，把中间原子结果继续装配成研发团队真正使用的规格和工作簿。</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section alt" id="workflow">
+      <div class="shell">
+        <div class="section-heading">
+          <p class="section-number">02 / 双轨方法</p>
+          <h2>根据文档形态选择主轨，而不是让一种抽取逻辑包打天下</h2>
+          <p>对象表密集的 DLMS profile 与行为散文型招标/标准，信息组织方式不同。项目保留 A、B 两条主轨，并在交付层汇合。</p>
+        </div>
+
+        <div class="track-grid">
+          <article class="track track-a">
+            <div class="track-head">
+              <span class="track-label">Track A · deterministic structure</span>
+              <h3>DLMS / COSEM 对象表轨</h3>
+            </div>
+            <div class="track-body">
+              <dl>
+                <dt>适用文档</dt><dd>对象表、OBIS、接口类、属性与访问权限密集的 profile 文档。</dd>
+                <dt>主链</dt><dd>规则原子化 → 可选 LLM 审查 → P1-P5 实现规格装配。</dd>
+                <dt>核心优势</dt><dd>结构字段通过确定性 join 生成，编码与访问位不交给模型猜测。</dd>
+                <dt>主交付物</dt><dd><code>dlms_cosem_spec.*</code>、对象模型、访问矩阵和工程规格。</dd>
+              </dl>
+            </div>
+          </article>
+
+          <article class="track track-b">
+            <div class="track-head">
+              <span class="track-label">Track B · semantic behavior</span>
+              <h3>行为散文与招标文档轨</h3>
+            </div>
+            <div class="track-body">
+              <dl>
+                <dt>适用文档</dt><dd>需求隐藏在自然语言、测试描述和跨章节上下文中的标准或招标文件。</dd>
+                <dt>主链</dt><dd>AI 抽取 → 专家批注 → 功能重组 → 软件需求分析 → 模板成文。</dd>
+                <dt>核心优势</dt><dd>章节级语义抽取配合自检、漂移护栏、遗漏标记和定点补抽。</dd>
+                <dt>主交付物</dt><dd><code>software_requirements.xlsx</code> 与公司模板格式需求列表。</dd>
+              </dl>
+            </div>
+          </article>
+        </div>
+
+        <div class="section-heading" style="margin-top: 58px;">
+          <p class="section-number">端到端链路</p>
+          <h2>六个阶段，把事实、判断和裁决分开</h2>
+        </div>
+
+        <div class="flow" aria-label="端到端流程">
+          <article class="flow-step"><span class="flow-dot">01</span><h3>解析</h3><p>文档块、表格、章节层级与来源坐标。</p></article>
+          <article class="flow-step"><span class="flow-dot">02</span><h3>抽取</h3><p>规则候选或章节级 AI 行为需求。</p></article>
+          <article class="flow-step"><span class="flow-dot">03</span><h3>取证</h3><p>知识库、蓝皮书、原文与覆盖检查。</p></article>
+          <article class="flow-step"><span class="flow-dot">04</span><h3>裁决</h3><p>接受、拒绝、讨论、模块与归属改判。</p></article>
+          <article class="flow-step"><span class="flow-dot">05</span><h3>分析</h3><p>功能重组、研发正文与验收关注点。</p></article>
+          <article class="flow-step"><span class="flow-dot">06</span><h3>交付</h3><p>实现规格、工作簿、批注与澄清清单。</p></article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="capabilities">
+      <div class="shell">
+        <div class="section-heading">
+          <p class="section-number">03 / 核心能力</p>
+          <h2>围绕“清晰展示解析结果”构建的完整工作面</h2>
+          <p>系统不是单次转换脚本。解析结果能够回到原文、进入专家裁决、驱动重建，并继续流向研发交付物。</p>
+        </div>
+        <div class="capability-grid">
+          <article class="capability"><span class="capability-tag">Parse</span><h3>多格式结构解析</h3><p>支持 DOCX、XLSX 与文字层 PDF，输出统一的 blocks、table items、章节和来源定位。</p></article>
+          <article class="capability"><span class="capability-tag">Extract</span><h3>规则与 AI 双引擎</h3><p>结构数据走确定性抽取；行为散文走章节级 LLM、自检和二遍语义复核，并保留降级路径。</p></article>
+          <article class="capability"><span class="capability-tag">Review</span><h3>工具化证据审查</h3><p>模型可调用五个只读工具查询知识库、Blue Book class、原文块和覆盖一致性，调用轮次与预算有硬上限。</p></article>
+          <article class="capability"><span class="capability-tag">Annotate</span><h3>原文联动批注</h3><p>点击 PDF 或文本原文即可查看对应解析；证据区、分析范围、重复回声和失败章节均可定位。</p></article>
+          <article class="capability"><span class="capability-tag">Synthesize</span><h3>功能重组与归属分析</h3><p>过滤被拒条目，投影专家模块/归属改判，保守合并相容需求并保留冲突与来源诊断。</p></article>
+          <article class="capability"><span class="capability-tag">Close loop</span><h3>澄清与遗漏闭环</h3><p>客户答复和内部核对进入审计状态；确认遗漏可定点补抽，并使相关下游阶段按指纹失效重跑。</p></article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section alt" id="quality">
+      <div class="shell">
+        <div class="section-heading">
+          <p class="section-number">04 / 质量护栏</p>
+          <h2>确定性骨架 + 护栏化 LLM + 专家终审</h2>
+          <p>项目的核心纪律是“宁漏勿错”。模型可以帮助理解和叙述，但不能静默改变结构事实，也不能把失败伪装成成功。</p>
+        </div>
+        <div class="principle-grid">
+          <article class="principle"><span class="principle-mark">D</span><div><h3>结构字段确定性</h3><p>OBIS、class_id、访问权限、ID、模块和归属等关键字段由解析、规则或专家裁决控制。</p></div></article>
+          <article class="principle"><span class="principle-mark">G</span><div><h3>数字与编码漂移防护</h3><p>无来源编码硬拒；直接影响研发执行的无据数字拒绝或转“待澄清”，普通叙述风险随条目标记。</p></div></article>
+          <article class="principle"><span class="principle-mark">P</span><div><h3>来源和路由不伪造</h3><p>产物记录 producer、版本、时间和证据；route_requested 与实际 route 分开，stub 不冒充 LLM。</p></div></article>
+          <article class="principle"><span class="principle-mark">C</span><div><h3>缓存血统可失效</h3><p>输入内容、提示词、护栏、工具、模型、风险策略和 domain pack 进入指纹，行为升级不会被旧缓存绕过。</p></div></article>
+          <article class="principle"><span class="principle-mark">L</span><div><h3>共享状态并发安全</h3><p>审查、裁决、manifest 与追加缓存使用跨进程锁、fsync、原子替换及 Windows 文件占用重试。</p></div></article>
+          <article class="principle"><span class="principle-mark">E</span><div><h3>失败边界显式</h3><p>端点不可用、工具循环超限、证据变化或校验失败都会留下可见状态，历史裁决不会静默沿用。</p></div></article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="architecture">
+      <div class="shell">
+        <div class="section-heading">
+          <p class="section-number">05 / 系统架构</p>
+          <h2>桌面界面、本地任务桥与 Python 核心解耦</h2>
+          <p>正式产品采用 Vue3 + Electron；任务通过本地桥接调用 Python 流水线，审查工作台使用本地 API。旧 PySide6 界面保留但已冻结。</p>
+        </div>
+
+        <div class="architecture" aria-label="系统架构图">
+          <section class="arch-column">
+            <div class="arch-head">交互层</div>
+            <ul class="arch-list">
+              <li><strong>Vue3 工作台</strong>运行概览、文档批注、需求与交付物入口</li>
+              <li><strong>Electron 主进程</strong>目录选择、密钥安全存储、后端进程管理</li>
+              <li><strong>离线批注 HTML</strong>可分享的原文与解析结果审查页面</li>
+            </ul>
+          </section>
+
+          <div class="arch-arrow" aria-hidden="true">→</div>
+
+          <section class="arch-column">
+            <div class="arch-head">本地核心</div>
+            <ul class="arch-list">
+              <li><strong>desktop_tasks / api_server</strong>阶段编排、进度事件、manifest 与裁决 API</li>
+              <li><strong>parsers / atomize / ai_extract</strong>结构解析、规则候选与语义抽取</li>
+              <li><strong>llm_pipeline / review_tools</strong>有界工具审查、证据检索和政策合并</li>
+              <li><strong>requirements_analysis / assemble_spec</strong>功能重组、软硬件分析与实现规格装配</li>
+            </ul>
+          </section>
+
+          <div class="arch-arrow" aria-hidden="true">→</div>
+
+          <section class="arch-column">
+            <div class="arch-head">知识与交付</div>
+            <ul class="arch-list">
+              <li><strong>requirement_kb</strong>Obsidian 编译知识库与确定性检索</li>
+              <li><strong>domain_packs / Blue Book</strong>领域模式、风险政策与接口类证据</li>
+              <li><strong>JSONL / XLSX / HTML / MD</strong>机器接口、研发工作簿、批注和人读规格</li>
+            </ul>
+          </section>
+        </div>
+      </div>
+    </section>
+
+    <section class="section alt" id="deliverables">
+      <div class="shell">
+        <div class="section-heading">
+          <p class="section-number">06 / 主要交付物</p>
+          <h2>每一层既能给机器消费，也能给专家和研发人员阅读</h2>
+          <p>输出目录不是一次性临时文件夹，而是带阶段状态、输入指纹、裁决账本和下游交付物的项目工作区。</p>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>阶段</th><th>代表文件</th><th>主要用途</th><th>主要使用者</th></tr></thead>
+            <tbody>
+              <tr><td>解析底座</td><td><span class="file-name">blocks.jsonl</span><br><span class="file-name">table_items.jsonl</span></td><td>保存文档块、表格与来源坐标，是后续溯源底座。</td><td>流水线、调试人员</td></tr>
+              <tr><td>原子需求</td><td><span class="file-name">atomic_requirements.jsonl</span><br><span class="file-name">ai_requirements.jsonl</span></td><td>A/B 两轨的结构候选与行为需求，带来源证据。</td><td>审查系统、需求工程师</td></tr>
+              <tr><td>专家审查</td><td><span class="file-name">document_annotation.html</span><br><span class="file-name">ai_review_states.jsonl</span></td><td>原文联动、批注裁决、模块与软硬件归属覆盖。</td><td>领域专家、审核人</td></tr>
+              <tr><td>功能与分析</td><td><span class="file-name">functional_requirements.json</span><br><span class="file-name">engineering_analysis.json</span></td><td>保守重组相关需求，形成研发行为、条件、约束和验收信息。</td><td>产品、系统与软件团队</td></tr>
+              <tr><td>研发工作簿</td><td><span class="file-name">software_requirements.xlsx</span><br><span class="file-name">软件需求列表-成文.xlsx</span></td><td>软件/协同需求、研发正文、指导、候选方案与验收标准。</td><td>研发、测试、项目管理</td></tr>
+              <tr><td>实现规格</td><td><span class="file-name">dlms_cosem_spec.*</span><br><span class="file-name">engineering_requirements/</span></td><td>对象模型、访问矩阵、行为、外部引用与人读实现规格。</td><td>DLMS/COSEM 开发团队</td></tr>
+              <tr><td>澄清闭环</td><td><span class="file-name">clarification_questions.xlsx</span><br><span class="file-name">run_manifest.json</span></td><td>客户必答、内部核对、就绪判定、阶段状态与血统审计。</td><td>评审会、项目负责人</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="operations">
+      <div class="shell">
+        <div class="section-heading">
+          <p class="section-number">07 / 技术与运行</p>
+          <h2>本地优先部署，LLM 按需启用</h2>
+          <p>默认 stub 路由不调用外部 API。需要语义抽取或叙述富化时，可接入 OpenAI 兼容端点；密钥仅通过环境变量或 Electron 安全存储进入会话。</p>
+        </div>
+
+        <div class="ops-grid">
+          <div>
+            <div class="stack-list">
+              <div class="stack-item"><strong>Python 3.11+</strong><span>解析、抽取、审查、装配与本地 API</span></div>
+              <div class="stack-item"><strong>Vue 3 + TypeScript</strong><span>正式桌面工作台与审查交互</span></div>
+              <div class="stack-item"><strong>Electron + Vite</strong><span>Windows portable 应用与前端构建</span></div>
+              <div class="stack-item"><strong>PyInstaller</strong><span>冻结单文件 Python 后端</span></div>
+            </div>
+
+            <div class="quick-start" aria-label="快速运行命令">
+              <div class="quick-start-head">PowerShell · 典型命令</div>
+              <pre><code># 完整解析与审查
+ratomizer run ".\standard.pdf" --out ".\out\run-001" --export md,csv
+
+# 从专家裁决后的结果生成研发需求
+python -m desktop_tasks functional-synthesis --out ".\out\run-001"
+ratomizer analyze --out ".\out\run-001" --llm-route stub
+
+# 启动 Vue3 + Electron 桌面端
+cd .\ui
+npm run desktop:dev</code></pre>
+            </div>
+          </div>
+
+          <aside class="boundary-box">
+            <div class="boundary-head">当前版本边界</div>
+            <ul class="boundary-list">
+              <li>支持 DOCX、XLSX 和有可提取文字层的 PDF；旧版 XLS 需先另存为 XLSX。</li>
+              <li>扫描件 PDF 的 OCR 尚未纳入当前版本，需先转为可解析文档。</li>
+              <li>LLM 是可选能力；无密钥或端点不可用时会诚实降级，不会伪造模型结果。</li>
+              <li>正式产品界面是 Vue3 + Electron；仓库中的 PySide6 GUI 已冻结。</li>
+              <li>Windows portable 当前未签名，分发时可能触发 SmartScreen 提示。</li>
+            </ul>
+          </aside>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="shell footer-inner">
+      <div>
+        <strong>Requirement Atomizer · 项目介绍</strong>
+        <span>内容基线：2026-07-26 · <code>main@b8f8e34</code> · 核心版本 <code>0.7.1</code></span>
+      </div>
+      <div class="footer-links">
+        <a href="../README.md">README</a>
+        <a href="../ARCHITECTURE.md">Architecture</a>
+        <a href="cli-contract.md">CLI Contract</a>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>

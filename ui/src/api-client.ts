@@ -1160,7 +1160,7 @@ type RequirementApiClientOptions = {
 }
 
 export type RequirementApiErrorDetails = {
-  error?: string
+  error?: string | { code?: string } | Record<string, unknown>
   needs_reconfirmation?: boolean
   retryable?: boolean
   source_fingerprint?: string
@@ -1173,7 +1173,7 @@ export class RequirementApiError extends Error {
   readonly details: RequirementApiErrorDetails
 
   constructor(status: number, details: RequirementApiErrorDetails = {}) {
-    super(details.error || `API request failed: ${status}`)
+    super(errorMessage(details) || `API request failed: ${status}`)
     this.name = "RequirementApiError"
     this.status = status
     this.details = details
@@ -1188,10 +1188,53 @@ export function isNeedsReconfirmationError(error: unknown): error is Requirement
   return error instanceof RequirementApiError && error.needsReconfirmation
 }
 
+// ===== Claim 恢复自助（2026-08-14）=====
+// 后端 GET 对中断的 claim 恢复写路径 fail-closed：返回结构化 retryable 503
+// （{error: "effective_recovery_pending"} / {error: "claim_artifact_recovery_required"}），
+// 恢复只能由 POST /claim-maintenance 在写锁下执行。此前 UI 没有任何 /claim-maintenance
+// 引用——用户只能看到错误。这里在 api 客户端集中自愈：GET 命中这两个码 → 先触发一次
+// 维护 POST（并发去重 + 维护世代屏障：派发后已有维护完成则跳过触发、仅重放）→ 重放原
+// 请求；仍失败则按原样抛出（不吞错误、不伪装成功）。
+const CLAIM_RECOVERY_ERROR_CODES: ReadonlySet<string> = new Set([
+  "effective_recovery_pending",
+  "claim_artifact_recovery_required",
+])
+
+function errorMessage(details: RequirementApiErrorDetails): string {
+  const error = details.error
+  if (typeof error === "string" && error) return error
+  if (error && typeof error === "object" && typeof (error as { code?: unknown }).code === "string") {
+    return (error as { code: string }).code
+  }
+  return ""
+}
+
+// 错误包里的机器码：兼容平铺 {error: "<code>"} 与嵌套 {error: {code: "<code>"}} 两种包络。
+export function claimErrorCodeOf(error: RequirementApiError): string {
+  const code = errorMessage(error.details)
+  return CLAIM_RECOVERY_ERROR_CODES.has(code) ? code : ""
+}
+
+export function isClaimRecoveryPendingError(error: unknown): error is RequirementApiError {
+  return (
+    error instanceof RequirementApiError
+    && error.details.retryable === true
+    && claimErrorCodeOf(error) !== ""
+  )
+}
+
 export class RequirementApiClient {
   private readonly baseUrl: string
   private readonly token: string
   private readonly fetchImpl: FetchLike
+  // Claim 恢复自助的并发闸：同一时刻最多一个 /claim-maintenance POST 在飞；
+  // 期间其他命中恢复码的 GET 等它结束后一起重放，不重复触发。
+  private claimMaintenanceInFlight: Promise<void> | null = null
+  // 维护世代屏障（2026-08-14）：每次维护 POST 结束（无论成败）世代 +1（每个 POST 恰一次，
+  // 并发去重的等待者不额外加一）。每个 GET 在派发时记录当时世代；响应命中恢复码时若世代
+  // 已前进，说明这是「派发后别处已完成恢复」的旧 503——不再触发第二次维护，只重放一次。
+  // 180ms 轮询下慢 GET 迟到旧 503 会反复触发昂贵的恢复/fold 操作，此屏障封住该窗口。
+  private claimMaintenanceEpoch = 0
 
   constructor(options: RequirementApiClientOptions) {
     this.baseUrl = options.baseUrl.replace(/\/+$/, "")
@@ -1732,21 +1775,69 @@ export class RequirementApiClient {
   }
 
   private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
-    const headers: Record<string, string> = headersToObject(init.headers)
-    if (this.token) {
-      headers["X-Requirement-Atomizer-Token"] = this.token
-    }
-    const response = await this.fetchImpl.call(globalThis, `${this.baseUrl}${path}`, { ...init, headers })
+    const method = (init.method || "GET").toUpperCase()
+    // 世代屏障：捕获派发时刻的维护世代。若本请求在飞期间有维护 POST 完成（世代前进），
+    // 迟到的旧 503 不再触发第二次维护——恢复已针对更新的服务端视图发生过，直接重放即可。
+    const dispatchEpoch = this.claimMaintenanceEpoch
+    let response = await this.fetchRequest(path, init)
     if (!response.ok) {
       // 后端对每个错误路径都返回 {"error": "..."}（如 409 冻结、400 缺字段、502 LLM 故障）。
       // 透出该信息而不是只显示状态码，让审查者看到可操作的原因。
-      const parsed = await response.json().catch(() => null)
-      const body = parsed && typeof parsed === "object" && !Array.isArray(parsed)
-        ? parsed as RequirementApiErrorDetails
-        : {}
-      throw new RequirementApiError(response.status, body)
+      let details = await errorDetailsOf(response)
+      const error = new RequirementApiError(response.status, details)
+      // Claim 恢复自助：GET 命中 effective_recovery_pending / claim_artifact_recovery_required
+      // （retryable 503）→ 先 POST /claim-maintenance 一次（并发去重）→ 重放原请求；
+      // 仍失败则按原样抛出。POST 不自愈——写路径冲突应由用户决策，不自动重放。
+      if (method === "GET" && isClaimRecoveryPendingError(error)) {
+        if (dispatchEpoch === this.claimMaintenanceEpoch) {
+          await this.runClaimMaintenanceOnce()
+        }
+        response = await this.fetchRequest(path, init)
+        if (response.ok) {
+          return response.json() as Promise<T>
+        }
+        details = await errorDetailsOf(response)
+        throw new RequirementApiError(response.status, details)
+      }
+      throw error
     }
     return response.json() as Promise<T>
+  }
+
+  private async fetchRequest(path: string, init: RequestInit): Promise<Response> {
+    const headers = headersToObject(init.headers)
+    if (this.token) {
+      headers["X-Requirement-Atomizer-Token"] = this.token
+    }
+    return this.fetchImpl.call(globalThis, `${this.baseUrl}${path}`, { ...init, headers })
+  }
+
+  // 触发一次 /claim-maintenance 恢复写（幂等；后端在写锁下恢复中断 attempt/出箱）。
+  // 失败不在这里冒充成功——重放的原 GET 是恢复是否生效的唯一裁判，错误由它如实透出。
+  // POST 结束（成功或失败）时维护世代 +1，每个 POST 恰一次；去重共享同一 promise 的并发
+  // GET 不会各自加一。世代先于 in-flight 清空推进，等待者恢复后看到的一定是新世代。
+  private runClaimMaintenanceOnce(): Promise<void> {
+    if (!this.claimMaintenanceInFlight) {
+      const attempt = (async () => {
+        try {
+          await this.fetchRequest("/claim-maintenance", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: "{}",
+          })
+        } catch {
+          // 网络层失败/非 2xx：吞掉，由重放的 GET 决定最终错误面。
+        } finally {
+          this.claimMaintenanceEpoch += 1
+        }
+      })().finally(() => {
+        if (this.claimMaintenanceInFlight === attempt) {
+          this.claimMaintenanceInFlight = null
+        }
+      })
+      this.claimMaintenanceInFlight = attempt
+    }
+    return this.claimMaintenanceInFlight
   }
 
   private async requestClaimView<T extends ClaimViewEnvelope>(path: string): Promise<T> {
@@ -1783,4 +1874,13 @@ function headersToObject(headers: HeadersInit | undefined): Record<string, strin
     return Object.fromEntries(headers)
   }
   return { ...headers }
+}
+
+// 错误响应体 → RequirementApiErrorDetails：非对象/解析失败回空对象（与旧实现同语义）。
+function errorDetailsOf(response: Response): Promise<RequirementApiErrorDetails> {
+  return response.json().catch(() => null).then((parsed: unknown) => (
+    parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as RequirementApiErrorDetails
+      : {}
+  ))
 }

@@ -4,6 +4,7 @@ import copy
 import json
 import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -1388,6 +1389,122 @@ class ClaimFocusEvidenceTests(unittest.TestCase):
                 section_block_ids={"B1"},
                 focus_evidence=[composite],
             )
+
+
+class OmissionLockLivenessTests(unittest.TestCase):
+    """_remove_stale_lock / _file_lock 的 PID 存活判据： aged 锁只有在持有者
+    进程已死时才可被偷——单纯超龄不再构成抢占理由（慢持有者合法）。"""
+
+    @staticmethod
+    def _aged_lock_file(path: Path, content: str) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+        old = time.time() - 3600
+        os.utime(path, (old, old))
+        return path
+
+    def test_fresh_lock_is_never_stolen(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "omission_states.lock"
+            path.write_text(str(os.getpid()), encoding="utf-8")
+            self.assertFalse(omission_actions._remove_stale_lock(path, 300.0))
+            self.assertTrue(path.exists())
+
+    def test_aged_lock_with_live_holder_is_not_stolen(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = self._aged_lock_file(
+                Path(td) / "omission_states.lock", str(os.getpid())
+            )
+            # 本进程存活（含自身 PID 短路）→ 即使超龄也不偷
+            self.assertFalse(omission_actions._remove_stale_lock(path, 300.0))
+            self.assertTrue(path.exists())
+
+    def test_aged_lock_with_dead_holder_is_stolen(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = self._aged_lock_file(Path(td) / "omission_states.lock", "12345")
+            with mock.patch.object(omission_actions, "_pid_is_alive", return_value=False):
+                self.assertTrue(omission_actions._remove_stale_lock(path, 300.0))
+            self.assertFalse(path.exists())
+
+    def test_aged_lock_with_unreadable_lease_is_stolen(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = self._aged_lock_file(Path(td) / "omission_states.lock", "not-a-pid")
+            self.assertTrue(omission_actions._remove_stale_lock(path, 300.0))
+            self.assertFalse(path.exists())
+
+    def test_missing_lock_file_counts_as_removed(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "omission_states.lock"
+            self.assertTrue(omission_actions._remove_stale_lock(path, 300.0))
+
+    def test_file_lock_times_out_on_live_aged_holder(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._aged_lock_file(root / "omission_states.lock", str(os.getpid()))
+            with self.assertRaises(TimeoutError):
+                with omission_actions._file_lock(
+                    root, "omission_states.lock", timeout_s=0.5, stale_after_s=0.05,
+                ):
+                    pass
+            # 存活持有者的锁文件必须原样保留（没有被偷走）
+            self.assertTrue((root / "omission_states.lock").exists())
+
+    def test_file_lock_steals_dead_aged_holder_and_cleans_up(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._aged_lock_file(root / "omission_states.lock", "12345")
+            with mock.patch.object(omission_actions, "_pid_is_alive", return_value=False):
+                with omission_actions._file_lock(
+                    root, "omission_states.lock", timeout_s=5.0, stale_after_s=0.05,
+                ):
+                    self.assertTrue((root / "omission_states.lock").exists())
+            # 正常退出后持有者自行清理
+            self.assertFalse((root / "omission_states.lock").exists())
+
+    @unittest.skipIf(os.name != "nt", "Windows ctypes probe")
+    def test_pid_probe_reports_live_child_process_alive(self) -> None:
+        """真实 ctypes 路径（非自身 PID 短路）：存活子进程必须判活。"""
+        import subprocess
+        import sys
+
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        try:
+            self.assertNotEqual(proc.pid, os.getpid())
+            self.assertTrue(omission_actions._pid_is_alive(proc.pid))
+        finally:
+            proc.kill()
+            proc.wait()
+
+    @unittest.skipIf(os.name != "nt", "Windows ctypes probe")
+    def test_pid_probe_reports_reaped_child_process_dead(self) -> None:
+        """已退出且被 wait 收割的子进程 PID：OpenProcess 明确报「不存在」→判死。"""
+        import subprocess
+        import sys
+
+        proc = subprocess.Popen([sys.executable, "-c", "pass"])
+        proc.wait()
+        self.assertFalse(omission_actions._pid_is_alive(proc.pid))
+
+    def test_pid_probe_failure_is_conservative_alive(self) -> None:
+        """探测中途任何 ctypes 故障都必须保守判活——绝不偷活锁。"""
+        broken = mock.Mock(side_effect=OSError("ctypes probe broke mid-flight"))
+        with mock.patch.object(omission_actions, "_windows_kernel32", broken):
+            self.assertTrue(omission_actions._pid_is_alive(0xC0DE))
+        # GetExitCodeProcess 失败同样保守判活
+        kernel32 = mock.Mock()
+        kernel32.OpenProcess.return_value = mock.Mock()  # 任意真值句柄
+        kernel32.GetExitCodeProcess.return_value = 0
+        factory = mock.Mock(return_value=kernel32)
+        with mock.patch.object(omission_actions, "_windows_kernel32", factory):
+            self.assertTrue(omission_actions._pid_is_alive(0xC0DE))
+            self.assertEqual(kernel32.OpenProcess.call_count, 1)
+
+    @unittest.skipIf(os.name != "nt", "Windows ctypes probe")
+    def test_windows_kernel32_handle_is_cached(self) -> None:
+        """kernel32 DLL 句柄模块级缓存：重复探测不得重建句柄。"""
+        first = omission_actions._windows_kernel32()
+        second = omission_actions._windows_kernel32()
+        self.assertIs(first, second)
 
 
 if __name__ == "__main__":

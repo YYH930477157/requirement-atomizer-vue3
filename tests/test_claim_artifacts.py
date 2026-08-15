@@ -1584,7 +1584,10 @@ with claim_artifacts.claim_verifier_attempt_scope(
             ("replace", claim_artifacts.CLAIM_COVERAGE_GROUPS, False),
             ("replace", claim_artifacts.CLAIM_LEDGER, False),
             ("replace", claim_artifacts.CLAIM_SHADOW_METRICS, False),
-            ("replace", claim_artifacts.CLAIM_VERIFIER_ATTEMPTS, False),
+            # claim_verifier_attempts.jsonl is append-mode now: publishing
+            # appends one fsync'd line instead of replacing the file, so it has
+            # no replace crash point; its mid-line crash window is covered by
+            # test_verifier_ledger_torn_tail_is_healed_by_recovery below.
             ("replace", claim_artifacts.CLAIM_GENERATION_META, False),
             ("replace", claim_artifacts.CLAIM_EFFECTIVE_LEDGER, False),
             ("replace", claim_artifacts.CLAIM_EFFECTIVE_META, False),
@@ -2246,8 +2249,181 @@ with claim_artifacts.claim_publication_lock(Path(sys.argv[1])):
             attempts.write_bytes(attempts.read_bytes() + b'\n{"partial')
             with patch.dict(os.environ, {"RATOMIZER_ATTEMPT_LOG_TORN_RETRIES": "0"}):
                 with self.assertRaises(claim_artifacts.ClaimAttemptLogTornTail) as raised:
-                    claim_artifacts.read_claim_verifier_attempts(root)
+                    # The pure reader (no recovery pass) must fail closed. The
+                    # public read_claim_verifier_attempts runs crash recovery
+                    # first, which now heals an append-mode torn tail instead
+                    # of re-raising — the reader contract itself lives here.
+                    claim_artifacts._read_claim_verifier_attempts_unlocked(
+                        root,
+                        allow_missing=False,
+                    )
             self.assertIn("torn tail", str(raised.exception))
+
+    def test_verifier_ledger_torn_tail_is_healed_by_recovery(self) -> None:
+        """Append-mode crash window: a mid-line kill leaves a torn tail that
+        pure readers reject; publication-lock recovery truncates the
+        uncommitted partial line and the cold generation stays committed."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cold = _publish(root, _catalog(), run_id="torn-heal-cold-1")
+            attempts = root / claim_artifacts.CLAIM_VERIFIER_ATTEMPTS
+            committed = attempts.read_bytes()
+            attempts.write_bytes(committed + b'{"schema":"claim-verifier-attempt/v2"')
+
+            with patch.dict(os.environ, {"RATOMIZER_ATTEMPT_LOG_TORN_RETRIES": "0"}):
+                with self.assertRaises(claim_artifacts.ClaimAttemptLogTornTail):
+                    claim_artifacts._read_claim_verifier_attempts_unlocked(
+                        root,
+                        allow_missing=False,
+                    )
+
+            loaded = claim_artifacts.load_committed_shadow(root)
+
+            self.assertEqual(loaded["generation_meta"]["run_id"], "torn-heal-cold-1")
+            self.assertEqual(attempts.read_bytes(), committed)
+            self.assertEqual(
+                loaded["attempt_cost_chain"]["tail_attempt_id"],
+                cold["attempt_chain"]["attempt_id"],
+            )
+
+    def test_verifier_attempt_append_is_append_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            catalog = _catalog()
+            requirement = _requirement(catalog)
+            claim_artifacts.atomic_write_jsonl(
+                root / "ai_requirements.jsonl",
+                [requirement],
+            )
+            ai_extract.write_ai_requirements_metadata(
+                root,
+                input_fingerprint="test-input",
+                no_ledger_baseline_cost=_baseline_cost(),
+            )
+            budget = LLMRequestBudget(max_calls=2, max_tokens=100000)
+            runtime = claim_ledger.semantic_verifier_runtime(
+                route_mode="llm",
+                enabled=True,
+                rounds=1,
+                budget_policy_version=LLMRequestBudget.VERSION,
+                max_calls=2,
+                max_total_tokens=100000,
+            )
+            target = claim_ledger.b_track_authority_state([requirement], {})
+            _publish(root, catalog, run_id="append-mode-cold-1")
+            attempts = root / claim_artifacts.CLAIM_VERIFIER_ATTEMPTS
+            before = attempts.read_bytes()
+            real_atomic_write_jsonl = claim_artifacts.atomic_write_jsonl
+
+            def reject_ledger_rewrite(path, rows):
+                if Path(path).name == claim_artifacts.CLAIM_VERIFIER_ATTEMPTS:
+                    raise AssertionError(
+                        "verifier WAL append must not rewrite the whole file"
+                    )
+                return real_atomic_write_jsonl(path, rows)
+
+            with patch.object(
+                claim_artifacts,
+                "atomic_write_jsonl",
+                side_effect=reject_ledger_rewrite,
+            ):
+                with self.assertRaisesRegex(RuntimeError, "publication failed"):
+                    with claim_artifacts.claim_verifier_attempt_scope(
+                        root,
+                        attempt_kind="cold",
+                        attempt_request_id="append-mode-failure",
+                        requirements_request_id="requirements-request",
+                        failure_context={
+                            "catalog_build": catalog,
+                            "target_generation_id": target["target_generation_id"],
+                            "requirements_sha256": claim_artifacts.file_sha256(
+                                root / "ai_requirements.jsonl"
+                            ),
+                            "verifier_runtime": runtime,
+                            "baseline_cost": _baseline_cost(),
+                            "verifier_budget": budget,
+                        },
+                    ):
+                        raise RuntimeError("publication failed")
+
+            after = attempts.read_bytes()
+            rows = claim_artifacts.read_claim_verifier_attempts(root)
+
+        self.assertTrue(after.startswith(before))
+        self.assertGreater(len(after), len(before))
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[-1]["attempt_status"], "failed")
+
+    def test_verifier_ledger_read_is_memoized_by_stat_signature(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _publish(root, _catalog(), run_id="memo-cold-1")
+            first = claim_artifacts._read_claim_verifier_attempts_unlocked(
+                root,
+                allow_missing=False,
+            )
+            second = claim_artifacts._read_claim_verifier_attempts_unlocked(
+                root,
+                allow_missing=False,
+            )
+            self.assertIs(first, second)
+
+            # An external rewrite (same rows, new file generation) invalidates
+            # the memo: the next read must reparse instead of serving stale.
+            attempts = root / claim_artifacts.CLAIM_VERIFIER_ATTEMPTS
+            claim_artifacts.atomic_write_jsonl(attempts, [dict(row) for row in first])
+            third = claim_artifacts._read_claim_verifier_attempts_unlocked(
+                root,
+                allow_missing=False,
+            )
+
+        self.assertIsNot(first, third)
+        self.assertEqual(first, third)
+
+    def test_base_load_hashes_each_committed_artifact_once(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _publish(root, _catalog(), run_id="hash-once-1")
+            counter: dict[str, int] = {}
+            real_file_sha256 = claim_artifacts.file_sha256
+
+            def counting_sha(path):
+                key = str(Path(path).relative_to(root))
+                counter[key] = counter.get(key, 0) + 1
+                return real_file_sha256(path)
+
+            with patch.object(claim_artifacts, "file_sha256", side_effect=counting_sha):
+                claim_artifacts.load_committed_claim_base(root)
+
+            self.assertEqual(counter.get("claim_catalog.jsonl"), 1)
+            self.assertEqual(counter.get("ai_requirements.jsonl"), 1)
+            self.assertEqual(counter.get("ai_requirements.meta.json"), 1)
+
+    def test_effective_snapshot_cache_hits_and_invalidates(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            catalog = _catalog()
+            _publish(root, catalog, run_id="snapshot-cache-1")
+            claim_review_actions.fold_effective_ledger(
+                root,
+                actor_trigger="snapshot-cache-seed",
+            )
+
+            first = claim_artifacts.load_committed_effective_snapshot_cached(root)
+            second = claim_artifacts.load_committed_effective_snapshot_cached(root)
+            self.assertIs(first, second)
+
+            # Touching an input file (identical bytes, fresh stat signature)
+            # must invalidate the entry and force a reload.
+            meta = root / claim_artifacts.CLAIM_GENERATION_META
+            meta.write_bytes(meta.read_bytes())
+            third = claim_artifacts.load_committed_effective_snapshot_cached(root)
+
+        self.assertIsNot(first, third)
+        self.assertEqual(
+            first["effective_meta"]["document_effective_revision"],
+            third["effective_meta"]["document_effective_revision"],
+        )
 
     def test_failed_scope_records_budget_calls_and_tokens(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -4197,6 +4373,540 @@ class TableCellArtifactBindingTests(unittest.TestCase):
             self.assertTrue(
                 claim_artifacts.committed_base_versions_are_current(needs_review)
             )
+
+
+class VerifierLedgerCompactionSkipTests(unittest.TestCase):
+    """Verifier-ledger compaction 跳过条件 = “已是 canonical”（2026-08-14 修复）。
+
+    与 attempt log 同一缺陷：compaction 不删行，阈值超标 + canonical 时旧条件
+    每次启动/周期清理都会重写 byte-identical 的整本账。修复后 canonical ==
+    raw_bytes 即跳过；真实漂移（非 canonical 序列化、撕裂尾部）仍走重写/愈合
+    路径，force=True 仍强制重写。"""
+
+    def _ledger_path(self, root: Path) -> Path:
+        return claim_artifacts.claim_artifact_path(
+            root,
+            claim_artifacts.CLAIM_VERIFIER_ATTEMPTS,
+        )
+
+    def test_over_threshold_canonical_ledger_compacts_zero_times(self) -> None:
+        writes: list[Path] = []
+        real_writer = claim_artifacts.atomic_write_jsonl
+
+        def counting_writer(path, rows):
+            writes.append(Path(path))
+            return real_writer(path, rows)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _publish(root, _catalog(), run_id="verifier-compact-skip")
+            path = self._ledger_path(root)
+            committed = path.read_bytes()
+            rows = claim_artifacts.read_claim_verifier_attempts(root)
+            self.assertGreaterEqual(len(rows), 1)
+
+            with patch.object(
+                claim_artifacts, "_VERIFIER_LEDGER_COMPACT_MAX_ROWS", 0,
+            ), patch.object(
+                claim_artifacts, "_VERIFIER_LEDGER_COMPACT_MAX_BYTES", 1,
+            ), patch.object(
+                claim_artifacts, "atomic_write_jsonl", side_effect=counting_writer,
+            ):
+                first = claim_artifacts.compact_claim_verifier_attempts(root)
+                skipped = claim_artifacts.compact_claim_verifier_attempts(root)
+            after = path.read_bytes()
+
+        self.assertFalse(first["compacted"])
+        self.assertTrue(first["over_threshold"])
+        self.assertFalse(skipped["compacted"])
+        self.assertEqual(writes, [])
+        self.assertEqual(after, committed)
+
+    def test_torn_tail_still_heals_under_zero_threshold_budget(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _publish(root, _catalog(), run_id="verifier-compact-torn")
+            path = self._ledger_path(root)
+            committed = path.read_bytes()
+            with path.open("ab") as handle:
+                handle.write(b'{"schema":"claim-verifier-attempt/v2"')
+
+            # Readers stay fail-closed on the persistent torn tail.
+            with self.assertRaisesRegex(
+                claim_artifacts.ClaimArtifactError,
+                "torn tail",
+            ):
+                claim_artifacts._read_claim_verifier_attempts_unlocked(
+                    root,
+                    allow_missing=False,
+                )
+
+            # Even with a zero byte/row budget the healing must happen: the
+            # write-side load truncates the uncommitted partial line, so the
+            # file is canonical again and no rewrite is needed.
+            with patch.object(
+                claim_artifacts, "_VERIFIER_LEDGER_COMPACT_MAX_ROWS", 0,
+            ), patch.object(
+                claim_artifacts, "_VERIFIER_LEDGER_COMPACT_MAX_BYTES", 1,
+            ):
+                result = claim_artifacts.compact_claim_verifier_attempts(root)
+            healed = path.read_bytes()
+            rows = claim_artifacts.read_claim_verifier_attempts(root)
+
+        self.assertFalse(result["compacted"])
+        self.assertEqual(healed, committed)
+        self.assertGreaterEqual(len(rows), 1)
+
+    def test_non_canonical_serialization_is_rewritten(self) -> None:
+        # Genuine drift (raw != canonical) must still take the rewrite path:
+        # the repair normalizes a hand-edited, non-canonically serialized but
+        # hash-chain-valid ledger back to canonical bytes.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _publish(root, _catalog(), run_id="verifier-compact-drift")
+            path = self._ledger_path(root)
+            rows = claim_artifacts.read_claim_verifier_attempts(root)
+            drifted = b"".join(
+                (json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n").encode(
+                    "utf-8"
+                )
+                for row in rows
+            )
+            self.assertNotEqual(drifted, path.read_bytes())
+            with path.open("wb") as handle:
+                handle.write(drifted)
+
+            result = claim_artifacts.compact_claim_verifier_attempts(root)
+            after = path.read_bytes()
+
+        self.assertTrue(result["compacted"])
+        self.assertEqual(after, claim_artifacts._jsonl_bytes(rows))
+
+    def test_force_still_rewrites_canonical_ledger(self) -> None:
+        writes: list[Path] = []
+        real_writer = claim_artifacts.atomic_write_jsonl
+
+        def counting_writer(path, rows):
+            writes.append(Path(path))
+            return real_writer(path, rows)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _publish(root, _catalog(), run_id="verifier-compact-force")
+            path = self._ledger_path(root)
+            committed = path.read_bytes()
+
+            with patch.object(
+                claim_artifacts, "atomic_write_jsonl", side_effect=counting_writer,
+            ):
+                forced = claim_artifacts.compact_claim_verifier_attempts(
+                    root,
+                    force=True,
+                )
+            after = path.read_bytes()
+
+        self.assertTrue(forced["compacted"])
+        self.assertEqual(len(writes), 1)
+        self.assertEqual(after, committed)
+
+
+class EffectiveSnapshotRevisionKeyTests(unittest.TestCase):
+    """修订键分层加固（2026-08-14 修复 stat-identity 绕过）。
+
+    旧键只看 (size, mtime_ns, ctime_ns)：绕过方式包括原子替换后还原
+    mtime、以及保身份的原位尾部改写。新键三层：
+    1) 每个输入文件的 (size, mtime_ns, ctime_ns, st_ino, st_dev)；
+    2) 两条哈希链日志（claim ledger + verifier WAL）的尾部 ~8KiB 链头摘要；
+    3) 两个 commit-anchor meta 的内容摘要（保持不变）。
+    残余风险：大文件中部同尺寸原位改写 + 还原 mtime 超出 stat+head 校验
+    范围，只能靠 cache miss 时的全量加载校验兜底（与从前一致）。"""
+
+    def _committed_root(self, tmp: str, *, run_id: str) -> Path:
+        root = Path(tmp)
+        _publish(root, _catalog(), run_id=run_id)
+        claim_review_actions.fold_effective_ledger(
+            root,
+            actor_trigger="revision-key-seed",
+        )
+        return root
+
+    def test_replaced_ledger_same_size_restored_mtime_invalidates(self) -> None:
+        # Reviewer repro: replace the claim ledger via atomic os.replace with
+        # same-size different bytes and restore mtime_ns — the cached readonly
+        # snapshot must NOT be served; the reload re-verifies and fails closed.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._committed_root(tmp, run_id="revision-key-replace")
+            first = claim_artifacts.load_committed_effective_snapshot_cached(root)
+            second = claim_artifacts.load_committed_effective_snapshot_cached(root)
+            self.assertIs(first, second)
+            key_before = claim_artifacts.effective_snapshot_revision_key(root)
+
+            ledger = claim_artifacts.claim_artifact_path(
+                root,
+                claim_artifacts.CLAIM_LEDGER,
+            )
+            original = ledger.read_bytes()
+            stat_before = ledger.stat()
+            tampered = bytearray(original)
+            tampered[len(tampered) // 2] ^= 0x20
+            self.assertEqual(len(tampered), len(original))
+            replacement = ledger.with_name(ledger.name + ".tamper-repro")
+            replacement.write_bytes(bytes(tampered))
+            os.replace(replacement, ledger)
+            os.utime(ledger, ns=(stat_before.st_atime_ns, stat_before.st_mtime_ns))
+
+            key_after = claim_artifacts.effective_snapshot_revision_key(root)
+            with self.assertRaisesRegex(
+                claim_artifacts.ClaimArtifactError,
+                "hash mismatch for claim_ledger.jsonl",
+            ):
+                claim_artifacts.load_committed_effective_snapshot_cached(root)
+
+        self.assertNotEqual(key_after, key_before)
+
+    def test_in_place_tail_append_with_restored_mtime_invalidates(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._committed_root(tmp, run_id="revision-key-append")
+            first = claim_artifacts.load_committed_effective_snapshot_cached(root)
+            key_before = claim_artifacts.effective_snapshot_revision_key(root)
+
+            ledger = claim_artifacts.claim_artifact_path(
+                root,
+                claim_artifacts.CLAIM_LEDGER,
+            )
+            stat_before = ledger.stat()
+            with ledger.open("ab") as handle:
+                handle.write(b'{"schema":"claim-ledger/v1","tampered":true}')
+            os.utime(ledger, ns=(stat_before.st_atime_ns, stat_before.st_mtime_ns))
+
+            key_after = claim_artifacts.effective_snapshot_revision_key(root)
+            with self.assertRaisesRegex(
+                claim_artifacts.ClaimArtifactError,
+                "hash mismatch for claim_ledger.jsonl",
+            ):
+                claim_artifacts.load_committed_effective_snapshot_cached(root)
+
+        self.assertNotEqual(key_after, key_before)
+        self.assertIsNotNone(first)
+
+    def test_same_size_in_place_tail_edit_invalidates(self) -> None:
+        # The only layer that can catch this: size/mtime are restored, and an
+        # in-place write preserves ctime/inode identity — the chain-head digest
+        # over the trailing line is what must notice the changed tail.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._committed_root(tmp, run_id="revision-key-tail-edit")
+            first = claim_artifacts.load_committed_effective_snapshot_cached(root)
+            key_before = claim_artifacts.effective_snapshot_revision_key(root)
+
+            ledger = claim_artifacts.claim_artifact_path(
+                root,
+                claim_artifacts.CLAIM_LEDGER,
+            )
+            original = ledger.read_bytes()
+            stat_before = ledger.stat()
+            self.assertTrue(original.endswith(b"\n"))
+            with ledger.open("r+b") as handle:
+                handle.seek(len(original) - 2)
+                current = handle.read(1)
+                handle.seek(len(original) - 2)
+                handle.write(bytes([current[0] ^ 0x20]))
+            os.utime(ledger, ns=(stat_before.st_atime_ns, stat_before.st_mtime_ns))
+
+            # File identity, size, and mtime are all unchanged; the revision
+            # key must still move because the chain head changed.
+            stat_after = ledger.stat()
+            key_after = claim_artifacts.effective_snapshot_revision_key(root)
+            with self.assertRaisesRegex(
+                claim_artifacts.ClaimArtifactError,
+                "hash mismatch for claim_ledger.jsonl",
+            ):
+                claim_artifacts.load_committed_effective_snapshot_cached(root)
+
+        self.assertEqual(
+            (stat_after.st_size, stat_after.st_mtime_ns, stat_after.st_ino),
+            (stat_before.st_size, stat_before.st_mtime_ns, stat_before.st_ino),
+        )
+        self.assertNotEqual(key_after, key_before)
+        self.assertIsNotNone(first)
+
+    def test_unchanged_inputs_keep_serving_cached_snapshot_without_reload(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._committed_root(tmp, run_id="revision-key-hit")
+            first = claim_artifacts.load_committed_effective_snapshot_cached(root)
+
+            with patch.object(
+                claim_artifacts,
+                "load_committed_effective_snapshot_readonly",
+                side_effect=AssertionError("cache hit must not re-load"),
+            ):
+                second = claim_artifacts.load_committed_effective_snapshot_cached(root)
+
+        self.assertIs(first, second)
+
+    def test_chain_head_digest_covers_torn_tail_bytes(self) -> None:
+        # Unit-level: the digest input includes a newline-less tail as-is, so a
+        # torn tail differs from both the empty file and the settled prefix.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "chain.jsonl"
+            path.write_bytes(b'{"a":1}\n{"b":2}\n')
+            settled = claim_artifacts._chain_head_digest(path)
+            self.assertEqual(settled, claim_artifacts._chain_head_digest(path))
+
+            torn = path.with_name("torn.jsonl")
+            torn.write_bytes(b'{"a":1}\n{"b":2}\n{"c":')
+            torn_digest = claim_artifacts._chain_head_digest(torn)
+            completed = path.with_name("completed.jsonl")
+            completed.write_bytes(b'{"a":1}\n{"b":2}\n{"c":3}\n')
+
+            empty = path.with_name("empty.jsonl")
+            empty.write_bytes(b"")
+            self.assertEqual(
+                claim_artifacts._chain_head_digest(empty),
+                hashlib.sha256(b"").hexdigest(),
+            )
+            missing_digest = claim_artifacts._chain_head_digest(
+                path.with_name("missing.jsonl")
+            )
+
+        self.assertNotEqual(torn_digest, settled)
+        self.assertNotEqual(
+            torn_digest,
+            claim_artifacts._chain_head_digest(completed),
+        )
+        self.assertEqual(
+            settled,
+            hashlib.sha256(b'{"b":2}\n').hexdigest(),
+        )
+        self.assertIsNone(missing_digest)
+
+
+_SPOOF_SHA = "sha256:" + "0" * 64
+
+
+def _append_cold_verifier_attempt(
+    root: Path,
+    *,
+    attempt_request_id: str = "attempt-retry-1",
+    error: str = "test denial",
+) -> dict:
+    """Directly append one minimal valid cold verifier attempt (no publication
+    fixtures) — the lightest path into the verifier-WAL true-append write."""
+    return claim_artifacts._append_claim_verifier_attempt_unlocked(
+        root,
+        attempt_kind="cold",
+        attempt_status="failed",
+        chain_identity={
+            "root_attempt_request_id": attempt_request_id,
+            "requirements_request_id": "requirements-request",
+            "document_generation_id": _SPOOF_SHA,
+            "requirements_sha256": _SPOOF_SHA,
+        },
+        attempt_policy_identity={
+            "target_generation_id": _SPOOF_SHA,
+            "verifier_runtime_fingerprint": _SPOOF_SHA,
+            "baseline_lineage_version": "",
+            "baseline_lineage_fingerprint": "",
+            "baseline_lineage_match": False,
+            "cost_policy_version": "policy-v1",
+        },
+        source_locator={
+            "attempt_request_id": attempt_request_id,
+            "requirements_request_id": "requirements-request",
+            "catalog_generation_id": _SPOOF_SHA,
+            "document_generation_id": _SPOOF_SHA,
+            "target_generation_id": _SPOOF_SHA,
+            "requirements_sha256": _SPOOF_SHA,
+            "reuse_generation_run_id": None,
+            "reuse_attempt_id": None,
+            "source_generation_run_id": None,
+            "source_attempt_id": None,
+        },
+        attempt_metrics={},
+        error=error,
+    )
+
+
+class VerifierLedgerAppendRetryTests(unittest.TestCase):
+    """P2 一致性（2026-08-15）：验证者 WAL true-append（open("ab")）此前是裸写
+    ——Windows AV/索引器瞬时占用会让 open 以 PermissionError 失败，直接中止
+    持锁发布。与 _replace_with_retry / 翻译日志同口径：8 次尝试 × 0.02s×(1..7)
+    线性退避，预算耗尽原样重抛（响亮失败）。
+
+    原子性口径（文档化）：被拒的 open 落盘零字节，重试干净；canonical 行只在
+    成功 open 后整体写入，每次尝试至多新增一行完整世代——写中途失败留下的
+    至多是读者侧 fail-closed 的撕裂尾，不会出现胶着半行。"""
+
+    def _ledger_path(self, root: Path) -> Path:
+        # 与生产路径完全一致的解析（resolve + claim_artifact_path），保证
+        # PurePath 相等比较成立。
+        return claim_artifacts.claim_artifact_path(
+            root.expanduser().resolve(),
+            claim_artifacts.CLAIM_VERIFIER_ATTEMPTS,
+        )
+
+    def _denied_open_patcher(self, path: Path, failures: int | None):
+        real_open = Path.open
+        state = {"denied": 0}
+
+        def selective_open(self: Path, mode: str = "r", *args, **kwargs):
+            if (
+                self == path
+                and mode in {"a", "ab", "r+b"}
+                and (failures is None or state["denied"] < failures)
+            ):
+                state["denied"] += 1
+                raise PermissionError(13, "Permission denied", str(self))
+            return real_open(self, mode, *args, **kwargs)
+
+        return patch.object(Path, "open", selective_open), state
+
+    def test_transient_permission_error_on_wal_append_is_retried(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = self._ledger_path(root)
+
+            patcher, state = self._denied_open_patcher(path, failures=2)
+            with patcher:
+                binding = _append_cold_verifier_attempt(root)
+
+            self.assertEqual(state["denied"], 2)
+            self.assertEqual(binding["attempt_count"], 1)
+            raw = path.read_bytes()
+            self.assertTrue(raw.endswith(b"\n"))
+            rows = claim_artifacts._read_claim_verifier_attempts_unlocked(
+                root,
+                allow_missing=False,
+            )
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[-1]["attempt_status"], "failed")
+
+    def test_persistent_permission_error_raises_loud_and_keeps_ledger_well_formed(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _append_cold_verifier_attempt(root)
+            path = self._ledger_path(root)
+            before = path.read_bytes()
+
+            patcher, state = self._denied_open_patcher(path, failures=None)
+            with patcher:
+                with self.assertRaises(PermissionError):
+                    _append_cold_verifier_attempt(
+                        root,
+                        attempt_request_id="attempt-retry-2",
+                    )
+
+            # 8 次预算全部耗尽后才重抛——裸写（旧代码）第 1 次就穿透。
+            self.assertEqual(state["denied"], claim_artifacts._REPLACE_ATTEMPTS)
+            raw = path.read_bytes()
+            self.assertEqual(raw, before)
+            # 无胶着半行：已提交前缀完好且仍可完整解析。
+            self.assertTrue(raw.endswith(b"\n"))
+            rows = claim_artifacts._read_claim_verifier_attempts_unlocked(
+                root,
+                allow_missing=False,
+            )
+            self.assertEqual(len(rows), 1)
+
+
+class VerifierLedgerMemoIdentityTests(unittest.TestCase):
+    """stat 身份加固（2026-08-15）：验证者 WAL 的进程内 memo 键
+    （_stat_signature）从 (size, mtime_ns, ctime_ns) 升级为含 (st_ino, st_dev)。
+    这是与 effective_snapshot_revision_key（已加固的 _stat_identity_signature）
+    不同的独立 memo 站点。Windows 的 os.replace 可被「同尺寸原子替换 +
+    os.utime 还原 mtime + SetFileTime 还原创建时间（st_ctime_ns）」完全伪造
+    ——旧三元组命中，memo 继续吐旧状态（NTFS 时间戳量子化时无需 SetFileTime
+    也偶发成立）。新键：原子替换必换文件身份 → 必 miss 重扫；st_ino==0 的
+    文件系统退化为旧三元组强度（不劣化）。"""
+
+    @staticmethod
+    def _restore_creation_time(path: Path, ctime_ns: int) -> bool:
+        """Windows：SetFileTime 显式还原创建时间。ctypes 签名必须齐全，
+        否则 64 位句柄被截断成 int，SetFileTime 静默失败。"""
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.windll.kernel32
+        kernel32.CreateFileW.restype = ctypes.c_void_p
+        kernel32.CreateFileW.argtypes = [
+            wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+            ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+        ]
+        kernel32.SetFileTime.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(wintypes.FILETIME),
+            ctypes.POINTER(wintypes.FILETIME),
+            ctypes.POINTER(wintypes.FILETIME),
+        ]
+        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+        handle = kernel32.CreateFileW(
+            str(path), 0x0100, 0, None, 3, 0x80, None,
+        )  # FILE_WRITE_ATTRIBUTES / OPEN_EXISTING
+        if not handle:
+            return False
+        try:
+            value = ctime_ns // 100 + 116444736000000000  # 1970 纪元→1601 纪元（100ns 单位）
+            file_time = wintypes.FILETIME(value & 0xFFFFFFFF, (value >> 32) & 0xFFFFFFFF)
+            return bool(kernel32.SetFileTime(handle, ctypes.byref(file_time), None, None))
+        finally:
+            kernel32.CloseHandle(handle)
+
+    @unittest.skipUnless(
+        sys.platform == "win32",
+        "creation-time restore spoof is Windows-specific; on POSIX st_ctime "
+        "cannot be restored by utime so the legacy triple already invalidates",
+    )
+    def test_samesize_atomic_replace_with_restored_mtime_invalidates_memo(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _append_cold_verifier_attempt(root)
+            first = claim_artifacts._read_claim_verifier_attempts_unlocked(
+                root,
+                allow_missing=False,
+            )
+            second = claim_artifacts._read_claim_verifier_attempts_unlocked(
+                root,
+                allow_missing=False,
+            )
+            self.assertIs(first, second)
+
+            path = claim_artifacts.claim_artifact_path(
+                root.expanduser().resolve(),
+                claim_artifacts.CLAIM_VERIFIER_ATTEMPTS,
+            )
+            before = path.stat()
+            tmp_file = path.with_name(path.name + ".spoof.tmp")
+            tmp_file.write_bytes(path.read_bytes())
+            os.replace(tmp_file, path)
+            os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+            self.assertTrue(
+                self._restore_creation_time(path, before.st_ctime_ns),
+                "spoof fixture must be able to restore creation time",
+            )
+            after = path.stat()
+            # 前置断言：旧三元组被完全伪造（同尺寸 + mtime/ctime 均已还原）。
+            self.assertEqual(
+                (before.st_size, before.st_mtime_ns, before.st_ctime_ns),
+                (after.st_size, after.st_mtime_ns, after.st_ctime_ns),
+            )
+            # 文件身份已换（os.replace 给路径换上 tmp 的身份）——修复的失效条件。
+            self.assertNotEqual(
+                (before.st_dev, before.st_ino),
+                (after.st_dev, after.st_ino),
+                "atomic replace must change file identity on this filesystem",
+            )
+
+            third = claim_artifacts._read_claim_verifier_attempts_unlocked(
+                root,
+                allow_missing=False,
+            )
+
+        # 旧键（红）：memo 命中，rows 列表对象被复用；新键：重扫得到新状态。
+        self.assertIsNot(first, third)
+        self.assertEqual(first, third)
 
 
 if __name__ == "__main__":

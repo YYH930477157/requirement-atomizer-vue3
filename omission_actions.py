@@ -77,11 +77,28 @@ def _process_lock_for(root: Path, name: str) -> RLock:
 
 
 def _remove_stale_lock(path: Path, stale_after_s: float) -> bool:
+    """Steal an aged omission lock sidecar only when its holder process is gone.
+
+    Age alone is not evidence of abandonment: a legitimately slow holder (e.g.
+    a targeted extraction still holding the family lock) used to get its lease
+    stolen purely by mtime.  The sidecar records the holder PID, so a live
+    process keeps its lock and the waiter keeps polling until timeout; only a
+    dead or unreadable holder is stolen（与 `_remove_abandoned_operation_lock`
+    同判据）。PID 复用把锁误判成「活着」的最坏结果是诚实的 TimeoutError，
+    而不是偷走运行中持有者的锁。
+    """
     try:
         age = time.time() - path.stat().st_mtime
     except FileNotFoundError:
         return True
     if age < stale_after_s:
+        return False
+    try:
+        lease = path.read_text(encoding="utf-8").strip()
+        pid = int(lease) if lease else 0
+    except (OSError, UnicodeDecodeError, ValueError):
+        pid = 0
+    if pid and _pid_is_alive(pid):
         return False
     try:
         path.unlink()
@@ -90,7 +107,41 @@ def _remove_stale_lock(path: Path, stale_after_s: float) -> bool:
     return True
 
 
+_WINDOWS_KERNEL32: Any = None
+
+
+def _windows_kernel32() -> Any:
+    """Lazy module-cached kernel32 handle created with ``use_last_error=True``.
+
+    ``ctypes.windll`` cannot give a trustworthy last-error（ctypes 内部调用可能在
+    我们读错误码之前就把它冲掉），失败的 OpenProcess 曾据此读到陈旧/无关错误码，
+    把活着的锁持有者误判成死进程（锁被误偷）。每次探测重建 DLL 句柄也无谓，
+    这里缓存一次；``argtypes/restype`` 只在首次构建时登记。
+    """
+    global _WINDOWS_KERNEL32
+    if _WINDOWS_KERNEL32 is None:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+        kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        _WINDOWS_KERNEL32 = kernel32
+    return _WINDOWS_KERNEL32
+
+
 def _pid_is_alive(pid: int) -> bool:
+    """PID 存活探测，失败一律保守判活（宁可超时也不偷活锁）。
+
+    判死只接受探测的明确结论：GetExitCodeProcess 返回非 STILL_ACTIVE，或
+    OpenProcess 失败且 last-error 明确是 ERROR_INVALID_PARAMETER（87，进程
+    不存在）。其余一切失败路径——access denied（5，进程存在但无权查询）、
+    last-error 不可读、API 调用中途出错——都按活着处理。
+    """
     if pid <= 0:
         return False
     if pid == os.getpid():
@@ -100,25 +151,25 @@ def _pid_is_alive(pid: int) -> bool:
         from ctypes import wintypes
 
         process_query_limited_information = 0x1000
+        error_invalid_parameter = 87
         still_active = 259
-        kernel32 = ctypes.windll.kernel32
-        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-        kernel32.OpenProcess.restype = wintypes.HANDLE
-        kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
-        kernel32.GetExitCodeProcess.restype = wintypes.BOOL
-        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-        kernel32.CloseHandle.restype = wintypes.BOOL
-        handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
-        if not handle:
-            # Access denied means the process exists but cannot be queried.
-            return int(kernel32.GetLastError()) == 5
         try:
-            exit_code = wintypes.DWORD()
-            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
-                return True
-            return int(exit_code.value) == still_active
-        finally:
-            kernel32.CloseHandle(handle)
+            kernel32 = _windows_kernel32()
+            handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
+            if not handle:
+                # 只有明确的「进程不存在」才判死；access denied 或任何其他/不可读
+                # 错误都保守判活。
+                return ctypes.get_last_error() != error_invalid_parameter
+            try:
+                exit_code = wintypes.DWORD()
+                if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                    return True
+                return int(exit_code.value) == still_active
+            finally:
+                kernel32.CloseHandle(handle)
+        except Exception:
+            # ctypes 机器中途抛出的任何异常同样是探测失败：保守判活。
+            return True
     try:
         os.kill(pid, 0)
     except ProcessLookupError:

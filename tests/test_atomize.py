@@ -186,6 +186,33 @@ class AtomizeTableTests(unittest.TestCase):
         facts = [fact for item in items for fact in item["matrix_facts"]]
         self.assertTrue(all(fact["predicate_header"].startswith("xDLMS Service") for fact in facts))
 
+    def test_xlsx_flat_filled_full_width_title_row_collapses_merge_coverage(self) -> None:
+        # xlsx 的 _region_matrix 把合并值扁平填充到全部覆盖格（by design）——标题行
+        # 若照抄矩阵，同一文本进 title_rows N 份，全文翻译逐格拼成 "Title | Title | Title"。
+        # atomize 边界按 docx 物理网格口径塌缩：锚格保留文本、覆盖格清空。
+        matrix = [
+            ["Safety requirements", "Safety requirements", "Safety requirements"],
+            ["Item", "Description", "Quantity"],
+            ["A", "Meter", "Two"],
+        ]
+        block, _items, _cells = build_table_artifacts(
+            matrix,
+            table_id="TBL-000001",
+            block_id="BLK-000010",
+            order=10,
+            table_title="Safety requirements",
+            section_path=["Annex"],
+            knowledge_bases=[],
+            merge_ranges=[[1, 1, 1, 3]],
+        )
+        self.assertEqual(block["title_row_indexes"], [1])
+        self.assertEqual(block["table_title"], "Safety requirements")
+        # 锚格保留、覆盖格清空（镜像 docx 物理网格；覆盖格文本与锚逐字一致，
+        # 塌缩不丢内容）。
+        self.assertEqual(block["title_rows"], [["Safety requirements", "", ""]])
+        # 数据/表头行的扁平填充是 xlsx 路径的独立可见性行为——不随标题口径变化。
+        self.assertEqual(block["data_rows"], [["A", "Meter", "Two"]])
+
     def test_build_table_artifacts_matrix_facts_only_for_mapping_matrix(self) -> None:
         matrix = [
             ["Feature", "Mode A", "Mode B", "Note"],

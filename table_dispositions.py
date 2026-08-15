@@ -9,7 +9,9 @@ from table_structure import TABLE_STRUCTURE_VERSION, is_normative_text
 
 
 TABLE_CELL_DISPOSITION_SCHEMA = "table-cell-disposition/v2"
-TABLE_DISPOSITION_RULE_VERSION = "table-disposition-rules-v2"
+# v3（2026-08-14）：随 DOCX_TABLE_PHYSICAL_VERSION v2——已调和的 row_width_conflict
+# 不再把整表钉进 review 漏斗，处置结果随之变化；规则逻辑本身未动。
+TABLE_DISPOSITION_RULE_VERSION = "table-disposition-rules-v3"
 DISPOSITIONS = ("target", "context", "composite", "excluded", "review")
 
 _NOT_APPLICABLE_RE = re.compile(

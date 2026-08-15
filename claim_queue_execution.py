@@ -262,7 +262,14 @@ class _ClaimQueueBudgetCheckpoint:
 def _proposal_attempt_state(
     root: Path,
     proposal_id: str,
-) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
+) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]], Any]:
+    """One attempt-log read feeds both the state map and the caller's rows.
+
+    Previously the caller re-read the whole log just to filter the same
+    attempt's rows; the snapshot is returned so the critical section threads
+    it through instead of rescanning (the reader is additionally memoized by
+    file stat signature, so repeated reads inside one execute are O(1)).
+    """
     snapshot = read_attempt_log(root)
     states = derive_attempt_states(snapshot.rows)
     relevant = [
@@ -273,7 +280,7 @@ def _proposal_attempt_state(
     relevant.sort(
         key=lambda state: int(dict(state.get("last_event") or {}).get("event_seq") or 0)
     )
-    return states, relevant
+    return states, relevant, snapshot
 
 
 def _proposal_from_attempt_history(history: list[dict[str, Any]]) -> dict[str, Any]:
@@ -533,10 +540,11 @@ def _durable_usage(
     *,
     attempt_id: str,
     budget: LLMRequestBudget,
+    rows: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     history = [
         row
-        for row in read_attempt_log(root).rows
+        for row in (rows if rows is not None else read_attempt_log(root).rows)
         if row.get("attempt_id") == attempt_id
     ]
     if any(row.get("event_kind") == "budget_checkpoint" for row in history):
@@ -870,16 +878,20 @@ def _finish_rebuild(
             },
             operation_lock_held=True,
         )
+        # One log read feeds both terminal-usage branches; the append above
+        # already refreshed the memoized reader, so this is not another scan.
+        finalize_rows = read_attempt_log(root).rows
         if budget is not None:
             usage = _durable_usage(
                 root,
                 attempt_id=attempt_id,
                 budget=budget,
+                rows=finalize_rows,
             )
         else:
             attempt_rows = [
                 item
-                for item in read_attempt_log(root).rows
+                for item in finalize_rows
                 if item.get("attempt_id") == attempt_id
             ]
             usage = _usage_from_history(attempt_rows)
@@ -966,13 +978,13 @@ def execute_claim_queue_proposal(
 
     with extraction_operation_lock(root, operation="claim-reextract"):
         recover_interrupted_attempts(root, operation_lock_held=True)
-        states, relevant = _proposal_attempt_state(root, proposal_id)
+        states, relevant, attempt_snapshot = _proposal_attempt_state(root, proposal_id)
         existing = states.get(current_attempt_id)
         if existing is not None:
             lifecycle = str(existing.get("lifecycle") or "")
             history = [
                 row
-                for row in read_attempt_log(root).rows
+                for row in attempt_snapshot.rows
                 if row.get("attempt_id") == current_attempt_id
             ]
             if not history:

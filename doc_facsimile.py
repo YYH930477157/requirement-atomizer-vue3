@@ -62,8 +62,13 @@ def read_facsimile_status(out_dir: Path) -> str | None:
     return str(status) if status else None
 
 
-def _cached_facsimile(input_path: Path, out_dir: Path) -> Path | None:
-    """指纹命中直接复用已转换 PDF；指纹不符/产物缺失 → 重转。"""
+def _cached_facsimile(
+    input_path: Path, out_dir: Path, *, input_sha256: str | None = None
+) -> Path | None:
+    """指纹命中直接复用已转换 PDF；指纹不符/产物缺失 → 重转。
+
+    input_sha256：调用方已算好的输入指纹（convert_to_pdf 每次运行只哈希输入
+    一次，缓存判定与 sidecar 写入共用）；None 时现算。"""
     target = Path(out_dir) / FACSIMILE_PDF
     try:
         meta = json.loads(facsimile_sidecar_path(out_dir).read_text(encoding="utf-8"))
@@ -71,7 +76,7 @@ def _cached_facsimile(input_path: Path, out_dir: Path) -> Path | None:
         return None
     expected = {
         "version": DOC_FACSIMILE_VERSION,
-        "input_sha256": _file_sha256(input_path),
+        "input_sha256": input_sha256 or _file_sha256(input_path),
     }
     if not isinstance(meta, dict) or any(meta.get(key) != value for key, value in expected.items()):
         return None
@@ -83,12 +88,17 @@ def _cached_facsimile(input_path: Path, out_dir: Path) -> Path | None:
     return None
 
 
-def _write_facsimile_meta(out_dir: Path, *, input_path: Path, facsimile: str) -> None:
-    """原子写转换元数据（tmp + os.replace，Windows 读者锁短重试同既有惯例）。"""
+def _write_facsimile_meta(
+    out_dir: Path, *, input_path: Path, facsimile: str, input_sha256: str | None = None
+) -> None:
+    """原子写转换元数据（tmp + os.replace，Windows 读者锁短重试同既有惯例）。
+
+    input_sha256：调用方已算好的输入指纹（避免转换路径上同一文件哈希两遍）；
+    None 时现算。"""
     target = facsimile_sidecar_path(out_dir)
     payload: dict[str, Any] = {
         "version": DOC_FACSIMILE_VERSION,
-        "input_sha256": _file_sha256(input_path),
+        "input_sha256": input_sha256 or _file_sha256(input_path),
         "input_name": input_path.name,
         "facsimile": facsimile,
     }
@@ -274,7 +284,10 @@ def convert_to_pdf(input_path: Path, work_dir: Path) -> Path | None:
     if not input_path.is_file():
         LOGGER.warning("影印转换：输入文件不存在：%s", input_path)
         return None
-    cached = _cached_facsimile(input_path, out_dir)
+    # 输入指纹每次运行只算一次：缓存判定与 sidecar 写入共用（此前转换路径上
+    # 同一文件要哈希两遍）
+    input_sha256 = _file_sha256(input_path)
+    cached = _cached_facsimile(input_path, out_dir, input_sha256=input_sha256)
     if cached is not None:
         return cached
 
@@ -289,7 +302,9 @@ def convert_to_pdf(input_path: Path, work_dir: Path) -> Path | None:
             target.unlink(missing_ok=True)
         except OSError:
             pass
-        _write_facsimile_meta(out_dir, input_path=input_path, facsimile=engine)
+        _write_facsimile_meta(
+            out_dir, input_path=input_path, facsimile=engine, input_sha256=input_sha256)
         return None
-    _write_facsimile_meta(out_dir, input_path=input_path, facsimile=engine)
+    _write_facsimile_meta(
+        out_dir, input_path=input_path, facsimile=engine, input_sha256=input_sha256)
     return target

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from bisect import bisect_left, bisect_right
 from datetime import date, datetime, time
 from decimal import Decimal
 from pathlib import Path
@@ -27,6 +28,42 @@ MAX_SHEET_ROWS = 50_000
 # 审计而列维无上限，口径不齐；超限必须 fail-closed 计入审计，超界列的无缓存公式格
 # 不得静默逃逸。
 MAX_SHEET_COLUMNS = 16_384
+
+
+class _RowColumnIntervals:
+    """矩形区域集的按行区间索引：包含计数 O(log R)，替代按面积逐格枚举。
+
+    守恒计数/表内跳过只需"该格被几个矩形罩住"，与逐格插集的 coverage dict 结果
+    完全一致（区间 stabbing 计数 = starts≤col 数 − ends<col 数），但代价从
+    O(矩形面积) 降到 O(行数 + 查询 log R)。"""
+
+    def __init__(self, regions: list[tuple[int, int, int, int]]) -> None:
+        rows: dict[int, tuple[list[int], list[int]]] = {}
+        for min_row, min_col, max_row, max_col in regions:
+            # 退化/畸形矩形（空行段或空列段）一律跳过：反向列区间
+            # （min_col > max_col）会让 stabbing 计数变成负数，而守恒门只看
+            # ==0 / >1，负数会静默穿过——这里宁可把受影响格子计成 0（守恒门
+            # 大声报 dropped / parse_incomplete），也绝不给负数放行（宁漏勿错）。
+            if min_row > max_row or min_col > max_col:
+                continue
+            for row_index in range(min_row, max_row + 1):
+                starts, ends = rows.setdefault(row_index, ([], []))
+                starts.append(min_col)
+                ends.append(max_col)
+        self._rows = {
+            row_index: (sorted(starts), sorted(ends))
+            for row_index, (starts, ends) in rows.items()
+        }
+
+    def count(self, row_index: int, column_index: int) -> int:
+        entry = self._rows.get(row_index)
+        if entry is None:
+            return 0
+        starts, ends = entry
+        return bisect_right(starts, column_index) - bisect_left(ends, column_index)
+
+    def contains(self, row_index: int, column_index: int) -> bool:
+        return self.count(row_index, column_index) > 0
 
 
 def extract_xlsx(
@@ -264,20 +301,29 @@ def _sheet_table_regions(
         )
         max_row = MAX_SHEET_ROWS
 
+    # 单遍值矩阵扫描：非空坐标（行主序）同时供连通区域检测与守恒计数复用——
+    # 此前同一份数据要整表扫两遍（_connected_regions + 守恒），大表上成本翻倍
+    non_empty_cells: list[tuple[int, int]] = [
+        (row_index, column_index)
+        for row_index, row in enumerate(
+            sheet.iter_rows(min_row=1, max_row=max_row, max_col=max_column, values_only=True),
+            start=1,
+        )
+        for column_index, value in enumerate(row, start=1)
+        if value is not None and str(value).strip()
+    ]
+
     table_defs = _excel_table_regions(sheet, max_row=max_row)
     if table_defs:
         regions = [entry[0] for entry in table_defs]
         header_rows: list[list[int] | None] = [entry[1] for entry in table_defs]
         # ListObject 之外仍须守恒：表定义覆盖不到的非空连通区域同样成表（否则表外
-        # 需求彻底消失且任何下游计数器都看不到）
-        covered_cells: set[tuple[int, int]] = set()
-        for min_row, min_col, region_max_row, max_col in regions:
-            for row_index in range(min_row, region_max_row + 1):
-                for column_index in range(min_col, max_col + 1):
-                    covered_cells.add((row_index, column_index))
+        # 需求彻底消失且任何下游计数器都看不到）。表内跳过按矩形区间判定，不再
+        # 按表面积逐格枚举插集（50k 行 ListObject 曾因此做百万次 set 插入）
         leftovers = _connected_regions(
-            sheet, max_row=max_row, max_column=max_column, skip=covered_cells,
+            sheet, max_row=max_row, max_column=max_column, skip_regions=regions,
             extra_non_empty=extra_non_empty,
+            non_empty_cells=non_empty_cells,
         )
         regions.extend(leftovers)
         header_rows.extend([None for _ in leftovers])
@@ -289,6 +335,7 @@ def _sheet_table_regions(
         regions = _connected_regions(
             sheet, max_row=max_row, max_column=max_column,
             extra_non_empty=extra_non_empty,
+            non_empty_cells=non_empty_cells,
         )
         header_rows = [None for _ in regions]
     region_merges = [
@@ -296,30 +343,20 @@ def _sheet_table_regions(
     ]
     # sheet 级守恒计数器：每个非空格必须落在恰好一个区域内。区域拆分（ListObject
     # 矩形 + 表外连通区域）理论上全覆盖，但覆盖盲区/区域重叠 = 静默丢内容——
-    # 计数器把"相信全覆盖"变成 fail-closed 硬门（宁 parse_incomplete 不丢字）
-    coverage: dict[tuple[int, int], int] = {}
-    for min_row, min_col, region_max_row, region_max_col in regions:
-        for row_index in range(min_row, region_max_row + 1):
-            for column_index in range(min_col, region_max_col + 1):
-                key = (row_index, column_index)
-                coverage[key] = coverage.get(key, 0) + 1
+    # 计数器把"相信全覆盖"变成 fail-closed 硬门（宁 parse_incomplete 不丢字）。
+    # 覆盖计数走矩形行区间索引（ stabbing 计数），不再按区域面积逐格插 coverage dict
+    coverage_index = _RowColumnIntervals(regions)
     dropped_cells: list[tuple[int, int]] = []
     multi_covered_cells: list[tuple[int, int]] = []
-    for row_index, row in enumerate(
-        sheet.iter_rows(min_row=1, max_row=max_row, max_col=max_column, values_only=True),
-        start=1,
-    ):
-        for column_index, value in enumerate(row, start=1):
-            if value is None or not str(value).strip():
-                continue
-            count = coverage.get((row_index, column_index), 0)
-            if count == 0:
-                dropped_cells.append((row_index, column_index))
-            elif count > 1:
-                multi_covered_cells.append((row_index, column_index))
+    for coord in non_empty_cells:
+        count = coverage_index.count(*coord)
+        if count == 0:
+            dropped_cells.append(coord)
+        elif count > 1:
+            multi_covered_cells.append(coord)
     # 无缓存公式格（值视图不可见）同样参与守恒：区域内不丢、区域外如实 dropped
     for coord in sorted(extra_non_empty):
-        if coverage.get(coord, 0) == 0:
+        if coverage_index.count(*coord) == 0:
             dropped_cells.append(coord)
     if dropped_cells or multi_covered_cells:
         LOGGER.warning(
@@ -373,25 +410,46 @@ def _connected_regions(
     sheet: Any, *, max_row: int, max_column: int,
     skip: set[tuple[int, int]] | None = None,
     extra_non_empty: set[tuple[int, int]] | None = None,
+    skip_regions: list[tuple[int, int, int, int]] | None = None,
+    non_empty_cells: list[tuple[int, int]] | None = None,
 ) -> list[tuple[int, int, int, int]]:
     """无 Excel Table 定义时按非空连通区域拆表（保留区域左上角坐标）。
 
     八连通：矩阵表的角落孤格（如仅对角相邻的 X marker）仍属同一张表；
     真正分立的表之间至少隔一整行/列空白，不会被粘连。skip 坐标（已被
     ListObject 覆盖）不参与扫描。extra_non_empty 坐标（无缓存公式格）
-    值视图不可见但按非空参与连通。"""
+    值视图不可见但按非空参与连通。
+    non_empty_cells：调用方单遍预扫的非空坐标（行主序，与本地整表扫描的
+    插入序一致）——传入则不再重扫值矩阵。skip_regions：skip 的矩形表达
+    （ListObject 区域），与 skip 坐标集等价过滤，免去按面积逐格建集。"""
     skip = skip or set()
+    skip_index = _RowColumnIntervals(skip_regions) if skip_regions else None
     non_empty: set[tuple[int, int]] = set()
-    for row_index, row in enumerate(
-        sheet.iter_rows(min_row=1, max_row=max_row, max_col=max_column, values_only=True),
-        start=1,
-    ):
-        for column_index, value in enumerate(row, start=1):
-            if (row_index, column_index) in skip:
+    if non_empty_cells is None:
+        for row_index, row in enumerate(
+            sheet.iter_rows(min_row=1, max_row=max_row, max_col=max_column, values_only=True),
+            start=1,
+        ):
+            for column_index, value in enumerate(row, start=1):
+                coord = (row_index, column_index)
+                if coord in skip:
+                    continue
+                if skip_index is not None and skip_index.contains(row_index, column_index):
+                    continue
+                if value is not None and str(value).strip():
+                    non_empty.add(coord)
+    else:
+        for coord in non_empty_cells:
+            if coord in skip:
                 continue
-            if value is not None and str(value).strip():
-                non_empty.add((row_index, column_index))
-    non_empty.update(coord for coord in (extra_non_empty or set()) if coord not in skip)
+            if skip_index is not None and skip_index.contains(*coord):
+                continue
+            non_empty.add(coord)
+    non_empty.update(
+        coord for coord in (extra_non_empty or set())
+        if coord not in skip
+        and not (skip_index is not None and skip_index.contains(*coord))
+    )
     regions: list[tuple[int, int, int, int]] = []
     remaining = set(non_empty)
     while remaining:

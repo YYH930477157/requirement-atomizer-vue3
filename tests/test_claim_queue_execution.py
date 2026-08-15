@@ -1454,5 +1454,108 @@ class ClaimQueueRoutePreflightTests(unittest.TestCase):
             config_loader.assert_not_called()
 
 
+class AttemptLogThreadingTests(unittest.TestCase):
+    """FIX 5（2026-08-14）：一次 queue-execute 临界区内的重复 attempt-log 扫描
+    改为把已读 rows 贯穿传递（读者另有 stat 签名 memo，重复读本身 O(1)）。"""
+
+    def test_durable_usage_accepts_threaded_rows_without_rescanning(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            budget = mock.Mock()
+            rows = [{
+                "attempt_id": "CRA-threaded",
+                "event_kind": "budget_checkpoint",
+                "checkpoint": {
+                    "phase": "post_call",
+                    "calls": 2,
+                    "total_tokens": 431,
+                    "usage_complete": True,
+                    "status": "settled",
+                },
+            }]
+            with mock.patch.object(
+                execution,
+                "read_attempt_log",
+                side_effect=AssertionError("threaded rows must not trigger a rescan"),
+            ):
+                usage = execution._durable_usage(
+                    root,
+                    attempt_id="CRA-threaded",
+                    budget=budget,
+                    rows=rows,
+                )
+
+        self.assertEqual(usage, {
+            "calls": 2,
+            "total_tokens": 431,
+            "usage_complete": True,
+        })
+        budget.snapshot.assert_not_called()
+
+    def test_require_published_attempt_accepts_threaded_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            requirements_sha = "sha256:" + "0" * 64
+            rows = [
+                {
+                    "attempt_id": "CRA-threaded",
+                    "event_kind": "reextract_started",
+                    "proposal_id": "CQP-12345678-9abcdef0",
+                },
+                {
+                    "attempt_id": "CRA-threaded",
+                    "event_kind": "supplement_persisted",
+                },
+                {
+                    "attempt_id": "CRA-threaded",
+                    "event_kind": "requirements_published",
+                    "requirements_sha256": requirements_sha,
+                },
+                {
+                    "attempt_id": "CRA-threaded",
+                    "event_kind": "effective_folded",
+                },
+                {
+                    "attempt_id": "CRA-threaded",
+                    "event_kind": "reextract_succeeded",
+                },
+            ]
+            with mock.patch.object(
+                claim_reextract_attempts,
+                "_scan",
+                side_effect=AssertionError("threaded rows must not trigger a rescan"),
+            ):
+                provenance = claim_reextract_attempts.require_published_attempt(
+                    root,
+                    attempt_id="CRA-threaded",
+                    requirements_sha256=requirements_sha,
+                    rows=rows,
+                )
+
+        self.assertEqual(provenance["started"]["event_kind"], "reextract_started")
+        self.assertEqual(
+            provenance["publication"]["requirements_sha256"],
+            requirements_sha,
+        )
+
+    def test_proposal_attempt_state_returns_reusable_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with mock.patch.object(
+                execution,
+                "read_attempt_log",
+            ) as reader:
+                reader.return_value = mock.Mock(rows=[])
+                states, relevant, snapshot = execution._proposal_attempt_state(
+                    root,
+                    "CQP-12345678-9abcdef0",
+                )
+
+        reader.assert_called_once_with(root)
+        self.assertEqual(states, {})
+        self.assertEqual(relevant, [])
+        self.assertIs(snapshot, reader.return_value)
+
+
 if __name__ == "__main__":
     unittest.main()

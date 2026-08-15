@@ -247,13 +247,15 @@ def run_pipeline_task(
             "kb_paths": [str(path) for path in resolve_kb_paths(kb_paths)],
             "domain_pack_dir": str(resolve_bundled_path(domain_pack_dir) or ""),
         }
-        atomize_reused = stage_is_reusable(
+        atomize_reused, atomize_fingerprint = _stage_reuse_check(
             out_dir, "atomize", input_path=input_path, config=atomize_config)
         if atomize_reused:
             manifest = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))
             manifest["resume_action"] = "skipped"
+            # 复用检查刚验证过输入未变：记账直接复用该指纹，不再整批重哈希
             update_run_manifest(out_dir, "atomize", "ok", outputs=STAGE_REQUIRED_OUTPUTS["atomize"],
-                                action="skipped", input_path=input_path, config=atomize_config)
+                                action="skipped", input_path=input_path, config=atomize_config,
+                                input_fingerprint=atomize_fingerprint)
             emit_progress({"stage": "pipeline_stage", "step": "atomize", "status": "skipped", "percent": 100})
         else:
             update_run_manifest(out_dir, "atomize", "running")
@@ -295,11 +297,19 @@ def run_pipeline_task(
         if resolved_domain_pack_dir is not None:
             review_config["domain_pack_dir"] = str(resolved_domain_pack_dir)
             review_domain_pack_path = resolved_domain_pack_dir / "pack.yaml"
+        review_reused = False
+        review_fingerprint: str | None = None
+        if not skip_review and atomize_reused:
+            # 保持旧短路语义：仅 atomize 已复用且确实要复核时才做复用检查
+            review_reused, review_fingerprint = _stage_reuse_check(
+                out_dir, "llm-review", route=llm_route, config=review_config)
         if skip_review:
             review = None
-        elif atomize_reused and stage_is_reusable(out_dir, "llm-review", route=llm_route, config=review_config):
+        elif review_reused:
             review = skipped_stage_payload(out_dir, "llm-review")
-            update_run_manifest(out_dir, "llm-review", "ok", route=llm_route, outputs=STAGE_REQUIRED_OUTPUTS["llm-review"], action="skipped", config=review_config)
+            update_run_manifest(out_dir, "llm-review", "ok", route=llm_route,
+                                outputs=STAGE_REQUIRED_OUTPUTS["llm-review"], action="skipped",
+                                config=review_config, input_fingerprint=review_fingerprint)
             emit_progress({"stage": "pipeline_stage", "step": "llm-review", "status": "skipped", "percent": 100})
         else:
             update_run_manifest(out_dir, "llm-review", "running", config=review_config)
@@ -1080,7 +1090,7 @@ _MANIFEST_LOCKS: dict[Path, RLock] = {}
 _MANIFEST_LOCKS_GUARD = RLock()
 _MANIFEST_LOCK_TIMEOUT_S = 10.0
 _MANIFEST_LOCK_STALE_AFTER_S = 300.0
-_REPLACE_ATTEMPTS = 5
+_REPLACE_ATTEMPTS = 8
 _REPLACE_RETRY_DELAY_S = 0.02
 
 # 阶段名 == 子命令名（manifest 键与 CLI 一致，GUI 单步按钮与 chain 写同一本账）
@@ -1278,6 +1288,7 @@ def stage_producer(stage: str, *, out_dir: Path | None = None,
             # the algorithm version and the bundled vocabulary content in the producer so a
             # repaired parser cannot silently reuse an old atomize run. Source alignment is a
             # separate parser-output contract used by the claim catalog conservation audit.
+            from docx_table_parser import DOCX_TABLE_PHYSICAL_VERSION
             from parsers.pdf_parser import (
                 PDF_TEXT_REPAIR_VERSION,
                 pdf_layout_switch_fingerprint,
@@ -1288,6 +1299,7 @@ def stage_producer(stage: str, *, out_dir: Path | None = None,
                 SOURCE_TRANSFORMATION_POLICY_VERSION,
                 SOURCE_TRANSFORMATION_RULESET_VERSION,
             )
+            from table_dispositions import TABLE_DISPOSITION_RULE_VERSION
             from table_structure import TABLE_STRUCTURE_VERSION
             producer = (
                 f"{producer}+{PDF_TEXT_REPAIR_VERSION}"
@@ -1299,6 +1311,11 @@ def stage_producer(stage: str, *, out_dir: Path | None = None,
                 f"+{SOURCE_TRANSFORMATION_POLICY_VERSION}"
                 f"+{SOURCE_TRANSFORMATION_RULESET_VERSION}"
                 f"+{TABLE_STRUCTURE_VERSION}"
+                # DOCX 物理网格还原版本钉进戳：docx_table_physical_version 被写进
+                # cells/blocks/rows；裁决规则版本写进每行 table_cell_dispositions.jsonl
+                # （atomize 必产输出）——任一 bump 都必须令旧 atomize 阶段失效重跑。
+                f"+{DOCX_TABLE_PHYSICAL_VERSION}"
+                f"+{TABLE_DISPOSITION_RULE_VERSION}"
             )
             # A9：tender 适配开关仅在开启时进戳，默认关时保持 producer 不变
             if os.environ.get("RATOMIZER_TENDER_TABLE_FILTER", "0").strip().lower() not in {"0", "false", "off"}:
@@ -1437,6 +1454,64 @@ def _hash_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+# 阶段输入文件 sha256 记忆化（键=解析后路径，值=((dev, ino, size, mtime_ns), sha256)）：
+# 一次阶段评估会把同一批 STAGE_INPUTS 哈希最多 5-6 遍（复用检查/租约前后/记账），
+# 统计签名命中即免全量重读；签名变化回退全量重哈希，指纹值逐字节不变。
+_STAGE_INPUT_SHA_CACHE: dict[str, tuple[tuple[int, int, int, int], str]] = {}
+_STAGE_INPUT_SHA_CACHE_LOCK = RLock()
+# 有界化（2026-08-15，与 doc_annotation_export._FILE_SHA256_MEMO_MAX 同口径）：
+# 原先条目只在文件消失时逐条淘汰，长驻进程跨多个 out_dir 评估阶段输入会无界
+# 增长。超限整体清空后重插当前键——sha256 指纹值逐字节不变，代价只是下一轮
+# 统计签名失配时的一次全量重哈希（命中路径不受影响）。
+_STAGE_INPUT_SHA_CACHE_MAX = 256
+
+
+def _file_sha256_cached(path: Path) -> str | None:
+    """sha256(path)，带 (dev, ino, size, mtime_ns) 文件身份统计签名记忆化。
+
+    身份模型 (device, file-id, size, mtime)：工具链所有写路径都是 tmp + os.replace
+    原子替换（新文件标识）→ 每次工具链写必然失配重哈希，杜绝「同尺寸原子替换 +
+    还原 mtime」的统计签名伪造（2026-08-14 复查者实测复现）。残余风险 = 蓄意的
+    同尺寸原地覆写+还原 mtime（保留文件标识）——非工具链写路径；st_ino=0 的
+    网络/reparse 路径退化为旧 (size, mtime) 行为，不劣化。
+    文件缺失/不可 stat → None 并清掉过期缓存项；签名不匹配 → 全量重哈希后回填。
+    命中时返回值与 _hash_file 对同一文件状态逐字节一致，指纹值不变。
+    """
+    key = str(path)
+    try:
+        stat = path.stat()
+    except OSError:
+        with _STAGE_INPUT_SHA_CACHE_LOCK:
+            _STAGE_INPUT_SHA_CACHE.pop(key, None)
+        return None
+    signature = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
+    with _STAGE_INPUT_SHA_CACHE_LOCK:
+        cached = _STAGE_INPUT_SHA_CACHE.get(key)
+        if cached is not None and cached[0] == signature:
+            return cached[1]
+    digest = _hash_file(path)
+    with _STAGE_INPUT_SHA_CACHE_LOCK:
+        if len(_STAGE_INPUT_SHA_CACHE) >= _STAGE_INPUT_SHA_CACHE_MAX:
+            _STAGE_INPUT_SHA_CACHE.clear()
+        _STAGE_INPUT_SHA_CACHE[key] = (signature, digest)
+    return digest
+
+
+def _stage_input_sha_map(out_dir: Path, stage: str) -> dict[str, str | None]:
+    """STAGE_INPUTS[stage] 的 {name: sha256|None} 映射，供两类阶段指纹共享。
+
+    stage_input_fingerprint 与 stage_input_files_fingerprint 从同一映射取值，
+    后续对同目录同阶段的重复评估经 (dev, ino, size, mtime_ns) 文件身份签名直接
+    命中，不再重复全量哈希。
+    """
+    root = Path(out_dir).expanduser().resolve()
+    sha_map: dict[str, str | None] = {}
+    for name in STAGE_INPUTS.get(stage, []):
+        path = governed_artifact_path(root, name, for_write=False)
+        sha_map[name] = _file_sha256_cached(path) if path.is_file() else None
+    return sha_map
+
+
 _STAGE_MUTABLE_INPUTS = {
     "export-annotation-html": {"annotation_translations.json"},
     "full-translation": {"annotation_translations.json"},
@@ -1467,15 +1542,12 @@ def stage_input_files_fingerprint(out_dir: Path, stage: str) -> str:
     """Hash immutable stage inputs for the duration of a downstream read lease."""
     root = Path(out_dir).expanduser().resolve()
     ignored = _STAGE_MUTABLE_INPUTS.get(stage, set())
-    payload = []
-    for name in STAGE_INPUTS.get(stage, []):
-        if name in ignored:
-            continue
-        path = governed_artifact_path(root, name, for_write=False)
-        payload.append({
-            "path": name,
-            "sha256": _hash_file(path) if path.is_file() else None,
-        })
+    sha_map = _stage_input_sha_map(root, stage)
+    payload = [
+        {"path": name, "sha256": digest}
+        for name, digest in sha_map.items()
+        if name not in ignored
+    ]
     return hashlib.sha256(json.dumps(
         payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"),
     ).encode("utf-8")).hexdigest()
@@ -1504,23 +1576,23 @@ def _resource_content_fingerprint(path: Path | None) -> str | None:
 def stage_input_fingerprint(out_dir: Path, stage: str, *, route: str | None = None,
                             template_path: Path | None = None,
                             input_path: Path | None = None,
-                            config: dict[str, Any] | None = None) -> str:
+                            config: dict[str, Any] | None = None,
+                            producer: str | None = None) -> str:
     root = Path(out_dir).expanduser().resolve()
-    inputs: list[dict[str, Any]] = []
-    for name in STAGE_INPUTS.get(stage, []):
-        path = governed_artifact_path(root, name, for_write=False)
-        inputs.append({
-            "path": name,
-            "sha256": _hash_file(path) if path.exists() and path.is_file() else None,
-        })
+    sha_map = _stage_input_sha_map(root, stage)
+    inputs: list[dict[str, Any]] = [
+        {"path": name, "sha256": digest} for name, digest in sha_map.items()
+    ]
     template = Path(template_path).expanduser().resolve() if template_path else None
-    payload = {
-        "stage": stage,
-        "producer": stage_producer(
+    if producer is None:
+        producer = stage_producer(
             stage,
             out_dir=root,
             kb_paths=(config or {}).get("kb_paths") if stage == "llm-review" else None,
-        ),
+        )
+    payload = {
+        "stage": stage,
+        "producer": producer,
         "route": route or "",
         "inputs": inputs,
         "atomize_resources": (
@@ -1634,6 +1706,14 @@ def _manifest_process_lock_for(out_dir: Path) -> RLock:
         return _MANIFEST_LOCKS.setdefault(out_dir, RLock())
 
 
+def _read_manifest_lock_pid(lock_path: Path) -> int:
+    """读锁文件记录的持有者 PID（os.open 后 os.write 写入的 ASCII 文本）；读不出 → 0。"""
+    try:
+        return int(lock_path.read_text(encoding="ascii").strip() or 0)
+    except (OSError, UnicodeDecodeError, ValueError):
+        return 0
+
+
 def _remove_stale_manifest_lock(lock_path: Path, stale_after_s: float) -> bool:
     if stale_after_s < 0:
         return False
@@ -1643,6 +1723,13 @@ def _remove_stale_manifest_lock(lock_path: Path, stale_after_s: float) -> bool:
         return True
     if age_s < stale_after_s:
         return False
+    # 仅凭年龄偷锁会误杀活进程的长阶段（>300s 的 LLM 阶段并不罕见），双写 run_manifest：
+    # 只有记录的持有者 PID 已死才允许偷（复制 omission_actions 的 PID 存活检查模式）。
+    from omission_actions import _pid_is_alive
+
+    pid = _read_manifest_lock_pid(lock_path)
+    if pid and _pid_is_alive(pid):
+        return False
     try:
         lock_path.unlink()
     except FileNotFoundError:
@@ -1651,6 +1738,8 @@ def _remove_stale_manifest_lock(lock_path: Path, stale_after_s: float) -> bool:
 
 
 def _replace_with_retry(source: Path, target: Path) -> None:
+    # 线性退避（0.02*(1..7)，总窗口 ≈0.56s）：Windows AV/索引器常持有句柄超过
+    # 旧的 5×0.02=80ms 预算，表现为可重试 PermissionError——对齐 claim_artifacts 的模式。
     for attempt in range(_REPLACE_ATTEMPTS):
         try:
             os.replace(source, target)
@@ -1658,7 +1747,7 @@ def _replace_with_retry(source: Path, target: Path) -> None:
         except PermissionError:
             if attempt + 1 >= _REPLACE_ATTEMPTS:
                 raise
-            time.sleep(_REPLACE_RETRY_DELAY_S)
+            time.sleep(_REPLACE_RETRY_DELAY_S * (attempt + 1))
 
 
 def _atomic_write_json(path: Path, text: str) -> None:
@@ -1684,12 +1773,19 @@ def _write_stage_manifest(out_dir: Path, stage: str, entry: dict[str, Any]) -> N
     _atomic_write_json(path, json.dumps({"stage": stage, **entry}, ensure_ascii=False, indent=2) + "\n")
 
 
-def _stage_is_reusable(out_dir: Path, stage: str, *,
+def _stage_reuse_check(out_dir: Path, stage: str, *,
                        route: str | None = None,
                        input_path: Path | None = None,
                        template_path: Path | None = None,
                        config: dict[str, Any] | None = None,
-                       require_claim_generation: bool = True) -> bool:
+                       require_claim_generation: bool = True) -> tuple[bool, str | None]:
+    """_stage_is_reusable 的带指纹版本：返回 (是否可复用, 记账指纹)。
+
+    记账指纹 = update_run_manifest(status="ok") 将写下的 input_fingerprint（route 语义
+    与其一致）。复用检查内部刚算过当前指纹，且比对 route 与记账 route 一致时直接复用，
+    跳过路径不再第 5 次重算；不一致（stub 请求命中 openai_compatible 台账）时按记账
+    route 重算一次，保证写下的值与旧重算路径逐字节一致。
+    """
     data = read_run_manifest(out_dir)
     stages = data.get("stages") if isinstance(data.get("stages"), dict) else {}
     entry = stages.get(stage) if isinstance(stages.get(stage), dict) else None
@@ -1697,26 +1793,29 @@ def _stage_is_reusable(out_dir: Path, stage: str, *,
     # （空行为需求被标"已完成"）——必须有带 route 的台账条目佐证；请求 stub/确定性阶段时，
     # 复用任何现成产物无害（最坏反而复用了更好的），保留遗留目录续跑价值（文件存在即可）。
     if not entry:
-        return False
+        return False, None
     if route == "openai_compatible" and entry.get("route") != route:
-        return False
+        return False, None
     if entry:
         if entry.get("status") != "ok":
-            return False
-        if entry.get("producer") and entry.get("producer") != stage_producer(
-                stage, out_dir=out_dir, kb_paths=(config or {}).get("kb_paths")):
-            return False
+            return False, None
+        # 生产者戳只算一次：显式比对与 stage_input_fingerprint 载荷共用同一字符串
+        # （llm-review 的戳含 evidence_fingerprint，重复计算会重复哈希全部证据文件）。
+        producer = stage_producer(
+            stage, out_dir=out_dir, kb_paths=(config or {}).get("kb_paths"))
+        if entry.get("producer") and entry.get("producer") != producer:
+            return False, None
         recorded_fingerprint = str(entry.get("input_fingerprint") or "")
         recorded_route = str(entry.get("route") or "")
         fingerprint_route = recorded_route if route == "stub" and recorded_route == "openai_compatible" else route
         current_fingerprint = stage_input_fingerprint(
             out_dir, stage, route=fingerprint_route, template_path=template_path,
-            input_path=input_path, config=config)
+            input_path=input_path, config=config, producer=producer)
         if recorded_fingerprint != current_fingerprint:
-            return False
+            return False, None
         recorded_files = str(entry.get("input_files_fingerprint") or "")
         if recorded_files and recorded_files != stage_input_files_fingerprint(out_dir, stage):
-            return False
+            return False, None
     outputs = _stage_outputs(stage, entry)
     if stage == "ai-extract":
         # Runtime effective sidecars are independently recoverable. Legacy
@@ -1729,7 +1828,7 @@ def _stage_is_reusable(out_dir: Path, stage: str, *,
     if stage == "ai-extract" and not require_claim_generation:
         outputs = [name for name in outputs if Path(name).name not in _CLAIM_STAGE_OUTPUTS]
     if not _outputs_exist(out_dir, outputs):
-        return False
+        return False, None
     if stage == "ai-extract" and require_claim_generation:
         try:
             from claim_artifacts import (
@@ -1739,7 +1838,7 @@ def _stage_is_reusable(out_dir: Path, stage: str, *,
 
             snapshot = load_committed_claim_base(out_dir)
             if not committed_base_versions_are_current(snapshot):
-                return False
+                return False, None
             from ai_extract import (
                 resolve_claim_shadow_verify,
                 resolve_claim_shadow_verify_max_calls,
@@ -1754,17 +1853,43 @@ def _stage_is_reusable(out_dir: Path, stage: str, *,
                 and resolve_claim_shadow_verify_max_total_tokens() > 0
             )
             if shadow_meta.get("semantic_verifier_enabled") is not expected_verifier:
-                return False
+                return False, None
         except ClaimArtifactError:
-            return False
+            return False, None
     if stage == "atomize" and input_path is not None:
         try:
             manifest = json.loads((Path(out_dir) / "manifest.json").read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
-            return False
+            return False, None
         if Path(str(manifest.get("input") or "")).expanduser().resolve() != Path(input_path).expanduser().resolve():
-            return False
-    return True
+            return False, None
+    if fingerprint_route == route:
+        record_fingerprint = current_fingerprint
+    else:
+        # stub 请求复用 openai_compatible 台账：记账 route 将被改写为 stub，
+        # 指纹必须按 stub route 重算才能与下一次复用检查自洽（旧路径同为重算）。
+        record_fingerprint = stage_input_fingerprint(
+            out_dir, stage, route=route, template_path=template_path,
+            input_path=input_path, config=config, producer=producer)
+    return True, record_fingerprint
+
+
+def _stage_is_reusable(out_dir: Path, stage: str, *,
+                       route: str | None = None,
+                       input_path: Path | None = None,
+                       template_path: Path | None = None,
+                       config: dict[str, Any] | None = None,
+                       require_claim_generation: bool = True) -> bool:
+    reusable, _ = _stage_reuse_check(
+        out_dir,
+        stage,
+        route=route,
+        input_path=input_path,
+        template_path=template_path,
+        config=config,
+        require_claim_generation=require_claim_generation,
+    )
+    return reusable
 
 
 def stage_is_reusable(out_dir: Path, stage: str, *,

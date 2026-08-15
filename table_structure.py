@@ -1,4 +1,4 @@
-"""表格结构与单元格级需求闭环底座（table-structure-v8）。
+"""表格结构与单元格级需求闭环底座（table-structure-v9）。
 
 集中管理此前散落在 atomize.py / ai_extract.py / spot_extract.py / extract_units.py 的
 表格角色识别（标题/表头/行头/数据/分组标题）与粒度规划（row/cell/mixed leaf plan）。
@@ -27,7 +27,9 @@ import os
 import re
 from typing import Any, Iterable, Mapping
 
-TABLE_STRUCTURE_VERSION = "table-structure-v8"
+# v9：字母复合表头正则从 (a)..(j) 扩到 (a)..(z)（第 11 列 (k) 起可识别），
+# 序列仍必须从 (a) 起连续；其余判定口径不变。
+TABLE_STRUCTURE_VERSION = "table-structure-v9"
 # Dual-track entry (WS1 wk3-5, plan §3.2.2): a separate identity stamp for the new
 # hypothesis-first entry. The dual-track path remains gated behind a default-OFF switch
 # (TABLE_DUAL_TRACK_SWITCH below); this v8 bump belongs to deterministic header handling.
@@ -70,7 +72,7 @@ _PROSE_CELL_MIN_MEDIAN_LEN = 40
 # 合成列名（unique_headers 对无表头/歧义表头的回退）——column_N 不是列维度证据：
 # 无真实表头标签时矩阵分类与事实列判定一律不成立（内容保留，不合成句式）
 _SYNTHETIC_HEADER_RE = re.compile(r"^column_\d+$")
-_LETTERED_HEADER_CELL_RE = re.compile(r"^\s*\(([a-jA-J])\)\s*(?P<label>.*)$")
+_LETTERED_HEADER_CELL_RE = re.compile(r"^\s*\(([a-zA-Z])\)\s*(?P<label>.*)$")
 # 前置标识格长度上限：标识格是对象名/短标签（"Logger"、"Voltage"），
 # 超过此长度的前置格是兄弟义务句而非身份标识，不进上下文
 _IDENTITY_CONTEXT_MAX_LEN = 120
@@ -210,10 +212,12 @@ def lettered_composite_header_rows(
     first_row: list[str],
     second_row: list[str] | None,
 ) -> tuple[int, list[str]] | None:
-    """Recognize sequential ``(a)..(j)`` column labels without treating prose as headers.
+    """Recognize sequential ``(a)..(z)`` column labels without treating prose as headers.
 
     Returns ``(header_row_count, evidence)``.  Inline labels use one row; a
     marker-only letter row requires the next non-normative row as the label row.
+    The sequence must start at ``(a)`` and stay contiguous — split tables that
+    continue at ``(b)`` are deliberately unrecognized.
     """
     matches: list[tuple[int, str, str]] = []
     for index, cell in enumerate(first_row):
@@ -334,6 +338,23 @@ def covered_coordinates(
                 if (row, column) != (min_row, min_col):
                     covered.add((row, column))
     return covered
+
+
+def _merge_anchor_map(
+    merge_ranges: list[tuple[int, int, int, int]],
+) -> dict[tuple[int, int], tuple[int, int, int, int]]:
+    """(row, col) → 所在合并区域（一次预计算，替代逐格线性扫描）。
+
+    与 merge_anchor_for 的首匹配语义逐字节一致：normalize_merge_ranges 已排序，
+    依序填充且不覆盖既有键 = 每个坐标命中排序意义上的第一个 range。"""
+    anchor_map: dict[tuple[int, int], tuple[int, int, int, int]] = {}
+    for entry in merge_ranges:
+        min_row, min_col, max_row, max_col = entry
+        for row in range(min_row, max_row + 1):
+            for column in range(min_col, max_col + 1):
+                if (row, column) not in anchor_map:
+                    anchor_map[(row, column)] = entry
+    return anchor_map
 
 
 def merge_ranges_overlap(
@@ -524,6 +545,42 @@ def is_group_header_row(
     if not merge_ranges or full_width_merge_row(row_index, width, merge_ranges) is None:
         return False
     return not is_normative_text(non_empty[0])
+
+
+def table_geometry_context(
+    matrix: list[list[str]],
+    *,
+    width: int,
+    data_rows: list[int],
+    merge_ranges: Iterable[Iterable[int]] | None,
+) -> dict[str, Any]:
+    """plan_table_leaves / build_cell_items 的共享表格几何（一次计算，两处消费）。
+
+    atomize.build_table_artifacts 顺序调用两个函数，各自重算 normalize_merge_ranges /
+    covered_coordinates / 逐数据行 is_group_header_row——covered 与分组行判定都是
+    O(合并面积)，同一张表重复付出两遍。本函数对同一 (matrix, width, data_rows,
+    merge_ranges) 一次算清归一化合并、covered 集、(row,col)→anchor 映射与分组标题
+    行集，经 ``geometry`` 参数传入两个函数跳过重复计算；``None``（默认）时两函数
+    保持各自内联重算，输出不变。调用方必须用与本函数相同的 matrix/structure/
+    merge_ranges 构建并传给两个函数——ctx 不做输入一致性校验（内部优化参数）。
+    """
+    normalized_merges = normalize_merge_ranges(merge_ranges)
+    return {
+        "normalized_merges": normalized_merges,
+        "covered": covered_coordinates(normalized_merges),
+        "anchor_map": _merge_anchor_map(normalized_merges),
+        "group_header_rows": {
+            row_index
+            for row_index in data_rows
+            if is_group_header_row(
+                pad_row([clean_cell(c) for c in matrix[row_index - 1]], width),
+                row_index,
+                width=width,
+                # 同 plan/build：[]（已知无合并）不得坍缩成 None（旧产物无证据）
+                merge_ranges=None if merge_ranges is None else normalized_merges,
+            )
+        },
+    }
 
 
 def physical_data_row_indexes(block: Mapping[str, Any]) -> list[int]:
@@ -1057,6 +1114,7 @@ def plan_table_leaves(
     headers: list[str] | None = None,
     fact_columns: set[int] | None = None,
     tender_table_kind: str | None = None,
+    geometry: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """唯一 leaf plan：同一物理内容只能有一个 owner。
 
@@ -1067,8 +1125,18 @@ def plan_table_leaves(
       行 own 属性字段，事实列的 marker 格各自 own 一条 cell leaf；
     - 标题/表头中的规范性句生成 cell leaf；普通标题/表头只作 context；
     - 全宽合并分组标题（非规范性）作 context；规范性全宽行生成 cell leaf。
+
+    ``geometry``（可选）：table_geometry_context 对同一 matrix/structure/merge_ranges
+    的预计算结果——传入时跳过本函数内部的归一化/covered/分组标题重算，输出不变。
     """
-    normalized_merges = normalize_merge_ranges(merge_ranges)
+    if geometry is not None:
+        normalized_merges = list(geometry["normalized_merges"])
+        covered = geometry["covered"]
+        group_header_rows = geometry["group_header_rows"]
+    else:
+        normalized_merges = normalize_merge_ranges(merge_ranges)
+        covered = covered_coordinates(normalized_merges)
+        group_header_rows = None
     # 同 analyze_table：[]（已知无合并）与 None（旧产物无证据）必须区分传递，
     # 否则已知无合并的单格数据行会被旧同值启发式误判成分组标题静默消失
     merge_evidence = None if merge_ranges is None else normalized_merges
@@ -1077,7 +1145,6 @@ def plan_table_leaves(
     header_rows = list(structure.get("header_row_indexes") or [])
     data_rows = list(structure.get("data_row_indexes") or [])
     ambiguous_structure_rows = set(structure.get("ambiguous_structure_rows") or [])
-    covered = covered_coordinates(normalized_merges)
     fact_columns = fact_columns or set()
 
     row_leaves: list[int] = []
@@ -1089,6 +1156,13 @@ def plan_table_leaves(
     ambiguous_structure_cells: list[tuple[int, int]] = []
     untyped_colon_spec_cells: list[tuple[int, int]] = []
     tender_commercial_cells: list[tuple[int, int]] = []
+    # 增量维护 row → 该行 cell leaf 列集合：unsignaled 判定消费 claim_columns 时
+    # 不再对累积 cell_leaves 做 O(数据行数 × cell_leaves 总数) 的重扫
+    claim_columns_by_row: dict[int, set[int]] = {}
+
+    def _register_cell_leaf(row_index: int, column_index: int) -> None:
+        cell_leaves.append((row_index, column_index))
+        claim_columns_by_row.setdefault(row_index, set()).add(column_index)
 
     # A9-1：商务/表单表整表受控排除——所有非空 canonical cell 进入默认排除候选，
     # 不生成 row/cell claim，也不进入功能聚类/需求候选。默认关，OFF 时不执行。
@@ -1142,7 +1216,7 @@ def plan_table_leaves(
                 if is_technical_spec_text(text):
                     # 技术规格在结构角色不确定时仍形成逐字 claim，同时保留结构待审；
                     # 元数据 colon_spec 不走此分支，只保留为可定位 context。
-                    cell_leaves.append((row_index, column_index))
+                    _register_cell_leaf(row_index, column_index)
                 else:
                     context_cells.append((row_index, column_index))
                     if is_untyped_colon_spec_text(text):
@@ -1160,7 +1234,7 @@ def plan_table_leaves(
                 # 标题/表头位只有句子型规范性内容（modal/句读句）才单独成 claim；
                 # 冒号规格/短标签（"xDLMS Service: GET" 服务名表头）是维度名——
                 # 内容已由矩阵事实/行 claim 承载，单列会再造裸标签伪需求
-                cell_leaves.append((row_index, column_index))
+                _register_cell_leaf(row_index, column_index)
             else:
                 _context(row_index, column_index, text)
 
@@ -1180,9 +1254,14 @@ def plan_table_leaves(
         ]
         if not anchor_cells:
             continue
-        if is_group_header_row(
-            padded, row_index, width=width, merge_ranges=merge_evidence
-        ):
+        is_group_header = (
+            row_index in group_header_rows
+            if group_header_rows is not None
+            else is_group_header_row(
+                padded, row_index, width=width, merge_ranges=merge_evidence
+            )
+        )
+        if is_group_header:
             # 分组标题行：非规范性全宽合并 → context（规范性在上面已被判为非分组）
             context_cells.extend(anchor_cells)
             continue
@@ -1194,10 +1273,12 @@ def plan_table_leaves(
                 for _r, column in anchor_cells
                 if (column - 1) in fact_columns and is_positive_marker(padded[column - 1])
             ]
+            # 集合在循环外提升一次——comprehension 条件里的 set(...) 会对每个格重建
+            fact_cell_set = set(fact_cells)
             non_fact = [
                 (row_index, column)
                 for _r, column in anchor_cells
-                if (row_index, column) not in set(fact_cells)
+                if (row_index, column) not in fact_cell_set
             ]
             untyped_colon_cells = [
                 (row_index, column)
@@ -1207,13 +1288,14 @@ def plan_table_leaves(
             if untyped_colon_cells:
                 untyped_colon_spec_cells.extend(untyped_colon_cells)
                 context_cells.extend(untyped_colon_cells)
+                untyped_colon_set = set(untyped_colon_cells)
                 non_fact = [
                     (row_index, column)
                     for _r, column in non_fact
-                    if (row_index, column) not in set(untyped_colon_cells)
+                    if (row_index, column) not in untyped_colon_set
                 ]
-            if fact_cells:
-                cell_leaves.extend(fact_cells)
+            for _r, column in fact_cells:
+                _register_cell_leaf(row_index, column)
             # 多义务格：同格按句切出 ≥2 条独立规范性句 → 该格按句出 cell claim
             # （owner=cell），行仍 own 其余字段——两条义务不再骑墙在一个 row claim 里
             multi_duty = [
@@ -1222,12 +1304,14 @@ def plan_table_leaves(
                 if normative_sentence_count(padded[column - 1]) >= 2
             ]
             if multi_duty:
-                cell_leaves.extend(multi_duty)
+                for _r, column in multi_duty:
+                    _register_cell_leaf(row_index, column)
                 multi_duty_cells.extend(multi_duty)
+                multi_duty_set = set(multi_duty)
                 non_fact = [
                     (row_index, column)
                     for _r, column in non_fact
-                    if (row_index, column) not in set(multi_duty)
+                    if (row_index, column) not in multi_duty_set
                 ]
             if table_kind == "parameter":
                 # 参数表每行皆需求（用户裁定 2026-07-27）：两个以上实质格即成行资格
@@ -1245,9 +1329,9 @@ def plan_table_leaves(
                 # 单格行只要包含规范性内容就必须保留（不受"至少两个非空格"限制）
                 row_leaves.append(row_index)
             else:
-                claim_columns = {
-                    column for _r, column in cell_leaves if _r == row_index
-                }
+                # 增量索引取本行 cell leaf 列集（等价于对累积 cell_leaves 按
+                # _r == row_index 重扫，免 O(行数 × cell_leaves 总数)）
+                claim_columns = claim_columns_by_row.get(row_index) or set()
                 metadata_row = any(
                     is_metadata_spec_text(padded[column - 1])
                     for _r, column in non_fact
@@ -1304,7 +1388,7 @@ def plan_table_leaves(
                 # 弱信号说明句绝不单独成 claim（B5：说明句被登记为正式 claim 的反例）
                 _context(row_index, column, text)
             else:
-                cell_leaves.append((row_index, column))
+                _register_cell_leaf(row_index, column)
 
     if row_leaves and cell_leaves:
         mode = "mixed"
@@ -1335,10 +1419,19 @@ def structural_role_for(
     structure: dict[str, Any],
     table_kind: str,
     group_header_rows: set[int],
+    title_row_set: set[int] | None = None,
+    header_row_set: set[int] | None = None,
 ) -> str:
-    if row_index in set(structure.get("title_row_indexes") or []):
+    # title/header 集合每格重建成 O(单元格数 × 行数)——批量调用方（build_cell_items
+    # 逐格、_row_identity_entries 逐前置列）经可选参数传入一次预计算的集合；
+    # 缺省时行为与逐 call 重算逐字节一致。
+    if title_row_set is None:
+        title_row_set = set(structure.get("title_row_indexes") or [])
+    if row_index in title_row_set:
         return "title"
-    if row_index in set(structure.get("header_row_indexes") or []):
+    if header_row_set is None:
+        header_row_set = set(structure.get("header_row_indexes") or [])
+    if row_index in header_row_set:
         return "header"
     if row_index in group_header_rows:
         return "group_header"
@@ -1368,28 +1461,47 @@ def build_cell_items(
     geometry_kind: str | None = None,
     fact_columns: set[int] | None = None,
     cell_metadata: Mapping[tuple[int, int], Mapping[str, Any]] | None = None,
+    geometry: Mapping[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    """每个非空物理单元格/合并区域一个 canonical cell（schema table-cell-item/v1）。"""
-    normalized_merges = normalize_merge_ranges(merge_ranges)
-    covered = covered_coordinates(normalized_merges)
+    """每个非空物理单元格/合并区域一个 canonical cell（schema table-cell-item/v1）。
+
+    ``geometry``（可选）：table_geometry_context 对同一 matrix/structure/merge_ranges
+    的预计算结果——传入时跳过内部归一化/covered/anchor/分组标题重算，输出不变。
+    """
     width = int(structure.get("width") or 0)
     data_rows = list(structure.get("data_row_indexes") or [])
+    if geometry is not None:
+        normalized_merges = list(geometry["normalized_merges"])
+        covered = geometry["covered"]
+        anchor_map = geometry["anchor_map"]
+        group_header_rows = set(geometry["group_header_rows"])
+    else:
+        normalized_merges = normalize_merge_ranges(merge_ranges)
+        covered = covered_coordinates(normalized_merges)
+        anchor_map = _merge_anchor_map(normalized_merges)
+        group_header_rows = {
+            row_index
+            for row_index in data_rows
+            if is_group_header_row(
+                pad_row([clean_cell(c) for c in matrix[row_index - 1]], width),
+                row_index,
+                width=width,
+                # 同 analyze/plan：[]（已知无合并）不得坍缩成 None（旧产物无证据），
+                # 否则已知无合并的单格行被旧同值启发式误判分组标题（P0-5）
+                merge_ranges=None if merge_ranges is None else normalized_merges,
+            )
+        }
     data_position = {row_index: offset for offset, row_index in enumerate(data_rows, start=1)}
     cell_leaf_set = {tuple(coord) for coord in plan.get("cell_leaves") or []}
     context_set = {tuple(coord) for coord in plan.get("context_cells") or []}
     row_leaf_set = set(plan.get("row_leaves") or [])
-    group_header_rows = {
-        row_index
-        for row_index in data_rows
-        if is_group_header_row(
-            pad_row([clean_cell(c) for c in matrix[row_index - 1]], width),
-            row_index,
-            width=width,
-            # 同 analyze/plan：[]（已知无合并）不得坍缩成 None（旧产物无证据），
-            # 否则已知无合并的单格行被旧同值启发式误判分组标题（P0-5）
-            merge_ranges=None if merge_ranges is None else normalized_merges,
-        )
-    }
+    # structural_role_for 的 title/header 集合一次预计算（逐格调用不再重建）；
+    # 每行"上方最近分组标题文本"一次预计算（原先逐格 sorted+pad 重算）
+    title_row_set = set(structure.get("title_row_indexes") or [])
+    header_row_set = set(structure.get("header_row_indexes") or [])
+    nearest_group_header_text = _nearest_group_header_texts(
+        matrix, width=width, group_header_rows=group_header_rows
+    )
 
     cells: list[dict[str, Any]] = []
     for row_index in range(1, len(matrix) + 1):
@@ -1402,7 +1514,7 @@ def build_cell_items(
             if not text:
                 continue
             raw_text = str(raw_row[column_index - 1] or "") if column_index - 1 < len(raw_row) else text
-            anchor = merge_anchor_for(row_index, column_index, normalized_merges)
+            anchor = anchor_map.get((row_index, column_index))
             row_span = (anchor[2] - anchor[0] + 1) if anchor else 1
             column_span = (anchor[3] - anchor[1] + 1) if anchor else 1
             anchor_covered = [
@@ -1415,6 +1527,7 @@ def build_cell_items(
                 row_index, column_index,
                 structure=structure, table_kind=table_kind,
                 group_header_rows=group_header_rows,
+                title_row_set=title_row_set, header_row_set=header_row_set,
             )
             header_path = [headers[column_index - 1]] if column_index - 1 < len(headers) else [
                 f"column_{column_index}"
@@ -1423,8 +1536,10 @@ def build_cell_items(
                 matrix, row_index, column_index,
                 structure=structure, table_kind=table_kind,
                 group_header_rows=group_header_rows, width=width,
-                merge_ranges=normalized_merges,
+                anchor_map=anchor_map,
                 headers=headers,
+                title_row_set=title_row_set, header_row_set=header_row_set,
+                group_header_text=nearest_group_header_text.get(row_index, ""),
             )
             row_header_context = [
                 render_identity_entry(header, value)
@@ -1486,6 +1601,26 @@ def build_cell_items(
     return cells
 
 
+def _nearest_group_header_texts(
+    matrix: list[list[str]],
+    *,
+    width: int,
+    group_header_rows: set[int],
+) -> dict[int, str]:
+    """行号 → 上方最近分组标题行文本（一次预计算，替代逐格 sorted+pad 扫描）。
+
+    与 _row_identity_entries 旧逐格口径一致：只取严格小于本行的最近分组标题行，
+    文本为该行 pad 后首个非空格（可能为空串——空串不进上下文）。"""
+    texts: dict[int, str] = {}
+    last_text = ""
+    for row_index in range(1, len(matrix) + 1):
+        texts[row_index] = last_text
+        if row_index in group_header_rows:
+            padded = pad_row([clean_cell(c) for c in matrix[row_index - 1]], width)
+            last_text = next((value for value in padded if value), "")
+    return texts
+
+
 def _row_identity_entries(
     matrix: list[list[str]],
     row_index: int,
@@ -1495,8 +1630,11 @@ def _row_identity_entries(
     table_kind: str,
     group_header_rows: set[int],
     width: int,
-    merge_ranges: list[tuple[int, int, int, int]],
+    anchor_map: Mapping[tuple[int, int], tuple[int, int, int, int]],
     headers: list[str] | None = None,
+    title_row_set: set[int] | None = None,
+    header_row_set: set[int] | None = None,
+    group_header_text: str = "",
 ) -> list[tuple[str, str]]:
     """行标识条目 [(header, value)]：上方最近分组标题 + 同行全部前置标识格（B1）。
 
@@ -1505,23 +1643,20 @@ def _row_identity_entries(
     anchor，继承只用于上下文与判定）。marker 格与强义务信号前置格是兄弟义务/
     矩阵记号而非身份标识，一律不进上下文。返回结构化条目而非拼接串——消费方
     （claim 上下文渲染 / A 轨 subject 提取）各取所需，不反解析显示文本。
+
+    逐格热点（build_cell_items 对每个非空格调用一次）：最近分组标题文本与
+    (row,col)→anchor 映射由调用方一次预计算传入，不再逐格 sorted/线性扫描。
     """
     entries: list[tuple[str, str]] = []
     row = matrix[row_index - 1]
-    # 上方最近分组标题行（全宽合并 anchor）
-    for candidate in sorted(group_header_rows, reverse=True):
-        if candidate >= row_index:
-            continue
-        candidate_row = pad_row([clean_cell(c) for c in matrix[candidate - 1]], width)
-        text = next((value for value in candidate_row if value), "")
-        if text:
-            entries.append(("", text))
-        break
+    # 上方最近分组标题行（全宽合并 anchor）——预计算文本
+    if group_header_text:
+        entries.append(("", group_header_text))
     for column in range(1, column_index):
         value = clean_cell(row[column - 1]) if column - 1 < len(row) else ""
-        if not value and merge_ranges:
+        if not value and anchor_map:
             # 合并覆盖坐标前置格为空——回溯 merge anchor 继承对象值
-            anchor = merge_anchor_for(row_index, column, merge_ranges)
+            anchor = anchor_map.get((row_index, column))
             if anchor is not None and (anchor[0], anchor[1]) != (row_index, column):
                 anchor_row = matrix[anchor[0] - 1] if anchor[0] - 1 < len(matrix) else []
                 if anchor[1] - 1 < len(anchor_row):
@@ -1532,6 +1667,7 @@ def _row_identity_entries(
             row_index, column,
             structure=structure, table_kind=table_kind,
             group_header_rows=group_header_rows,
+            title_row_set=title_row_set, header_row_set=header_row_set,
         )
         if role != "row_header":
             if len(value) > _IDENTITY_CONTEXT_MAX_LEN:

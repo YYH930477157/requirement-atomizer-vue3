@@ -8,6 +8,7 @@ import json
 import math
 import os
 import re
+import threading
 from functools import wraps
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -161,6 +162,25 @@ def _result_package_get_boundary(method):
     return wrapped
 
 
+def _exception_cause_of(exc: BaseException, cause_type: type) -> BaseException | None:
+    """沿显式 ``raise ... from`` 链（__cause__）找回被下游包装丢失的异常类型。
+
+    /document/pdf 的 claim 快照故障在导出侧（doc_annotation_export）被统一包成
+    ClaimAnnotationUnavailable(ValueError)，恢复挂起的类型信息只剩 cause 链——
+    前端按 error 码 effective_recovery_pending 自动 POST /claim-maintenance，
+    API 层必须沿链还原机器码。只走 __cause__（显式 from），不追 __context__，
+    避免 handler 内部偶发异常被误判成因果。
+    """
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        if isinstance(current, cause_type):
+            return current
+        seen.add(id(current))
+        current = current.__cause__
+    return None
+
+
 class RequirementAPIHandler(BaseHTTPRequestHandler):
     output_dir: Path = DEFAULT_OUTPUT
     package_root: Path = DEFAULT_OUTPUT
@@ -238,7 +258,11 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
         if parsed.path == "/document/pdf":
             # 惰性反向导入（同 _clean_block_text 先例）：影印批注数据的唯一权威实现在导出侧,
             # 应用内视图与分享 HTML 共用同一份几何/换算——双渲染器等价靠同源,不靠各写一份
-            from doc_annotation_export import build_pdf_annotation_payload
+            from claim_artifacts import ClaimEffectiveRecoveryPending
+            from doc_annotation_export import (
+                ClaimAnnotationUnavailable,
+                build_pdf_annotation_payload,
+            )
             try:
                 extraction = build_ai_extraction_status(self.output_dir)
                 partial_requirements = (
@@ -250,6 +274,20 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
                     self.output_dir,
                     requirements=partial_requirements,
                 ))
+            except ClaimAnnotationUnavailable as exc:
+                # 导出侧把 claim 快照故障统一包成 ValueError 子类（类型信息只剩
+                # raise-from cause 链）：恢复挂起必须还原成机器码 effective_recovery_pending
+                # （与 claim 视图 / /table-reviews 同形），前端自动 /claim-maintenance
+                # 才会触发；其余快照不可读维持既有裸文案 retryable 503。
+                pending = _exception_cause_of(exc, ClaimEffectiveRecoveryPending)
+                if pending is not None:
+                    self.send_json({
+                        "error": "effective_recovery_pending",
+                        "detail": str(pending),
+                        "retryable": True,
+                    }, status=503)
+                    return
+                self.send_json({"error": str(exc), "retryable": True}, status=503)
             except (TimeoutError, OSError, ValueError) as exc:
                 # 抽取轮询路径：文件被活跃 writer 替换/撕裂是瞬态，契约同 /review-actions
                 self.send_json({"error": str(exc), "retryable": True}, status=503)
@@ -282,30 +320,52 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
         if parsed.path == "/requirements":
             limit = parse_int(one(params, "limit"), default=50)
             requirement_type = one(params, "type")
-            rows = read_jsonl(self.output_dir / "atomic_requirements.jsonl")
-            if requirement_type:
-                rows = [row for row in rows if row.get("requirement_type") == requirement_type]
-            self.send_json(enrich_requirements(rows, self.output_dir)[:limit])
+            # 2026-08-14 性能：此前 enrich_requirements(rows)[:limit] 先富化整个语料再切片，
+            # 每次请求都为最多 50 行的响应付全量 CAS/裁决投影代价。先过滤后切片再富化——
+            # 响应是纯列表（无 total 字段），消费者只见返回行，切片语义不变。
+            # 撕裂尾/读失败与 /document 同口径：结构化 retryable 503，不掐断连接。
+            try:
+                rows = read_jsonl(self.output_dir / "atomic_requirements.jsonl")
+                if requirement_type:
+                    rows = [row for row in rows if row.get("requirement_type") == requirement_type]
+                self.send_json(enrich_requirements(rows[:limit], self.output_dir))
+            except (TimeoutError, OSError, ValueError) as exc:
+                self.send_json({"error": str(exc), "retryable": True}, status=503)
             return
         if parsed.path == "/reviews":
             limit = parse_int(one(params, "limit"), default=50)
-            self.send_json(read_jsonl(self.output_dir / "llm_review_results.jsonl")[:limit])
+            # 撕裂尾 ValueError / 读失败与 /review-states 同口径：结构化 retryable 503
+            # （此前直接掉出 do_GET，连接断、无 JSON 错误包）。ResultPackageError 仍由
+            # @_result_package_get_boundary 统一映射，与兄弟 GET 端点一致。
+            try:
+                self.send_json(read_jsonl(self.output_dir / "llm_review_results.jsonl")[:limit])
+            except (TimeoutError, OSError, ValueError) as exc:
+                self.send_json({"error": str(exc), "retryable": True}, status=503)
             return
         if parsed.path == "/review-states":
             limit = parse_int(one(params, "limit"), default=50)
             status = one(params, "status")
-            rows = read_jsonl(governed_artifact_path(
-                self.output_dir, "review_states.jsonl", category="state", for_write=False,
-            ))
-            if status:
-                rows = [row for row in rows if row.get("status") == status]
-            self.send_json(rows[:limit])
+            # 撕裂尾 ValueError / 读失败与 /document 同口径：结构化 retryable 503
+            # （此前直接掉出 do_GET，连接断、无 JSON 错误包）。
+            try:
+                rows = read_jsonl(governed_artifact_path(
+                    self.output_dir, "review_states.jsonl", category="state", for_write=False,
+                ))
+                if status:
+                    rows = [row for row in rows if row.get("status") == status]
+                self.send_json(rows[:limit])
+            except (TimeoutError, OSError, ValueError) as exc:
+                self.send_json({"error": str(exc), "retryable": True}, status=503)
             return
         if parsed.path == "/review-summary":
             self.send_json(build_review_summary(self.output_dir))
             return
         if parsed.path == "/table-reviews":
-            from claim_artifacts import ClaimArtifactError, ClaimBaseMigrationRequired
+            from claim_artifacts import (
+                ClaimArtifactError,
+                ClaimBaseMigrationRequired,
+                ClaimEffectiveRecoveryPending,
+            )
             try:
                 self.send_json(build_table_review_payload(self.output_dir))
             except ClaimBaseMigrationRequired as exc:
@@ -316,8 +376,20 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
                     "detail": str(exc),
                     "retryable": False,
                 }, status=503)
+                return
+            except ClaimEffectiveRecoveryPending as exc:
+                # 前端按 error 码 effective_recovery_pending 自动 POST /claim-maintenance；
+                # 落进下面 ClaimArtifactError 兜底只回裸文案，自恢复永不触发（与
+                # claim 视图分支同形）。
+                self.send_json({
+                    "error": "effective_recovery_pending",
+                    "detail": str(exc),
+                    "retryable": True,
+                }, status=503)
+                return
             except ClaimArtifactError as exc:
                 self.send_json({"error": str(exc), "retryable": True}, status=503)
+                return
             except (OSError, TimeoutError, ValueError) as exc:
                 self.send_json({"error": str(exc), "retryable": True}, status=503)
             return
@@ -2172,9 +2244,13 @@ def _build_document_blocks_impl(output_dir: Path) -> dict:
 
 # 请求级重算备忘（0714 批次三 S7b）：GUI 每次刷新都全量重读+重 join（2000 块翻译匹配、
 # 300 需求锚点/一致性/富化合并）,无任何进程内缓存。按源文件 (mtime_ns, size) 签名 memo：
-# 裁决/翻译写入改动源文件 → 签名变化自然失效,无需显式失效钩子。命中返回 deepcopy
-# （消费方可能原地改行——缓存本体绝不外借,防跨请求串改）。
+# 裁决/翻译写入改动源文件 → 签名变化自然失效,无需显式失效钩子。命中返回独立副本
+# （消费方可能原地改行——缓存本体绝不外借,防跨请求串改）。副本用 pickle 往返而非
+# deepcopy（2026-08-14 性能，本机 Python 3.14 实测 3000 行载荷：deepcopy 4.3ms、
+# pickle 往返 1.1ms、json 往返 8.9ms 反而最慢——json 方案仅在旧 CPython 上占优，弃用）；
+# pickle 与 deepcopy 同保共享引用别名，语义等价；万一混入不可 pickle 值则回退 deepcopy。
 import copy as _copy
+import pickle as _pickle
 import threading as _threading
 
 _MEMO_LOCK = _threading.Lock()
@@ -2193,27 +2269,46 @@ _REQ_MEMO_SOURCES = ("merged_spec_requirements.json", "ai_requirements_doc.json"
 
 
 def _source_signature(output_dir: Path, names: tuple[str, ...]) -> tuple:
+    # 2026-08-14 完整性：签名从 (mtime_ns, size) 加入 (st_dev, st_ino) 文件标识——
+    # 身份模型 (device, file-id, size, mtime) 捕获一切 tmp+os.replace 原子写（新
+    # 文件标识 → 必然失配重建），杜绝「同尺寸原子替换+还原 mtime」的签名伪造
+    # （复查者实测复现：源文件换内容后轮询仍吐缓存旧载荷）。残余风险 = 蓄意的
+    # 同尺寸原地覆写+还原 mtime（保留文件标识）——非工具链写路径；st_ino=0 的
+    # 网络/reparse 路径退化为旧行为，不劣化。
     signature = []
     for name in names:
         path = governed_artifact_path(output_dir, name)
         try:
             st = path.stat()
-            signature.append((name, st.st_mtime_ns, st.st_size))
+            signature.append((name, st.st_dev, st.st_ino, st.st_mtime_ns, st.st_size))
         except OSError:
-            signature.append((name, None, None))
+            signature.append((name, None, None, None, None))
     return tuple(signature)
 
 
+def _memo_payload_copy(value: object) -> object:
+    """缓存载荷副本：pickle 往返（本机实测比 deepcopy 快 ~4x，且同保引用别名）；
+    不可 pickle 值兜底 deepcopy，语义不劣化。"""
+    try:
+        return _pickle.loads(_pickle.dumps(value, protocol=_pickle.HIGHEST_PROTOCOL))
+    except (TypeError, ValueError, _pickle.PicklingError, _pickle.UnpicklingError):
+        return _copy.deepcopy(value)
+
+
 def _memoized(kind: str, output_dir: Path, names: tuple[str, ...], builder):
+    """载荷 memo：键=(kind, 目录)，失效判据=源文件 (device, file-id, size, mtime)
+    身份签名（见 _source_signature）。该模型捕获一切 tmp+os.replace 原子写；残余
+    风险 = 蓄意的同尺寸原地覆写+还原 mtime——非工具链写路径（result_package 的
+    marker 另经内容哈希彻底封死该路径）。"""
     key = (kind, str(output_dir))
     signature = _source_signature(output_dir, names)
     with _MEMO_LOCK:
         hit = _MEMO.get(key)
         if hit is not None and hit[0] == signature:
-            return _copy.deepcopy(hit[1])
+            return _memo_payload_copy(hit[1])
     value = builder()
     with _MEMO_LOCK:
-        _MEMO[key] = (signature, _copy.deepcopy(value))
+        _MEMO[key] = (signature, _memo_payload_copy(value))
     return value
 
 
@@ -2552,8 +2647,39 @@ def _read_ai_extraction_quality(output_dir: Path) -> dict | None:
     return quality
 
 
+# 抽取轮询状态 memo 源（2026-08-14 性能）：DocumentReview 以 ~180ms 轮询
+# /ai-extraction-status，每次重建都要重算 extraction_input_fingerprint（blocks/table 三件套
+# + dispositions 全文 SHA）+ 富化部分行。签名覆盖：指纹四输入（运行期不可变）、partial
+# 快照（每完成一行落盘 → 签名变化 → 重建，进度保持实时）、富化读入（裁决态/功能投影/
+# 一致性标记）。/document/pdf 的部分行取数也经此 memo。
+_AI_EXTRACTION_STATUS_MEMO_SOURCES = (
+    "ai_requirements.partial.json",
+    "ai_extract_quality.json",
+    "blocks.jsonl",
+    "table_items.jsonl",
+    "table_cell_items.jsonl",
+    "table_cell_dispositions.jsonl",
+    "ai_review_states.jsonl",
+    "functional_requirements.json",
+    "engineering_analysis.json",
+    "consistency_report.json",
+)
+
+
 def build_ai_extraction_status(output_dir: Path) -> dict:
-    """Return only the run-aware partial generation; never merge an older final file."""
+    """Return only the run-aware partial generation; never merge an older final file.
+
+    供抽取轮询（DocumentReview ~180ms 刷新）：源文件签名 memo,见 _memoized。"""
+    resolved = Path(output_dir).expanduser().resolve()
+    return _memoized(
+        "ai-extraction-status",
+        resolved,
+        _AI_EXTRACTION_STATUS_MEMO_SOURCES,
+        lambda: _build_ai_extraction_status_impl(resolved),
+    )
+
+
+def _build_ai_extraction_status_impl(output_dir: Path) -> dict:
     from ai_extract import (
         AI_PARTIAL_SCHEMA,
         AI_REQUIREMENTS_PARTIAL,
@@ -2960,6 +3086,61 @@ def run_claim_startup_maintenance(out_dir: Path) -> dict:
     return fold_effective_ledger(root, actor_trigger="api-startup-maintenance")
 
 
+def _run_startup_maintenance_once(out_dir: Path) -> None:
+    """启动维护（claim 折叠恢复 + 表重算重试）：任何异常只记日志，进程继续服务。"""
+    import logging
+
+    logger = logging.getLogger("requirement_atomizer")
+    if _claim_generation_present(out_dir):
+        try:
+            run_claim_startup_maintenance(out_dir)
+        except Exception as exc:
+            logger.warning("claim effective startup maintenance lagged: %s", exc)
+    # Kimi #3 跟进：重试此前 ready+recompute_error 的表（recompute 失败遗留），启动时自愈。
+    try:
+        run_table_review_recompute_recovery(out_dir)
+    except Exception as exc:
+        logger.warning("table review recompute recovery lagged: %s", exc)
+
+
+# 启动维护每进程恰一次：Electron 30s 杀子进程 + 3 次重试的场景里，同步维护跑在
+# 就绪信号之前会被杀掉再重做三遍；改为就绪后再在守护线程跑（2026-08-14）。维护进行
+# 期间 GET 走既有 fail-closed（ClaimEffectiveRecoveryPending / 结构化 retryable 503），
+# 前端 api 客户端收到 effective_recovery_pending 等码会自动 POST /claim-maintenance。
+_STARTUP_MAINTENANCE_DISPATCH_LOCK = threading.Lock()
+_STARTUP_MAINTENANCE_STARTED = threading.Event()
+_STARTUP_MAINTENANCE_THREAD: threading.Thread | None = None
+
+
+def _start_background_startup_maintenance(out_dir: Path) -> threading.Thread | None:
+    """Dispatch startup maintenance on a daemon thread, exactly once per process."""
+    global _STARTUP_MAINTENANCE_THREAD
+    with _STARTUP_MAINTENANCE_DISPATCH_LOCK:
+        if _STARTUP_MAINTENANCE_STARTED.is_set():
+            return _STARTUP_MAINTENANCE_THREAD
+        _STARTUP_MAINTENANCE_STARTED.set()
+        thread = threading.Thread(
+            target=_run_startup_maintenance_once,
+            args=(out_dir,),
+            daemon=True,
+            name="ratomizer-startup-maintenance",
+        )
+        _STARTUP_MAINTENANCE_THREAD = thread
+    thread.start()
+    return thread
+
+
+def _reset_startup_maintenance_for_tests() -> None:
+    """仅测试用：等待在飞的维护线程并复位每进程一次闸门（跨用例隔离）。"""
+    global _STARTUP_MAINTENANCE_THREAD
+    with _STARTUP_MAINTENANCE_DISPATCH_LOCK:
+        thread = _STARTUP_MAINTENANCE_THREAD
+        _STARTUP_MAINTENANCE_STARTED.clear()
+        _STARTUP_MAINTENANCE_THREAD = None
+    if thread is not None:
+        thread.join(timeout=5)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     from desktop_tasks import setup_run_logging
@@ -2968,25 +3149,8 @@ def main(argv: list[str] | None = None) -> int:
     RequirementAPIHandler.output_dir = resolve_analysis_root(RequirementAPIHandler.package_root)
     RequirementAPIHandler.allowed_origins = build_allowed_origins(args.host, args.port, args.allow_origin)
     RequirementAPIHandler.local_token = args.token
-    if _claim_generation_present(RequirementAPIHandler.output_dir):
-        try:
-            run_claim_startup_maintenance(RequirementAPIHandler.output_dir)
-        except Exception as exc:
-            import logging
-
-            logging.getLogger("requirement_atomizer").warning(
-                "claim effective startup maintenance lagged: %s",
-                exc,
-            )
-    # Kimi #3 跟进：重试此前 ready+recompute_error 的表（recompute 失败遗留），启动时自愈。
-    try:
-        run_table_review_recompute_recovery(RequirementAPIHandler.output_dir)
-    except Exception as exc:
-        import logging
-
-        logging.getLogger("requirement_atomizer").warning(
-            "table review recompute recovery lagged: %s", exc,
-        )
+    # 先绑定端口并打印就绪信号（Electron 据此停止 30s 等待/重试循环），启动维护转入
+    # 守护线程执行：同步维护超 30s 会被杀掉，三次重试全在重做同一份维护。
     server = ThreadingHTTPServer((args.host, args.port), RequirementAPIHandler)
     print(
         json.dumps(
@@ -3002,6 +3166,7 @@ def main(argv: list[str] | None = None) -> int:
         ),
         flush=True,
     )
+    _start_background_startup_maintenance(RequirementAPIHandler.output_dir)
     server.serve_forever()
     return 0
 

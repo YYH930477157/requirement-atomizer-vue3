@@ -11,23 +11,34 @@ import time
 from pathlib import Path
 from typing import Any, Iterable
 
+from ai_extract import _row_render_line as _shared_row_render_line
 from api_server import ANNOTATION_TRANSLATION_GUARDS_VERSION, translation_key
 from io_utils import read_jsonl
 from process_file_lock import process_file_lock
 from result_package import governed_artifact_path
+from table_structure import (
+    inherit_merged_text,
+    merge_ranges_overlap,
+    normalize_merge_ranges,
+    physical_data_row_indexes,
+)
 
 
-FULL_TRANSLATION_VERSION = "full-translation-v2"
-DOCUMENT_TRANSLATION_SCHEMA_VERSION = "document-translation/v2"
+FULL_TRANSLATION_VERSION = "full-translation-v3"
+DOCUMENT_TRANSLATION_SCHEMA_VERSION = "document-translation/v3"
 FULL_TRANSLATION_ENV = "RATOMIZER_FULL_TRANSLATION"
 DOCUMENT_TRANSLATIONS = "document_translations.jsonl"
 DOCUMENT_TRANSLATION_HTML = "document_translation.html"
 CLARIFICATION_BILINGUAL_HTML = "clarification_questions_bilingual.html"
 _REPLACE_ATTEMPTS = 5
-_LATIN_RE = re.compile(r"[A-Za-z]")
+_LETTER_RE = re.compile(r"[^\W\d_]")
 _CJK_RE = re.compile(r"[\u3400-\u9fff]")
 _SYNTHETIC_HEADER_RE = re.compile(r"^column_\d+(?:_\d+)?$", re.IGNORECASE)
-_LETTERED_HEADER_RE = re.compile(r"^\s*\([a-jA-J]\)\s*")
+# 与 table_structure._LETTERED_HEADER_CELL_RE 同口径：(a)..(z) 前缀一律剥离——第 11 列
+# (k) 起同样清理。"序列必须从 (a) 起连续"的识别约束归 table_structure 管，这里只做显示清理。
+_LETTERED_HEADER_RE = re.compile(r"^\s*\([a-zA-Z]\)\s*")
+# 共享行渲染契约（ai_extract 不依赖 full_translation，无导入环；tests 里有环回归检测）。
+_row_render_line = _shared_row_render_line
 
 
 def full_translation_enabled(value: str | None = None) -> bool:
@@ -40,8 +51,15 @@ def _block_text(block: dict[str, Any]) -> str:
 
 
 def _looks_translatable(text: str) -> bool:
-    latin = len(_LATIN_RE.findall(text))
-    return latin >= 3 and latin >= len(_CJK_RE.findall(text))
+    # 目标语是中文：非 CJK 字母文字（拉丁/西里尔/希腊等）需要翻译，且必须构成
+    # 主体——非 CJK 字母 ≥3 且 ≥ CJK 字符数（旧拉丁版 latin>=3 and latin>=cjk
+    # 的文种广义化，比率约束一直都在）。俄文等整段外文（CJK≈0）照译；中文为主、
+    # 只夹少量缩写（"电压ABC等级"）的文本跳过——目标语已是中文，进管线只是
+    # 白付 LLM 成本；纯数字/符号无字母，天然不可译。
+    letters = len(_LETTER_RE.findall(text))
+    cjk = len(_CJK_RE.findall(text))
+    non_cjk = letters - cjk
+    return non_cjk >= 3 and non_cjk >= cjk
 
 
 def _clarification_texts(report: dict[str, Any]) -> Iterable[str]:
@@ -95,11 +113,17 @@ def _padded_cells(row: Any, width: int) -> list[str]:
     return (cells + [""] * max(0, width - len(cells)))[:width]
 
 
-def _row_render_line(headers: list[str], row: Any) -> str:
-    # Keep the same byte-level row rendering contract used by ai_extract/spot_extract.
-    from ai_extract import _row_render_line as shared_row_render_line
+def _table_row_lists(block: dict[str, Any], key: str) -> list[list[str]]:
+    return [row for row in (block.get(key) or []) if isinstance(row, (list, tuple))]
 
-    return shared_row_render_line(headers, list(row) if isinstance(row, (list, tuple)) else [row])
+
+def _finalize_unit(unit: dict[str, Any]) -> dict[str, Any]:
+    """单元落位：规范化 source_text 并一次算好内容键/摘要（后续收集与处置只复用）。"""
+    text = str(unit.get("source_text") or "").strip()
+    unit["source_text"] = text
+    unit["translation_key"] = translation_key(text) if text else ""
+    unit["source_sha256"] = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    return unit
 
 
 def _fallback_header(block: dict[str, Any], headers: list[str]) -> bool:
@@ -110,19 +134,62 @@ def _fallback_header(block: dict[str, Any], headers: list[str]) -> bool:
     )
 
 
-def _regular_table_plan(block: dict[str, Any]) -> dict[str, Any] | None:
-    from table_structure import normalize_merge_ranges, physical_data_row_indexes
+def _physical_matrix(
+    block: dict[str, Any],
+    *,
+    width: int,
+    header_indexes: list[int],
+    data_indexes: list[int],
+) -> list[list[str]] | None:
+    """从块载荷重建物理行矩阵（1..rows）；放置证据不完整时返回 None（调用方按块列表渲染）。
 
+    标题行单元格来自块的 ``title_rows`` 载荷（atomize 结构化路径写入，与
+    ``title_row_indexes`` 对齐）；无载荷时标题行为占位空行，绝不伪造内容。"""
+    total = int(block.get("rows") or 0)
+    if total <= 0:
+        return None
+    header_rows = _table_row_lists(block, "header_rows")
+    data_rows = _table_row_lists(block, "data_rows")
+    if len(header_rows) != len(header_indexes) or len(data_rows) != len(data_indexes):
+        return None
+    title_indexes = [int(value) for value in (block.get("title_row_indexes") or [])]
+    title_payload = _table_row_lists(block, "title_rows")
+    title_cells = (
+        title_payload if len(title_payload) == len(title_indexes)
+        else [[] for _ in title_indexes]
+    )
+    placed: dict[int, list[str]] = {}
+    for row_index, row in zip(title_indexes, title_cells):
+        if row_index in placed or not 1 <= row_index <= total:
+            return None
+        placed[row_index] = list(row)
+    for row_index, row in zip(header_indexes, header_rows):
+        if row_index in placed or not 1 <= row_index <= total:
+            return None
+        placed[row_index] = list(row)
+    for row_index, row in zip(data_indexes, data_rows):
+        if row_index in placed or not 1 <= row_index <= total:
+            return None
+        placed[row_index] = list(row)
+    if not (set(range(1, total + 1)) - set(title_indexes)) <= set(placed):
+        return None  # 存在既非标题也无放置证据的物理行 —— 矩阵不可信
+    return [_padded_cells(placed.get(row, []), width) for row in range(1, total + 1)]
+
+
+def _regular_table_plan(block: dict[str, Any]) -> dict[str, Any] | None:
     if str(block.get("type") or block.get("block_type") or "") != "table":
         return None
     if block.get("nested_tables"):
         return None
     merge_ranges = normalize_merge_ranges(block.get("merge_ranges") or [])
-    if any(min_row != max_row for min_row, _min_col, max_row, _max_col in merge_ranges):
+    # 复杂表兜底只剩：嵌套表 + 几何自相矛盾的合并（面积相交）。纵向合并保持结构化
+    # （v3：此前任何纵向合并都把整表降为 complex_table——扁平文本超批上限、逐句重试、
+    # 逐行双语 UI 恰好在最大的表上丢失）。
+    if merge_ranges_overlap(merge_ranges):
         return None
     raw_headers = [str(value or "").strip() for value in (block.get("headers") or [])]
-    raw_header_rows = [row for row in (block.get("header_rows") or []) if isinstance(row, (list, tuple))]
-    data_rows = [row for row in (block.get("data_rows") or []) if isinstance(row, (list, tuple))]
+    raw_header_rows = _table_row_lists(block, "header_rows")
+    data_rows = _table_row_lists(block, "data_rows")
     width = max(
         [len(raw_headers), *(len(row) for row in raw_header_rows), *(len(row) for row in data_rows)],
         default=0,
@@ -132,61 +199,101 @@ def _regular_table_plan(block: dict[str, Any]) -> dict[str, Any] | None:
     headers = _padded_cells(raw_headers, width)
     display_headers = [_clean_header(value) for value in headers]
     fallback = _fallback_header(block, headers)
+    header_indexes = [int(value) for value in (block.get("header_row_indexes") or [])]
+    data_indexes = physical_data_row_indexes(block)
+    matrix = _physical_matrix(
+        block, width=width, header_indexes=header_indexes, data_indexes=data_indexes
+    )
+    # 有效矩阵：纵向合并的锚文本向续行传播（复用 table_structure.inherit_merged_text）。
+    # 只喂纵向分量——横向合并的覆盖格保持空、由 colspan 表达，不在行内复制翻译
+    # 文本。2D 合并（跨行且跨列）分解为锚列的纵向条带：只有锚列向续行继承锚
+    # 文本；锚行的横向覆盖（锚列+1..max_col）保持为空，与纯横向合并"文本只在
+    # 最左格出现一次"同口径——否则继承会把锚行横向铺满锚文本（"A B | A B | x"
+    # 进 LLM 输入与账本）。
+    vertical_ranges = [
+        (min_row, min_col, max_row, min_col)
+        for min_row, min_col, max_row, _max_col in merge_ranges
+        if min_row != max_row
+    ]
+    effective = inherit_merged_text(matrix, vertical_ranges) if matrix is not None else None
+
+    def row_cells(row_index: int | None, fallback_row: Any) -> list[str]:
+        if effective is not None and row_index is not None and 1 <= row_index <= len(effective):
+            return list(effective[row_index - 1])
+        return _padded_cells(fallback_row, width)
+
     units: list[dict[str, Any]] = []
     table_id = str(block.get("table_id") or "")
     block_id = str(block.get("block_id") or "")
     title = str(block.get("table_title") or "").strip()
     if title:
-        units.append({
+        units.append(_finalize_unit({
             "unit_id": f"{block_id}:title",
             "role": "title",
             "row_index": None,
             "source_cells": [title],
             "source_text": title,
-        })
-    header_indexes = list(block.get("header_row_indexes") or [])
+        }))
+    # 每个物理标题行一个 title 单元（v3：此前只有 table_title 一个单元，堆叠标题的
+    # 副标题行不出现在任何单元）。单元格只在 title_rows 载荷可得时渲染——不伪造。
+    for row_index in [int(value) for value in (block.get("title_row_indexes") or [])]:
+        cells = row_cells(row_index, [])
+        cell_texts = [str(cell or "").strip() for cell in cells]
+        if not any(cell_texts):
+            continue
+        units.append(_finalize_unit({
+            "unit_id": f"{block_id}:title-row:{row_index}",
+            "role": "title",
+            "row_index": row_index,
+            "source_cells": cells,
+            "source_text": " | ".join(text for text in cell_texts if text),
+        }))
     if not fallback:
         for offset, raw_row in enumerate(raw_header_rows, start=1):
-            cells = [_clean_header(cell) for cell in _padded_cells(raw_row, width)]
+            row_index = header_indexes[offset - 1] if offset <= len(header_indexes) else None
+            cells = [_clean_header(cell) for cell in row_cells(row_index, raw_row)]
             if not any(cells):
                 continue
-            units.append({
+            units.append(_finalize_unit({
                 "unit_id": f"{block_id}:header:{offset}",
                 "role": "header",
-                "row_index": int(header_indexes[offset - 1]) if offset <= len(header_indexes) else offset,
+                "row_index": int(row_index) if row_index is not None else offset,
                 "source_cells": cells,
                 "source_text": _row_render_line(display_headers, cells),
-            })
+            }))
         if not raw_header_rows and any(display_headers):
-            units.append({
+            units.append(_finalize_unit({
                 "unit_id": f"{block_id}:header:1",
                 "role": "header",
                 "row_index": 1,
                 "source_cells": display_headers,
                 "source_text": _row_render_line(display_headers, display_headers),
-            })
+            }))
     else:
         for offset, raw_row in enumerate(raw_header_rows, start=1):
-            cells = _padded_cells(raw_row, width)
+            row_index = header_indexes[offset - 1] if offset <= len(header_indexes) else None
+            cells = row_cells(row_index, raw_row)
             if not any(cell.strip() for cell in cells):
                 continue
-            units.append({
+            units.append(_finalize_unit({
                 "unit_id": f"{block_id}:data:fallback-header:{offset}",
                 "role": "data",
-                "row_index": int(header_indexes[offset - 1]) if offset <= len(header_indexes) else offset,
+                "row_index": int(row_index) if row_index is not None else offset,
                 "source_cells": cells,
                 "source_text": _row_render_line(display_headers, cells),
-            })
-    data_indexes = physical_data_row_indexes(block)
+            }))
     for offset, raw_row in enumerate(data_rows, start=1):
-        cells = _padded_cells(raw_row, width)
-        units.append({
+        placed_index = int(data_indexes[offset - 1]) if offset <= len(data_indexes) else None
+        cells = row_cells(placed_index, raw_row)
+        if not any(cell.strip() for cell in cells):
+            continue  # 全空行不成翻译单元（v3：此前照发 "|  |" 空行给 LLM）
+        units.append(_finalize_unit({
             "unit_id": f"{block_id}:data:{offset}",
             "role": "data",
-            "row_index": int(data_indexes[offset - 1]) if offset <= len(data_indexes) else offset,
+            "row_index": placed_index if placed_index is not None else offset,
             "source_cells": cells,
             "source_text": _row_render_line(display_headers, cells),
-        })
+        }))
     return {
         "table_id": table_id,
         "title": title,
@@ -208,31 +315,42 @@ def _unit_disposition(
     translation_summary: dict[str, Any],
 ) -> dict[str, Any]:
     source = str(unit.get("source_text") or "").strip()
-    key = translation_key(source) if source else ""
+    key = str(unit.get("translation_key") or "") or (translation_key(source) if source else "")
     entry = sidecar.get(key, {}) if key else {}
     translation = str(entry.get("translation") or "").strip()
+    guards_current = entry.get("guards_version") == ANNOTATION_TRANSLATION_GUARDS_VERSION
     if not source:
         status, reason = "skipped", "empty_text"
     elif not enabled:
         status, reason = "skipped", "feature_disabled"
-    elif translation and not entry.get("rejected"):
+    elif not _looks_translatable(source):
+        # 纯数字/标记（或已是中文）的行不值得 LLM：跳过且不计入 eligible
+        # （与 empty_text 同口径的受控跳过，v3 前它们照常占批位）。
+        status, reason = "skipped", "nothing_translatable"
+    elif translation and not entry.get("rejected") and guards_current:
         status, reason = "translated", ""
     else:
         status = "failed"
-        reason = str(entry.get("status") or entry.get("reason") or "")
-        if not reason:
-            reason = (
-                "llm_unavailable"
-                if translation_summary.get("route") == "stub"
-                else "missing_cache_entry"
-            )
+        if translation and not entry.get("rejected"):
+            # 缓存条目未过当前护栏版本 —— 顺序无关地按失败处置（与 api_server
+            # load_annotation_translations 的 guards_version 闸同口径）。
+            reason = "guards_version_mismatch"
+        else:
+            reason = str(entry.get("status") or entry.get("reason") or "")
+            if not reason:
+                reason = (
+                    "llm_unavailable"
+                    if translation_summary.get("route") == "stub"
+                    else "missing_cache_entry"
+                )
     return {
         **unit,
         "status": status,
         "reason": reason,
         "translation": translation if status == "translated" else "",
         "translation_key": key,
-        "source_sha256": hashlib.sha256(source.encode("utf-8")).hexdigest(),
+        "source_sha256": str(unit.get("source_sha256") or "")
+        or hashlib.sha256(source.encode("utf-8")).hexdigest(),
         "model": entry.get("model") or translation_summary.get("model") or "",
         "strategy_version": entry.get("strategy_version") or "",
     }
@@ -247,43 +365,127 @@ def _status_target(value: dict[str, Any]) -> str:
     return f'<span class="translation-failure">[{status}] {reason}</span>'
 
 
+def _vertical_inheritance_map(
+    units: list[dict[str, Any]],
+    merge_ranges: list[list[int]],
+) -> dict[tuple[int, int], str]:
+    """纵向合并 (锚行, 锚列) → 锚行单元的锚列格文本（渲染续行时的兜底继承表）。
+
+    计划侧在矩阵可信时已把有效矩阵（锚文本向续行传播）写进续行单元；矩阵
+    重建失败（放置证据不完整）的兜底路径里续行格可能为空——这里只从既有
+    单元数据取锚文本，绝不伪造。2D 合并只登记锚列（纵向分量），锚行横向
+    覆盖列不继承——与计划侧 _regular_table_plan 的纵向分解同口径。"""
+    by_row: dict[int, dict[str, Any]] = {}
+    for unit in units:
+        index = unit.get("row_index")
+        if index is not None:
+            by_row.setdefault(int(index), unit)
+    texts: dict[tuple[int, int], str] = {}
+    for min_row, min_col, max_row, max_col in merge_ranges:
+        if int(min_row) == int(max_row):
+            continue  # 纯横向合并不跨行，续行继承不适用
+        anchor_unit = by_row.get(int(min_row))
+        if anchor_unit is None:
+            continue
+        # 2D 合并只按锚列兜底继承（与计划侧的纵向分解同口径）：续行锚列继承
+        # 锚文本，锚行的横向覆盖列保持空——不再向每个覆盖列铺锚文本。
+        anchor_cells = _padded_cells(anchor_unit.get("source_cells") or [], int(min_col))
+        texts[(int(min_row), int(min_col))] = str(anchor_cells[-1] or "").strip()
+    return texts
+
+
 def _render_source_cells(
     unit: dict[str, Any],
     *,
     width: int,
     tag: str,
     merge_ranges: list[list[int]],
+    inherited_texts: dict[tuple[int, int], str] | None = None,
 ) -> str:
+    """源文行单元格（网格安全渲染：双语表内禁用 rowspan/colspan）。
+
+    交错双语布局里每个源文行后紧跟整行译文行——物理 rowspan 会吞掉译文行的
+    格槽、其后的源文行又省略被覆盖列，合并以下每一行都错位；跨 thead/tbody
+    的 rowspan 也不是合法 HTML。因此每行恒渲染完整列集（列数恒等于表宽）：
+    - 纵向合并续行：被覆盖列渲染继承的锚文本（单元已带有效矩阵文本，缺失时
+      从锚行单元兜底继承），标 ``data-inherited="1"`` 留证；
+    - 横向单行合并：合并文本只在最左格渲染一次，同行被覆盖列渲染空格并标
+      ``data-merge-covered="1"``——译文行是整行级条幅、无法逐格镜像同一
+      colspan 结构，网格有效优先于 colspan 视觉；
+    - 被覆盖格里与锚不同的事实文本（上游校验冲突的防御路径）原样渲染，
+      绝不丢内容。"""
     cells = _padded_cells(unit.get("source_cells") or [], width)
     row_index = unit.get("row_index")
-    spans = {
-        int(min_col): int(max_col) - int(min_col) + 1
-        for min_row, min_col, max_row, max_col in merge_ranges
-        if row_index is not None and int(min_row) == int(row_index) == int(max_row)
-    }
+    horizontal_covered: dict[int, int] = {}   # 列 → 横向合并锚列（同行被覆盖）
+    vertical_continuation: dict[int, int] = {}  # 列 → 纵向合并锚行（续行继承）
+    if row_index is not None:
+        row = int(row_index)
+        for min_row, min_col, max_row, max_col in merge_ranges:
+            if not int(min_row) <= row <= int(max_row):
+                continue
+            for column in range(int(min_col), int(max_col) + 1):
+                if row == int(min_row):
+                    if column > int(min_col):
+                        horizontal_covered[column] = int(min_col)
+                else:
+                    vertical_continuation[column] = int(min_row)
+    inherited_texts = inherited_texts or {}
     rendered: list[str] = []
-    column = 1
-    while column <= width:
-        span = max(1, spans.get(column, 1))
-        colspan = f' colspan="{span}"' if span > 1 else ""
-        rendered.append(f"<{tag}{colspan}>{html.escape(cells[column - 1])}</{tag}>")
-        column += span
+    for column in range(1, width + 1):
+        text = str(cells[column - 1] or "").strip()
+        if column in vertical_continuation:
+            anchor_row = vertical_continuation[column]
+            if not text:
+                text = inherited_texts.get((anchor_row, column), "")
+            rendered.append(f'<{tag} data-inherited="1">{html.escape(text)}</{tag}>')
+            continue
+        if column in horizontal_covered:
+            anchor_text = str(cells[horizontal_covered[column] - 1] or "").strip()
+            if text and text != anchor_text:
+                # 防御：被覆盖格里是与锚不同的事实文本——原样渲染，绝不丢内容。
+                rendered.append(f"<{tag}>{html.escape(text)}</{tag}>")
+            else:
+                rendered.append(f'<{tag} data-merge-covered="1"></{tag}>')
+            continue
+        rendered.append(f"<{tag}>{html.escape(text)}</{tag}>")
     return "".join(rendered)
+
+
+def _normalize_title_text(value: Any) -> str:
+    return " ".join(str(value or "").split())
+
+
+def _render_full_width_pair(unit: dict[str, Any], *, width: int, tag: str) -> str:
+    """物理标题行：全宽合并行（源文 + 译文成对，每行网格覆盖恒为表宽）。"""
+    source = html.escape(str(unit.get("source_text") or ""))
+    return (
+        f'<tr class="source-row"><{tag} colspan="{width}">{source}</{tag}></tr>'
+        f'<tr class="translation-row"><{tag} colspan="{width}">{_status_target(unit)}</{tag}></tr>'
+    )
 
 
 def _render_table_html(row: dict[str, Any]) -> str:
     table = dict(row.get("table") or {})
     width = max(1, int(table.get("column_count") or 1))
     units = [unit for unit in (table.get("rows") or []) if isinstance(unit, dict)]
-    title = next((unit for unit in units if unit.get("role") == "title"), None)
+    title_units = [unit for unit in units if unit.get("role") == "title"]
+    caption_unit = next(
+        (unit for unit in title_units if unit.get("row_index") is None),
+        next(iter(title_units), None),
+    )
+    title_row_units = sorted(
+        (unit for unit in title_units if unit.get("row_index") is not None),
+        key=lambda unit: int(unit["row_index"]),
+    )
     headers = [unit for unit in units if unit.get("role") == "header"]
     data_rows = [unit for unit in units if unit.get("role") == "data"]
     merge_ranges = [
         list(entry) for entry in (table.get("merge_ranges") or [])
         if isinstance(entry, (list, tuple)) and len(entry) == 4
     ]
-    caption_source = html.escape(str((title or {}).get("source_text") or table.get("title") or ""))
-    caption_translation = _status_target(title) if title else ""
+    inherited_texts = _vertical_inheritance_map(units, merge_ranges)
+    caption_source = html.escape(str((caption_unit or {}).get("source_text") or table.get("title") or ""))
+    caption_translation = _status_target(caption_unit) if caption_unit else ""
     badge = '<span class="table-badge">无画线重建</span>' if table.get("rebuilt") else ""
     fallback = '<span class="table-note">无表头（结构未识别）</span>' if table.get("header_fallback") else ""
     caption = (
@@ -291,12 +493,42 @@ def _render_table_html(row: dict[str, Any]) -> str:
         f"<span class=\"caption-translation\">{caption_translation}</span>{badge}{fallback}</figcaption>"
         if caption_source or badge or fallback else ""
     )
+    # 题注去重：与题注同文的物理标题行只在 figcaption 出现一次（此前题注 +
+    # 正文首行双渲染）；不同文的堆叠标题（副标题）保留正文渲染。
+    normalized_caption = _normalize_title_text(
+        (caption_unit or {}).get("source_text") or table.get("title") or ""
+    )
+    visible_title_rows = [
+        unit for unit in title_row_units
+        if not normalized_caption
+        or _normalize_title_text(unit.get("source_text")) != normalized_caption
+    ]
+    # 结构边界：首个表头物理行（无表头单元的 fallback 表以首个数据行承载）。
+    # 边界前的标题行置顶 thead（文档序），边界起的标题行落 tbody 原位；
+    # 无边界证据（既无表头也无数据行）时标题行全部进 thead。
+    boundary_rows = [
+        int(unit["row_index"]) for unit in headers if unit.get("row_index") is not None
+    ] or [
+        int(unit["row_index"]) for unit in data_rows if unit.get("row_index") is not None
+    ]
+    boundary = min(boundary_rows) if boundary_rows else None
+    head_title_units = [
+        unit for unit in visible_title_rows
+        if boundary is None or int(unit["row_index"]) < boundary
+    ]
+    body_title_units = [
+        unit for unit in visible_title_rows
+        if boundary is not None and int(unit["row_index"]) >= boundary
+    ]
     head_parts: list[str] = []
+    for unit in head_title_units:
+        head_parts.append(_render_full_width_pair(unit, width=width, tag="th"))
     for unit in headers:
         head_parts.append(
             '<tr class="source-row">'
             + _render_source_cells(
-                unit, width=width, tag="th", merge_ranges=merge_ranges
+                unit, width=width, tag="th", merge_ranges=merge_ranges,
+                inherited_texts=inherited_texts,
             )
             + "</tr>"
         )
@@ -304,11 +536,23 @@ def _render_table_html(row: dict[str, Any]) -> str:
             f'<tr class="translation-row"><th colspan="{width}">{_status_target(unit)}</th></tr>'
         )
     body_parts: list[str] = []
-    for unit in data_rows:
+    # 表头起的标题行与数据行按物理行序穿插（标题行全宽渲染，数据行走格渲染）。
+    body_units = sorted(
+        [*body_title_units, *data_rows],
+        key=lambda unit: (
+            unit.get("row_index") is None,
+            int(unit.get("row_index") or 0),
+        ),
+    )
+    for unit in body_units:
+        if unit.get("role") == "title":
+            body_parts.append(_render_full_width_pair(unit, width=width, tag="td"))
+            continue
         body_parts.append(
             '<tr class="source-row">'
             + _render_source_cells(
-                unit, width=width, tag="td", merge_ranges=merge_ranges
+                unit, width=width, tag="td", merge_ranges=merge_ranges,
+                inherited_texts=inherited_texts,
             )
             + "</tr>"
         )
@@ -419,19 +663,29 @@ def run_full_translation(
     enabled = full_translation_enabled()
     plans: dict[str, dict[str, Any]] = {}
     texts: dict[str, tuple[str, str]] = {}
-    for block in blocks:
+    block_units: dict[int, dict[str, Any]] = {}
+    for index, block in enumerate(blocks):
         block_id = str(block.get("block_id") or "")
         plan = _regular_table_plan(block)
         if plan is not None:
             plans[block_id] = plan
             for unit in plan["units"]:
                 text = str(unit.get("source_text") or "").strip()
-                if text:
-                    texts[translation_key(text)] = (f"table_{unit['role']}", text)
+                if text and _looks_translatable(text):
+                    key = str(unit.get("translation_key") or "") or translation_key(text)
+                    texts[key] = (f"table_{unit['role']}", text)
             continue
         text = _block_text(block)
-        if text:
-            texts[translation_key(text)] = (str(block.get("block_type") or "block"), text)
+        if text and _looks_translatable(text):
+            unit = _finalize_unit({
+                "unit_id": f"{block_id or f'block-{index + 1}'}:block",
+                "role": "block",
+                "row_index": None,
+                "source_cells": [text],
+                "source_text": text,
+            })
+            block_units[index] = unit
+            texts[unit["translation_key"]] = (str(block.get("block_type") or "block"), text)
     for text in _clarification_texts(clarification_report):
         texts[translation_key(text)] = ("clarification", text)
 
@@ -476,23 +730,29 @@ def run_full_translation(
             }
             table_payload["rows"] = dispositions
             key = ""
-            entry: dict[str, Any] = {}
+            source_sha = hashlib.sha256(source.encode("utf-8")).hexdigest()
             translation = ""
+            model = translation_summary.get("model") or ""
+            strategy_value = strategy
         else:
-            key = translation_key(source) if source else ""
-            entry = sidecar.get(key, {}) if key else {}
-            translation = str(entry.get("translation") or "").strip()
-            if not source:
-                status, reason = "skipped", "empty_text"
-            elif not enabled:
-                status, reason = "skipped", "feature_disabled"
-            elif translation and not entry.get("rejected"):
-                status, reason = "translated", ""
-            else:
-                status = "failed"
-                reason = str(entry.get("status") or entry.get("reason") or "")
-                if not reason:
-                    reason = "llm_unavailable" if translation_summary.get("route") == "stub" else "missing_cache_entry"
+            # 非表格块走与表格单元同一处置语义（v3 前此处内联重写一份，语义会漂移）。
+            unit = block_units.get(index) or _finalize_unit({
+                "unit_id": f"{block_id}:block",
+                "role": "block",
+                "row_index": None,
+                "source_cells": [source] if source else [],
+                "source_text": source,
+            })
+            disposition = _unit_disposition(
+                unit, enabled=enabled, sidecar=sidecar,
+                translation_summary=translation_summary,
+            )
+            status, reason = disposition["status"], disposition["reason"]
+            key = disposition["translation_key"]
+            translation = disposition["translation"]
+            source_sha = disposition["source_sha256"]
+            model = disposition["model"]
+            strategy_value = disposition.get("strategy_version") or strategy
             if str(block.get("type") or block.get("block_type") or "") == "table":
                 record_kind = "complex_table"
         block_counts[status] += 1
@@ -504,15 +764,15 @@ def run_full_translation(
             "status": status,
             "reason": reason,
             "source_text": source,
-            "translation": translation if status == "translated" and record_kind != "table" else "",
+            "translation": translation if record_kind != "table" else "",
             "provenance": {
                 "producer": FULL_TRANSLATION_VERSION,
-                "source_sha256": hashlib.sha256(source.encode("utf-8")).hexdigest(),
+                "source_sha256": source_sha,
                 "translation_key": key,
                 "route": translation_summary.get("route") or "stub",
-                "model": entry.get("model") or translation_summary.get("model") or "",
+                "model": model,
                 "guards_version": ANNOTATION_TRANSLATION_GUARDS_VERSION,
-                "strategy_version": entry.get("strategy_version") or strategy,
+                "strategy_version": strategy_value,
                 "generated_at": generated_at,
             },
         }

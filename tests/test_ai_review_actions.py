@@ -4,9 +4,13 @@ from __future__ import annotations
 import multiprocessing
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+import claim_review_actions
+import review_state
 from ai_review_actions import (
     ai_req_id,
     apply_ai_review_action,
@@ -193,6 +197,144 @@ class AiReviewStateConcurrencyTests(unittest.TestCase):
 
             self.assertEqual(states["AI-1"]["status"], "accepted")
             self.assertEqual(path.read_text(encoding="utf-8"), valid)
+
+
+class AiReviewFoldHookTests(unittest.TestCase):
+    """apply_ai_review_action 的 fold 钩子：同步覆盖语义保持、与 A 轨共享同一
+    per-root 合并器（混合突发仍合并成最少 pass）、失败 logged-and-continue。"""
+
+    def _root_with_claim_generation(self) -> Path:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name).resolve()
+        (root / "claim_generation.meta.json").write_text("{}", encoding="utf-8")
+        return root
+
+    def test_decision_folds_synchronously_with_track_b(self) -> None:
+        root = self._root_with_claim_generation()
+        folds: list[dict] = []
+
+        def recording_fold(out_dir, **kwargs):
+            folds.append(dict(kwargs))
+            return {"ok": True}
+
+        with patch.object(claim_review_actions, "fold_effective_ledger", side_effect=recording_fold):
+            state = apply_ai_review_action(root, "AI-1", "accepted", actor="tester")
+
+        self.assertEqual(len(folds), 1)
+        self.assertEqual(folds[0]["actor_trigger"], "ai-review-action")
+        self.assertEqual(folds[0]["authority_hook_track"], "B")
+        self.assertEqual(state["status"], "accepted")
+        self.assertEqual(read_ai_review_states(root)["AI-1"]["status"], "accepted")
+
+    def test_fold_failure_is_logged_and_decision_still_authoritative(self) -> None:
+        root = self._root_with_claim_generation()
+
+        with patch.object(
+            claim_review_actions,
+            "fold_effective_ledger",
+            side_effect=RuntimeError("injected B fold failure"),
+        ):
+            with self.assertLogs("requirement_atomizer", level="WARNING") as captured:
+                state = apply_ai_review_action(root, "AI-1", "rejected", actor="tester")
+
+        self.assertEqual(state["status"], "rejected")
+        self.assertTrue(
+            any("AI review saved; claim effective fold lagged" in line
+                for line in captured.output),
+        )
+        self.assertEqual(read_ai_review_states(root)["AI-1"]["status"], "rejected")
+
+    def test_concurrent_b_decisions_coalesce_folds_via_shared_coordinator(self) -> None:
+        root = self._root_with_claim_generation()
+        fold_lock = threading.Lock()
+        folds: list[str] = []
+        errors: list[BaseException] = []
+        barrier = threading.Barrier(6)
+
+        def slow_fold(out_dir, **kwargs):
+            with fold_lock:
+                folds.append(str(kwargs.get("authority_hook_track")))
+            time.sleep(0.3)
+            return {"ok": True}
+
+        def decide(index: int) -> None:
+            try:
+                barrier.wait(10)
+                apply_ai_review_action(root, f"AI-{index}", "accepted", actor="burst")
+            except BaseException as exc:  # surfaced in the test thread
+                errors.append(exc)
+
+        with patch.object(claim_review_actions, "fold_effective_ledger", side_effect=slow_fold):
+            threads = [
+                threading.Thread(target=decide, args=(index,), daemon=True)
+                for index in range(6)
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(60)
+
+        self.assertEqual(errors, [])
+        self.assertFalse(any(thread.is_alive() for thread in threads))
+        self.assertLessEqual(len(folds), review_state._EFFECTIVE_FOLD_DRAIN_PASSES)
+        self.assertGreaterEqual(len(folds), 1)
+        states = read_ai_review_states(root)
+        self.assertEqual(
+            sorted(states),
+            [f"AI-{index}" for index in range(6)],
+        )
+
+    def test_mixed_track_decisions_fold_once_per_track(self) -> None:
+        """同一 root 上 A/B 两轨并发裁决：共享合并器，各轨至多一两个 pass。"""
+        root = self._root_with_claim_generation()
+        fold_lock = threading.Lock()
+        folds: list[str] = []
+        errors: list[BaseException] = []
+        start = threading.Barrier(2)
+
+        def slow_fold(out_dir, **kwargs):
+            with fold_lock:
+                folds.append(str(kwargs.get("authority_hook_track")))
+            time.sleep(0.3)
+            return {"ok": True}
+
+        def decide_a() -> None:
+            try:
+                start.wait(10)
+                review_state.apply_expert_decision(
+                    root, "SREQ-1", "accepted", actor="expert", reason="mixed"
+                )
+            except BaseException as exc:  # surfaced in the test thread
+                errors.append(exc)
+
+        def decide_b() -> None:
+            try:
+                start.wait(10)
+                apply_ai_review_action(root, "AI-1", "accepted", actor="mixed")
+            except BaseException as exc:  # surfaced in the test thread
+                errors.append(exc)
+
+        with patch.object(claim_review_actions, "fold_effective_ledger", side_effect=slow_fold):
+            threads = [
+                threading.Thread(target=decide_a, daemon=True),
+                threading.Thread(target=decide_b, daemon=True),
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(60)
+
+        self.assertEqual(errors, [])
+        self.assertFalse(any(thread.is_alive() for thread in threads))
+        # 每轨各完成自己的覆盖 pass（旧实现同样 2 次，但混合突发下不再放大）
+        self.assertEqual(set(folds), {"A", "B"})
+        self.assertLessEqual(len(folds), 4)
+        self.assertEqual(
+            review_state.read_review_authority_snapshot(root)["states"][0]["status"],
+            "accepted",
+        )
+        self.assertEqual(read_ai_review_states(root)["AI-1"]["status"], "accepted")
 
 
 if __name__ == "__main__":

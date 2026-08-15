@@ -16,14 +16,18 @@ from config import ENV_REGISTRY
 from output_writer import build_quality_report
 from parsers.pdf_parser import (
     PDF_HYPHEN_JOIN_VERSION,
+    PDF_PAGE_WORD_MEMO_MAX_PAGES,
     PDF_SUBSCRIPT_REATTACH_VERSION,
     PDF_TEXT_REPAIR_VERSION,
     PDF_TWOCOL_DEF_VERSION,
+    _WORD_TUPLE_ARITY,
     _append_text_block,
     _build_pdf_table_artifacts,
+    _compact_words,
     _detect_repeated_margin_lines,
     _detect_text_tables,
     _detect_twocol_definition_tables,
+    _expand_words,
     _extract_page_words,
     _fragmentation_signal_count,
     _join_lines_text,
@@ -33,6 +37,7 @@ from parsers.pdf_parser import (
     _merge_words,
     _reattach_subscripts,
     _starts_new_paragraph,
+    _word_lines,
     pdf_hyphen_fix_enabled,
     pdf_layout_switch_fingerprint,
     pdf_subscript_fix_enabled,
@@ -1744,6 +1749,68 @@ class RepeatedMarginNoiseTests(unittest.TestCase):
         # 检测必须与主路径口径一致：extra_attrs 分词得到 "Nominal - Current"
         self.assertIn("nominal - current", result)
         self.assertNotIn("nominal-current", result)
+
+
+class PageWordMemoCompactTests(unittest.TestCase):
+    """页词 memo 紧凑形（2026-08-14 内存回归修复）：memo 驻留属性元组而非
+    pdfplumber 词字典；页数超上限整个 memo 放弃（主循环回退每页现抽）。"""
+
+    def test_threshold_constant_pinned(self) -> None:
+        # 上限是刻意策略（长标准文档防几十万词字典驻留），钉住防静默漂移。
+        self.assertEqual(PDF_PAGE_WORD_MEMO_MAX_PAGES, 400)
+
+    def test_memo_values_are_compact_tuples_not_dicts(self) -> None:
+        page = mock.MagicMock()
+        page.height = 1000
+        # 仿 pdfplumber 默认词字典（含无人消费的 doctop/direction）
+        page.extract_words.return_value = [
+            {"text": "Nominal", "x0": 50, "x1": 110, "top": 50, "bottom": 60,
+             "doctop": 50, "upright": True, "direction": 1, "size": 12.0},
+            {"text": "Current", "x0": 118, "x1": 190, "top": 50, "bottom": 60,
+             "doctop": 50, "upright": True, "direction": 1, "size": 9.0},
+        ]
+        pdf = mock.MagicMock()
+        pdf.pages = [page]
+        memo: dict[int, list] = {}
+        _detect_repeated_margin_lines(
+            pdf, defrag=False, subscript=True, twocol=False, page_words=memo)
+        self.assertEqual(list(memo), [0])
+        entry = memo[0]
+        self.assertEqual(len(entry), 2)
+        for item in entry:
+            self.assertIsInstance(item, tuple)
+            self.assertNotIsInstance(item, dict)
+            self.assertEqual(len(item), _WORD_TUPLE_ARITY)
+        self.assertEqual([item[0] for item in entry], ["Nominal", "Current"])
+
+    def test_compact_round_trip_preserves_consumed_attributes(self) -> None:
+        words = [
+            _word("Nominal", 50, 110, 50, 60, size=12.0,
+                  fontname="Helvetica-Bold", upright=True),
+            _word("-", 112, 116, 50, 60, size=12.0),
+            _word("Current", 118, 190, 50, 60, size=9.0),
+        ]
+        expanded = _expand_words(_compact_words(words))
+        self.assertEqual(
+            [w["text"] for w in expanded], ["Nominal", "-", "Current"])
+        for original, restored in zip(words, expanded):
+            for key in ("text", "x0", "x1", "top", "bottom"):
+                self.assertEqual(restored[key], original[key])
+            for key in ("upright", "size", "fontname"):
+                self.assertEqual(restored.get(key), original.get(key))
+        # 还原后的词表喂 _word_lines 与原词表逐字节同路（下游消费面等价）
+        self.assertEqual(_word_lines(expanded, defrag=False),
+                         _word_lines(words, defrag=False))
+
+    def test_compact_form_does_not_invent_missing_optional_keys(self) -> None:
+        # 全开关 OFF 的抽取（无 extra_attrs）没有 size/fontname 键——紧凑形不得
+        # 臆造（还原后仍缺失，.get() 语义与原字典一致）。
+        plain = [{"text": "a", "x0": 1, "x1": 2, "top": 3, "bottom": 4,
+                  "upright": True, "doctop": 3, "direction": 1}]
+        restored = _expand_words(_compact_words(plain))
+        self.assertEqual(restored[0]["text"], "a")
+        self.assertNotIn("size", restored[0])
+        self.assertNotIn("fontname", restored[0])
 
 
 class SwitchAndVersionTests(unittest.TestCase):

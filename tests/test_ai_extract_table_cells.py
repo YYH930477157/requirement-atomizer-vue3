@@ -154,7 +154,7 @@ class StructuredTableExtractionUnitTests(unittest.TestCase):
 
         prompt = build_section_prompt(section)
 
-        self.assertIn('"table_input_mode": "structured_leaves"', prompt)
+        self.assertIn('"table_input_mode":"structured_leaves"', prompt)
         self.assertIn("不得新增或修改数值、单位、型号、代码", prompt)
         self.assertNotIn("把整张表合成一条需求", prompt)
 
@@ -295,7 +295,7 @@ class TableInputModeMergeRegressionTests(unittest.TestCase):
         self.assertEqual(len(merged), 1)
         self.assertEqual(merged[0]["table_input_mode"], "structured_leaves")
         prompt = build_section_prompt(merged[0])
-        self.assertIn('"table_input_mode": "structured_leaves"', prompt)
+        self.assertIn('"table_input_mode":"structured_leaves"', prompt)
         self.assertIn("【结构化表格硬约束】", prompt)
         self.assertIn("不得新增或修改数值、单位、型号、代码", prompt)
 

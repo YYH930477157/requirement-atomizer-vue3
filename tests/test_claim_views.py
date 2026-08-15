@@ -325,10 +325,10 @@ class ClaimViewSnapshotCacheTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self._seed(root)
-            original = claim_views.load_committed_effective_snapshot_readonly
+            original = claim_artifacts.load_committed_effective_snapshot_readonly
             calls: list[dict] = []
             with mock.patch.object(
-                claim_views,
+                claim_artifacts,
                 "load_committed_effective_snapshot_readonly",
                 side_effect=lambda *args, **kwargs: (
                     calls.append({"args": args}),
@@ -354,10 +354,10 @@ class ClaimViewSnapshotCacheTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self._seed(root)
-            original = claim_views.load_committed_effective_snapshot_readonly
+            original = claim_artifacts.load_committed_effective_snapshot_readonly
             calls: list[dict] = []
             with mock.patch.object(
-                claim_views,
+                claim_artifacts,
                 "load_committed_effective_snapshot_readonly",
                 side_effect=lambda *args, **kwargs: (
                     calls.append({"args": args}),
@@ -413,10 +413,10 @@ class ClaimViewSnapshotCacheTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self._seed(root)
-            original = claim_views.load_committed_effective_snapshot_readonly
+            original = claim_artifacts.load_committed_effective_snapshot_readonly
             calls: list[dict] = []
             with mock.patch.object(
-                claim_views,
+                claim_artifacts,
                 "load_committed_effective_snapshot_readonly",
                 side_effect=lambda *args, **kwargs: (
                     calls.append({"args": args}),
@@ -482,10 +482,10 @@ class ClaimViewSnapshotCacheTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self._seed_table(root)
-            original = claim_views.load_committed_effective_snapshot_readonly
+            original = claim_artifacts.load_committed_effective_snapshot_readonly
             calls: list[Path] = []
             with mock.patch.object(
-                claim_views,
+                claim_artifacts,
                 "load_committed_effective_snapshot_readonly",
                 side_effect=lambda *args, **kwargs: (
                     calls.append(Path(args[0])),
@@ -510,7 +510,7 @@ class ClaimViewSnapshotCacheTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self._seed(root)
-            original = claim_views.load_committed_effective_snapshot_readonly
+            original = claim_artifacts.load_committed_effective_snapshot_readonly
             calls: list[Path] = []
 
             def delayed_load(*args, **kwargs):
@@ -527,7 +527,7 @@ class ClaimViewSnapshotCacheTests(unittest.TestCase):
                 "queue",
             )
             with mock.patch.object(
-                claim_views,
+                claim_artifacts,
                 "load_committed_effective_snapshot_readonly",
                 side_effect=delayed_load,
             ), ThreadPoolExecutor(max_workers=len(views)) as executor:

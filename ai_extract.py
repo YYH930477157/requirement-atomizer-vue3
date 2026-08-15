@@ -89,7 +89,7 @@ from extract_guards import (  # noqa: F401
 
 LOGGER = logging.getLogger("requirement_atomizer")
 
-AI_EXTRACT_PROMPT_VERSION = "ai-extract-v24"  # v24：表格只消费结构化 row/cell 叶子，禁止整表 blob 与结构事实发明
+AI_EXTRACT_PROMPT_VERSION = "ai-extract-v25"  # v25：章节 payload 仅改紧凑序列化（indent=2→单行，措辞零变化；省 token 并按纪律轮换付费缓存键）。v24：表格只消费结构化 row/cell 叶子，禁止整表 blob 与结构事实发明
 # v3：table_cell 的表标题作为独立 prompt_context 下发，可用于消解正文/marker
 # 省略的产品或接口范围，但仍禁止充当 source_quote/独立事实；v2（P0-3 复审）：
 # focus evidence 结构化——prompt_context（仅定位、禁引用）与
@@ -112,6 +112,12 @@ NO_LEDGER_BASELINE_LINEAGE_VERSION = "no-ledger-baseline-lineage-v2"
 COMPLIANCE_REQUIREMENTS = "compliance_requirements.json"
 AI_REQUIREMENTS_PARTIAL = "ai_requirements.partial.json"
 AI_PARTIAL_SCHEMA = "ai-requirements-partial/v1"
+# Partial snapshot throttling: every completion rebuilding visible rows + full-volume atomic fsync is O(completed),
+# under concurrency this futures consumer thread accumulates O(S^2) writing — bounded by dual thresholds of
+# "completion-count interval / time interval"; the wrap-up snapshot and complete=True (after the run entry point officially
+# produces the artifacts) are always written, and the final state is not affected by throttling.
+AI_PARTIAL_PUBLISH_MIN_COMPLETED = 8
+AI_PARTIAL_PUBLISH_INTERVAL_S = 5.0
 DEFAULT_CONCURRENCY = 8   # 4→8（2026-07-14 提速）：IO 等待型并发,mimo 端点 8 并发实测稳定
 MAX_CONCURRENCY = 16
 CONCURRENCY_ENV = "RATOMIZER_LLM_CONCURRENCY"
@@ -1727,7 +1733,9 @@ def build_section_prompt(section: dict[str, Any]) -> str:
         "text": section.get("text", ""),
         "table_input_mode": section.get("table_input_mode", "plain_text"),
     }
-    base = json.dumps(payload, ensure_ascii=False, indent=2)
+    # 紧凑序列化（v25）：逐字节数进每次抽取/自检/复核的 token 账单，indent=2 的
+    # 换行+缩进是纯格式开销；措辞与键序零变化，仅去掉空白。
+    base = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     if section.get("table_input_mode") == "structured_leaves":
         base += (
             "\n\n【结构化表格硬约束】\n"
@@ -3763,6 +3771,9 @@ def extract_all(
         hit = cache.get(fp)
         if hit is not None:
             results[i] = _prepare_requirement_rows(hit, fp)
+            # 规范性成文在入列时一次性施加（幂等不动点，见测试）；缓存文件本身
+            # 仍存未成文行——成文版本属于发布 lineage，不进付费缓存键。
+            enforce_normative_framing(results[i])
             section_done[i] = True
         else:
             pending.append((i, section, fp))
@@ -3780,7 +3791,8 @@ def extract_all(
         for index, reqs in enumerate(results):
             if section_done[index]:
                 visible.extend(reqs or [])
-        enforce_normative_framing(visible)
+        # 行已在入列时成文（enforce_normative_framing 是逐行确定性变换且幂等，
+        # 逐发布全量重跑与入列即跑的字节等价性由测试锁定）；这里只做收集落盘。
         write_partial_snapshot(
             partial_path,
             run_id=run_id,
@@ -3803,6 +3815,8 @@ def extract_all(
 
     publish()  # 新 run 先覆盖旧快照；缓存命中章节可立即审查
     emit()  # 初始进度（含缓存命中数），让界面立刻有反馈
+    last_publish_monotonic = time.monotonic()
+    published_completed = completed
 
     def work(item: tuple[int, dict[str, Any], str]) -> tuple[int, str, list[dict[str, Any]], bool]:
         idx, section, fp = item
@@ -3824,16 +3838,24 @@ def extract_all(
                 results[idx] = prepared
                 section_done[idx] = True
                 if ok:
-                    # 逐章节增量缓存：中途中断不丢已完成章节
+                    # 逐章节增量缓存：中途中断不丢已完成章节（缓存行保持未成文原样）
                     append_cache(cache_path, [{"fingerprint": fp, "model": model,
                                                "prompt_version": AI_EXTRACT_PROMPT_VERSION,
                                                "requirements": prepared}])
                 else:
                     failed += 1
                     failed_indexes.append(idx)
+                # 成文护栏入列即施加（缓存写后再改内存行，付费缓存内容不变）；
+                # 运行入口的最终 enforce_normative_framing 对已成文行是不动点。
+                enforce_normative_framing(prepared)
                 completed += 1
-                publish()
+                if (completed - published_completed >= AI_PARTIAL_PUBLISH_MIN_COMPLETED
+                        or time.monotonic() - last_publish_monotonic >= AI_PARTIAL_PUBLISH_INTERVAL_S):
+                    publish()
+                    published_completed = completed
+                    last_publish_monotonic = time.monotonic()
                 emit()
+        publish()   # 收尾快照（complete=True 仍只由运行入口在正式产物落盘后写）
 
     if stats is not None:
         stats["total_sections"] = total
