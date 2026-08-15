@@ -5,12 +5,13 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from docx import Document
-from docx.enum.text import WD_BREAK
+from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_BREAK
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 
 from docx_table_parser import parse_docx_table
 from atomize import extract_docx
+from table_dispositions import build_table_cell_dispositions
 
 
 def _set_row_grid_offset(row, *, before: int = 0, after: int = 0) -> None:
@@ -23,6 +24,14 @@ def _set_row_grid_offset(row, *, before: int = 0, after: int = 0) -> None:
         node = OxmlElement("w:gridAfter")
         node.set(qn("w:val"), str(after))
         tr_pr.append(node)
+
+
+def _set_vmerge_continue(cell) -> None:
+    # A w:vMerge without w:val defaults to "continue" in OOXML; row 1 has no
+    # restart anchor, so the continuation has no canonical anchor (merge_conflict).
+    tc_pr = cell._tc.get_or_add_tcPr()
+    node = OxmlElement("w:vMerge")
+    tc_pr.append(node)
 
 
 class DocxTablePhysicalParserTests(unittest.TestCase):
@@ -115,7 +124,29 @@ class DocxTablePhysicalParserTests(unittest.TestCase):
             "The device shall support:\nremote reading\nlocal reading",
         )
 
-    def test_conflicting_row_width_is_reported_without_dropping_text(self) -> None:
+    def test_style_evidence_reads_the_cells_own_paragraph_objects(self) -> None:
+        # FIX 2 回归护栏：_parse_cell_content 返回的 paragraph_objects 必须继续
+        # 喂给 _cell_style_evidence（消除调用方的二次 Paragraph 重建），样式证据
+        # 逐字节不变——粗体/对齐仍来自单元格真实段落。
+        document = Document()
+        table = document.add_table(rows=1, cols=1)
+        paragraph = table.cell(0, 0).paragraphs[0]
+        run = paragraph.add_run("Bold header")
+        run.bold = True
+        paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+        parsed = parse_docx_table(table)
+
+        evidence = parsed.cells[(1, 1)].style_evidence
+        self.assertTrue(evidence["bold"])
+        self.assertEqual(len(evidence["paragraph_alignments"]), 1)
+        self.assertIn("CENTER", evidence["paragraph_alignments"][0])
+
+    def test_reconciled_row_width_conflict_is_audit_note_not_blocking(self) -> None:
+        # 声明 tblGrid(2 列)窄于实际行宽(4 列)：解析器确定性调和——宽取
+        # max(declared, observed)、矩阵按调和宽补齐、无内容丢失。冲突保留为
+        # 审计注记（reconciled=True），但不再置 parse_incomplete，整表不再
+        # 因此被强制 review（review 面积随表面积而非真实歧义增长）。
         document = Document()
         table = document.add_table(rows=2, cols=2)
         table.cell(0, 0).text = "A"
@@ -126,10 +157,104 @@ class DocxTablePhysicalParserTests(unittest.TestCase):
 
         parsed = parse_docx_table(table)
 
-        self.assertTrue(parsed.parse_incomplete)
+        self.assertFalse(parsed.parse_incomplete)
+        self.assertEqual(parsed.width, 4)
         self.assertEqual(parsed.parse_incomplete_reason["code"], "row_width_conflict")
+        issues = parsed.parse_incomplete_reason["issues"]
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0]["code"], "row_width_conflict")
+        self.assertTrue(issues[0].get("reconciled"))
+        self.assertEqual(parsed.parse_incomplete_reason.get("reconciled"), True)
         self.assertIn("C", parsed.raw_text)
         self.assertIn("D", parsed.raw_text)
+
+    def test_row_narrower_than_declared_grid_reconciles_without_blocking(self) -> None:
+        # 镜像情形：行窄于声明 tblGrid——调和走补齐路径（宽度保持声明值、行尾
+        # 补空列），同样零丢失，不阻塞；冲突仍作为审计注记保留。
+        document = Document()
+        table = document.add_table(rows=2, cols=3)
+        table.cell(0, 0).text = "A"
+        table.cell(0, 1).text = "B"
+        table.cell(0, 2).text = "C"
+        second = table.rows[1]
+        second.cells[0].text = "Only"
+        second._tr.remove(second.cells[2]._tc)
+        second._tr.remove(second.cells[1]._tc)
+
+        parsed = parse_docx_table(table)
+
+        self.assertFalse(parsed.parse_incomplete)
+        self.assertEqual(parsed.width, 3)
+        self.assertEqual(parsed.parse_incomplete_reason["code"], "row_width_conflict")
+        self.assertEqual(parsed.matrix[1], ["Only", "", ""])
+        self.assertIn("Only", parsed.raw_text)
+
+    def test_merge_conflict_without_anchor_still_blocks_parse(self) -> None:
+        document = Document()
+        table = document.add_table(rows=2, cols=2)
+        table.cell(0, 0).text = "A"
+        table.cell(0, 1).text = "B"
+        table.cell(1, 0).text = "C"
+        table.cell(1, 1).text = "D"
+        _set_vmerge_continue(table.cell(1, 0))
+
+        parsed = parse_docx_table(table)
+
+        self.assertTrue(parsed.parse_incomplete)
+        self.assertEqual(parsed.parse_incomplete_reason["code"], "merge_conflict")
+        self.assertFalse(
+            parsed.parse_incomplete_reason["issues"][0].get("reconciled")
+        )
+
+    def test_reconciled_width_conflict_table_does_not_force_review_dispositions(self) -> None:
+        document = Document()
+        table = document.add_table(rows=2, cols=2)
+        table.cell(0, 0).text = "Parameter"
+        table.cell(0, 1).text = "Value"
+        table.cell(1, 0).text = "Voltage"
+        table.cell(1, 1).text = "230 V"
+        _set_row_grid_offset(table.rows[1], before=2)
+
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "width-conflict.docx"
+            document.save(path)
+            blocks, _items, cells = extract_docx(path)
+
+        self.assertFalse(blocks[0]["parse_incomplete"])
+        self.assertEqual(
+            blocks[0]["parse_incomplete_reason"]["code"], "row_width_conflict"
+        )
+        dispositions = build_table_cell_dispositions(blocks, cells)
+        self.assertTrue(dispositions)
+        self.assertFalse(any(
+            "parse_incomplete" in str(entry)
+            for row in dispositions
+            for entry in row["evidence"]
+        ))
+
+    def test_merge_conflict_table_routes_every_cell_to_review(self) -> None:
+        document = Document()
+        table = document.add_table(rows=2, cols=2)
+        table.cell(0, 0).text = "Parameter"
+        table.cell(0, 1).text = "Value"
+        table.cell(1, 0).text = "Voltage"
+        table.cell(1, 1).text = "230 V"
+        _set_vmerge_continue(table.cell(1, 0))
+
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "merge-conflict.docx"
+            document.save(path)
+            blocks, _items, cells = extract_docx(path)
+
+        self.assertTrue(blocks[0]["parse_incomplete"])
+        self.assertEqual(blocks[0]["parse_incomplete_reason"]["code"], "merge_conflict")
+        dispositions = build_table_cell_dispositions(blocks, cells)
+        self.assertTrue(dispositions)
+        self.assertTrue(all(row["disposition"] == "review" for row in dispositions))
+        self.assertTrue(all(
+            any(str(entry).startswith("parse_incomplete:") for entry in row["evidence"])
+            for row in dispositions
+        ))
 
     def test_extract_docx_publishes_physical_content_and_nested_cell_sources(self) -> None:
         document = Document()
@@ -151,7 +276,7 @@ class DocxTablePhysicalParserTests(unittest.TestCase):
             blocks, items, cells = extract_docx(path)
 
         self.assertEqual([block["block_id"] for block in blocks], ["BLK-000001"])
-        self.assertEqual(blocks[0]["docx_table_physical_version"], "docx-table-physical-v1")
+        self.assertEqual(blocks[0]["docx_table_physical_version"], "docx-table-physical-v2")
         self.assertEqual(len(blocks[0]["nested_tables"]), 1)
         self.assertEqual(blocks[0]["nested_tables"][0]["table_id"], "TBL-000001-N001")
         outer = next(cell for cell in cells if cell["cell_id"].endswith("R000002-C000002"))

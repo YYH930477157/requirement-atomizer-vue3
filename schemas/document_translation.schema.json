@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": ["schema_version", "record_kind", "block_id", "block_index", "status", "reason", "source_text", "translation", "provenance"],
   "properties": {
-    "schema_version": {"const": "document-translation/v2"},
+    "schema_version": {"const": "document-translation/v3"},
     "record_kind": {"enum": ["block", "table", "complex_table"]},
     "block_id": {"type": "string", "minLength": 1},
     "block_index": {"type": "integer", "minimum": 0},
@@ -74,7 +74,7 @@
       "additionalProperties": false,
       "required": ["producer", "source_sha256", "translation_key", "route", "model", "guards_version", "strategy_version", "generated_at"],
       "properties": {
-        "producer": {"const": "full-translation-v2"},
+        "producer": {"const": "full-translation-v3"},
         "source_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "translation_key": {"type": "string"},
         "route": {"type": "string"},

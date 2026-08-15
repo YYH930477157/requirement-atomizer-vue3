@@ -10,6 +10,7 @@ import sys
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from functools import cached_property
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -58,6 +59,7 @@ from table_structure import (
     row_bears_normative_sentence,
     row_is_weak_signal,
     strip_lettered_header_prefix,
+    table_geometry_context,
     validate_merge_text,
 )
 from table_structure import (
@@ -324,6 +326,17 @@ class DocumentProfile:
             body_start_heading=normalize_profile_value(str(payload.get("body_start_heading", defaults.body_start_heading))),
         )
 
+    # is_noise/detect_heading 每段正文要跑 2-3+ 次，成员判定集合一次冻结缓存
+    # （cached_property 直接写实例 __dict__，frozen dataclass 的 __hash__/__eq__
+    # 只看声明字段，缓存不改变等值/哈希语义）
+    @cached_property
+    def noise_exact_set(self) -> frozenset[str]:
+        return frozenset(self.noise_exact)
+
+    @cached_property
+    def major_headings_set(self) -> frozenset[str]:
+        return frozenset(self.major_headings)
+
 
 DEFAULT_DOCUMENT_PROFILE = DocumentProfile()
 
@@ -371,7 +384,7 @@ def is_noise(text: str, *, document_profile: DocumentProfile | None = None) -> b
         return True
     if any(re.search(pattern, low, flags=re.I) for pattern in profile.noise_patterns):
         return True
-    if normalize_profile_value(low) in set(profile.noise_exact):
+    if normalize_profile_value(low) in profile.noise_exact_set:
         return True
     if re.fullmatch(r"\d+\s+pages?", low):
         return True
@@ -418,7 +431,7 @@ def detect_heading(
         return min(int(match.group(1)), 6), text
 
     normalized = text.strip().lower().rstrip(":")
-    if normalized in set(profile.major_headings):
+    if normalized in profile.major_headings_set:
         return 1, text
 
     numbered = re.match(r"^(\d+(?:\.\d+)*)(?:\s+|\.\s+)(.{3,})$", text)
@@ -594,6 +607,30 @@ def docx_table_grid_evidence(
     return deduped, explicit_header_rows, merge_conflict
 
 
+def _collapse_merged_title_row(
+    row: list[str],
+    row_index: int,
+    merge_ranges: list[tuple[int, int, int, int]],
+    width: int,
+) -> list[str]:
+    """标题行的合并覆盖塌缩：锚格保留文本、覆盖格清空（镜像 docx 物理网格）。
+
+    xlsx 的 _region_matrix 把合并值扁平填充到全部覆盖格（by design）——全宽
+    合并标题行照抄矩阵会把同一文本带 N 份进块载荷，全文翻译逐格拼成
+    "Title | Title | Title"。标题行由全宽合并锚行检测识别（detect_title_rows），
+    塌缩精确而非启发式；存活 range 已过 validate_merge_text（覆盖格为空或与
+    锚逐字一致），清空绝不丢内容。仅标题行走此口径——数据/表头行的扁平填充
+    是 xlsx 数据行可见性的独立行为，不在本函数范围。"""
+    cells = pad_row(row, width)
+    for min_row, min_col, max_row, max_col in merge_ranges:
+        if not min_row <= row_index <= max_row:
+            continue
+        for column in range(min_col, max_col + 1):
+            if (row_index, column) != (min_row, min_col) and column <= width:
+                cells[column - 1] = ""
+    return cells
+
+
 def build_table_artifacts(
     matrix: list[list[str]],
     *,
@@ -680,6 +717,15 @@ def build_table_artifacts(
     header_count = len(header_row_indexes)
     header_rows = [pad_row(matrix[row_index - 1], width) for row_index in header_row_indexes]
     data_rows = [pad_row(matrix[row_index - 1], width) for row_index in data_row_indexes]
+    # 全部标题行（不止提升为 table_title 的首行）进块：全文档翻译的堆叠标题/副标题行
+    # 需要逐行单元，否则第二行起的标题文本不进任何翻译单元（静默丢失）。
+    # 标题行同时塌缩合并覆盖（锚格保留、覆盖格清空）：xlsx 扁平填充的全宽标题行
+    # 若照抄矩阵，同一文本 N 份进 title_rows → LLM 输入/账本/HTML 三处重复，
+    # 且拼接串与 table_title 不同文使题注去重失效。
+    title_rows = [
+        _collapse_merged_title_row(matrix[row_index - 1], row_index, normalized_merges, width)
+        for row_index in title_row_indexes
+    ]
     # 有效矩阵（covered 坐标继承 anchor 文本）只用于分类/表头/事实列判定——
     # 与 docx 扁平填充口径对齐（纵向合并的对象名对后续行可见）；
     # 块渲染与行/格正文恒用真实矩阵
@@ -718,11 +764,17 @@ def build_table_artifacts(
         for column in marker_majority_columns(headers, effective_data_rows) - fact_columns
         if not NOTE_HEADER_RE.search(str(headers[column] or ""))
     }
+    # plan_table_leaves 与 build_cell_items 顺序消费同一份表格几何——归一化合并/
+    # covered 集/分组标题行一次算清共享，避免大表 O(合并面积) 重复付出两遍
+    geometry = table_geometry_context(
+        matrix, width=width, data_rows=data_row_indexes, merge_ranges=normalized_merges
+    )
     plan = plan_table_leaves(
         structure, matrix, table_kind=table_kind,
         merge_ranges=normalized_merges,
         headers=headers, fact_columns=fact_columns,
         tender_table_kind=tender_table_kind,
+        geometry=geometry,
     )
     table_text_full = render_table_text(headers, data_rows)
     # 2026-07-27 起扁平文本不再截断（impl-v6 取消 [:5000]、impl-v7 render 默认全行）：
@@ -797,6 +849,7 @@ def build_table_artifacts(
         "columns": width,
         "header_row_count": header_count,
         "header_rows": header_rows,
+        "title_rows": title_rows,
         "headers": headers,
         # 完整数据行进块：批注视图渲染真表格（此前只有扁平 text，画线/无画线表都糊成一坨）
         "data_rows": data_rows,
@@ -936,6 +989,7 @@ def build_table_artifacts(
         geometry_kind=geometry_kind,
         fact_columns=fact_columns,
         cell_metadata=cell_metadata,
+        geometry=geometry,
     )
 
     return block, table_items, table_cell_items
