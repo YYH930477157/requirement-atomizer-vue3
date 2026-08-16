@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ratomizer.local/schemas/functional_truth.schema.json",
+  "title": "Functional truth-set entry for the A/B quality gate (M3)",
+  "description": "One expert-annotated final requirement used by tools/ab_runner.py to compute final-XLSX precision/recall/F1 and per-kind preservation rates (DEATOMIZATION_REMEDIATION_PLAN §5.1). document_id is matched against the parsed-dir name or the 'sha256:<blocks.jsonl sha256>' document key; entries with document_id '*' apply to every document (annotation fixture convenience only). Customer wording must never be committed: the repository keeps only this schema plus synthetic fixtures; real truth sets are passed via machine-local --truth paths.",
+  "type": "object",
+  "required": [
+    "truth_id",
+    "document_id",
+    "section_id",
+    "expected_text"
+  ],
+  "properties": {
+    "truth_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Stable unique id within one truth file; duplicate ids are rejected loudly at load time."
+    },
+    "document_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Owning document: parsed-dir basename, 'sha256:<hex>' document key, or '*' for document-agnostic rows."
+    },
+    "section_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Source clause label in the parser's coordinate space (e.g. '4.1'). Compared for exact equality after whitespace strip + casefold."
+    },
+    "expected_text": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Expected final requirement body text. Matching uses deterministic content-token coverage (functional_extract._content_tokens)."
+    },
+    "conditions": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "description": "Expected condition clauses. A condition counts as preserved when its content tokens are covered >= 0.6 by the matched final-XLSX row text."
+    },
+    "exceptions": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "description": "Expected exception clauses; same preservation rule as conditions."
+    },
+    "negations": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "description": "Expected negated behaviours; same preservation rule as conditions."
+    },
+    "numbers": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "description": "Expected numeric literals (e.g. '15', '0.5'). Preserved on exact numeric equality with a number extracted from the matched row; a different extracted number is a conflict."
+    },
+    "units": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "description": "Expected unit tokens (e.g. 'kWh', 'min'). Preserved on letter-boundary-aware case-insensitive presence; presence of another recognized unit instead is a conflict."
+    },
+    "codes": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "description": "Expected coded identifiers (e.g. OBIS '0.0.1.0.0.255'). Preserved on case-insensitive squashed-text presence; presence of another dotted code instead is a conflict."
+    },
+    "annotation_status": {
+      "enum": ["real", "fixture"],
+      "description": "real = genuine expert annotation; fixture = synthetic self-proof entry that never masquerades as a real annotation. Informational for ab_runner (reported, not filtered)."
+    },
+    "notes": {"type": "string"}
+  },
+  "additionalProperties": false
+}

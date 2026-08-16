@@ -70,9 +70,9 @@ ENV_REGISTRY: tuple[EnvVar, ...] = (
     EnvVar("RATOMIZER_PDF_TWOCOL_DEF", "0", "PDF 两栏定义表检测开关（D3；=1 启用粗体术语栏+长定义栏结构重建；默认 0 试点）", False),
     EnvVar("RATOMIZER_PDF_MODERN_PARSER", "0", "PDF 现代解析器适配层开关（=1 优先走 pdf_modern_adapter；适配层 unavailable 时诚实回退手写 pdfplumber 路径并在产出标 parser_provenance；默认 0=旧手写路径，缓存指纹与 golden 基线字节不变）", False),
     # --- WS2 粒度重构（功能需求直抽 + claim 账本抽检 + 原子级下钻）---
-    # 全部默认关闭/采样：直抽是旁路新入口（默认关=旧原子化路径），claim 账本 sampling 为默认档。
-    # WS0 功能需求级真值集尚是 pending-human，本切片只交付工程机制（默认关闭、旧路径始终合法）。
-    EnvVar("RATOMIZER_FUNCTIONAL_EXTRACT", "0", "功能需求直抽入口开关（=1 chain 内 ai-extract+functional-synthesis 两阶段整体替换为 functional-extract：条款单元单次 LLM 直出功能需求级条目写 functional_requirements.json，不产原子、不再重并；UI/CLI 仍传旧阶段名，替换由 chain_task 单点完成并落账。默认 0=旧原子化路径）", False),
+    # 功能直抽默认开启；旧原子化路径保留为显式 =0 的回滚通道。claim 账本 sampling 为默认档。
+    # WS0 功能需求级真值集仍需人工补齐；默认翻转不改变失败必须响亮阻断的门禁语义。
+    EnvVar("RATOMIZER_FUNCTIONAL_EXTRACT", "0", "功能需求直抽入口开关（=1 启用 functional_extract 单次 LLM 直出功能需求级条目并写 functional_requirements.json；默认 0=旧 extract_units→atomize→functional_synthesis 原子化路径，行为面与缓存指纹不动）", False),
     EnvVar("RATOMIZER_FUNCTIONAL_EXTRACT_NEGATIVE_K", "2", "functional_extract 直抽负例 few-shot 注入数量上限（0=不注入）", False),
     EnvVar("RATOMIZER_CLAIM_LEDGER_MODE", "sampling", "claim 账本闭合模式（配置解析层默认 sampling；B 轨发布路径 env 未设时仍走 full=生产行为不变，显式设置才 opt-in 生效）。full=全量 verifier 闭合 / sampling=分层抽样 10%+全部高风险 claim，未抽中 claim 延迟到发布门禁并在 claim_sampling_summary.json 留痕 / baseline_gate=发布门禁全量闭合+重型机制联动（用户显式开启时触发全量闭合）。build_shadow_ledger 自身默认 full（直接调用者/既有测试不受影响）；把 sampling 翻转为生产默认属语义变更，留待 S2", False),
     EnvVar("RATOMIZER_CLAIM_LEDGER_SAMPLING_RATE", "0.1", "sampling 模式分层抽样率（0..1，默认 0.1；抽检闭合率低于阈值时自动扩大，判定依据留账本）", False),
@@ -134,6 +134,60 @@ ENV_REGISTRY: tuple[EnvVar, ...] = (
 )
 
 ENV_NAMES = frozenset(v.name for v in ENV_REGISTRY)
+
+_REGISTRY_BY_NAME: dict[str, EnvVar] = {v.name: v for v in ENV_REGISTRY}
+
+# 统一布尔真值集合（§3.6 默认值翻转机制的前置：单源默认 + 单一口径）。
+# 注意与 text_mode_enabled 的"默认开"极性不同——这里表达"显式开启"。
+_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def env_default(name: str) -> str:
+    """注册表登记的默认值（单源）；未登记的名字直接 KeyError——强制先登记。"""
+    try:
+        return _REGISTRY_BY_NAME[name].default
+    except KeyError:
+        raise KeyError(
+            f"环境变量 {name} 未在 config.ENV_REGISTRY 登记——先登记再读取"
+        ) from None
+
+
+def get_env(name: str, *, override: str | None = None) -> str:
+    """统一环境变量读取（§3.6）：override（测试注入）> os.environ > 注册表默认值。
+
+    默认值只此一份。各模块不得再内联自己的 ``os.environ.get(name, "默认")``——
+    翻转默认值时只改注册表 + 本函数族，CLI/Electron 子进程/chain_task/阶段指纹/
+    单步命令/测试自动同源。
+    """
+    if override is not None:
+        return str(override)
+    raw = os.environ.get(name)
+    if raw is None or str(raw).strip() == "":
+        return env_default(name)
+    return str(raw)
+
+
+def get_env_bool(name: str, *, override: str | None = None) -> bool:
+    """布尔开关读取：真值集合 {1,true,yes,on}，其余（含注册表默认）为关。"""
+    return get_env(name, override=override).strip().lower() in _TRUTHY
+
+
+def get_env_int(name: str, *, override: str | None = None) -> int:
+    """整数读取：非法/空值回退注册表默认（fail-safe，与既有 _env_int 口径一致）。"""
+    raw = get_env(name, override=override).strip()
+    try:
+        return int(float(raw))
+    except (TypeError, ValueError):
+        return int(float(env_default(name)))
+
+
+def get_env_float(name: str, *, override: str | None = None) -> float:
+    """浮点读取：非法/空值回退注册表默认。"""
+    raw = get_env(name, override=override).strip()
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return float(env_default(name))
 
 
 def describe() -> str:

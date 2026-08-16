@@ -1592,6 +1592,31 @@ export class RequirementApiClient {
     })
   }
 
+  // §3.3 功能级专家裁决：唯一写权威仍是 ai_review_states（level=functional）。
+  // CAS 材料（指纹三元组 + authority revision）从 GET /functional-requirements 投影带回。
+  async applyFunctionalReviewAction(
+    input: AiReviewActionInput & { expectedTargetFingerprint?: string },
+  ): Promise<AiReviewStatePayload> {
+    return this.request<AiReviewStatePayload>("/functional-review-actions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ai_req_id: input.aiReqId,
+        status: input.status,
+        source_fingerprint: input.sourceFingerprint || "",
+        review_subject_fingerprint: input.reviewSubjectFingerprint || "",
+        expected_target_fingerprint: input.expectedTargetFingerprint || "",
+        expected_target_authority_write_revision:
+          input.expectedTargetAuthorityWriteRevision || "",
+        ...(input.moduleOverride !== undefined ? { module_override: input.moduleOverride } : {}),
+        clear_module_override: input.clearModuleOverride === true,
+        ownership_override: input.ownershipOverride || "",
+        reason: input.reason || "",
+        actor: input.actor || "",
+      }),
+    })
+  }
+
   async translateRequirement(input: TranslationInput): Promise<TranslationPayload> {
     return this.request<TranslationPayload>("/translations", {
       method: "POST",

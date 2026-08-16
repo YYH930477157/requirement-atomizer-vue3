@@ -3486,6 +3486,8 @@ def _validate_shadow_graph(
     requirements: list[dict[str, Any]] | None,
     review_states: dict[str, dict[str, Any]] | None,
     validate_review_authority: bool = True,
+    root: Path | None = None,
+    requirements_store: str = "",
 ) -> None:
     catalog_generation = str(catalog_meta.get("catalog_generation_id") or "")
     document_generation = str(catalog_meta.get("document_generation_id") or "")
@@ -3494,8 +3496,18 @@ def _validate_shadow_graph(
     from claim_ledger import (
         b_track_coverage_targets,
         coverage_group_record_error,
+        functional_anchor_obligation_hashes,
         reduce_claim,
         semantic_negative_record_error,
+    )
+    # 复审 P2-1：回放校验同样按当前义务重算锚文本身份（functional store 且有 root；
+    # 原子目标无锚，索引为 None 时不核验——与发布侧同口径。store 由调用方从
+    # 发布参数/generation meta 显式传入——shadow_meta 本身不携带该键）。
+    replay_anchor_hashes = (
+        functional_anchor_obligation_hashes(root)
+        if root is not None
+        and requirements_store == FUNCTIONAL_REQUIREMENTS_STORE
+        else None
     )
 
     target_records = (
@@ -3546,6 +3558,7 @@ def _validate_shadow_graph(
             verifier_runtime_fingerprint=str(
                 dict(shadow_meta.get("verifier_runtime") or {}).get("fingerprint") or ""
             ),
+            obligation_hashes=replay_anchor_hashes,
         )
         if group_error:
             raise ClaimArtifactError(
@@ -3650,6 +3663,50 @@ def _validate_shadow_graph(
                     raise ClaimArtifactError("coverage edge evidence is stale or not locatable")
 
 
+# §3.4：B 轨 target store 集合——原子模式绑 ai_requirements.jsonl（默认，行为不变）；
+# 直抽模式绑 functional_requirements.json（FRE- 主键）。目录/账本对 store 无感知，
+# 绑定只发生在 shadow 发布层。
+B_TRACK_TARGET_STORES = frozenset({
+    "ai_requirements.jsonl", "functional_requirements.json",
+})
+FUNCTIONAL_REQUIREMENTS_STORE = "functional_requirements.json"
+
+
+def _read_b_track_requirements(root: Path, store: str) -> list[dict[str, Any]]:
+    """按 store 读取 B 轨 target 行：原子=JSONL；直抽=JSON 对象的 items 列表。"""
+    path = root / store
+    if store == FUNCTIONAL_REQUIREMENTS_STORE:
+        payload = _read_json(path, label="functional requirements")
+        items = payload.get("items") if isinstance(payload, dict) else None
+        if not isinstance(items, list):
+            raise ClaimArtifactError(
+                "functional_requirements.json has no items list to bind")
+        return [row for row in items if isinstance(row, dict)]
+    return _read_jsonl(path, label="B-track requirements")
+
+
+def _b_track_requirements_producer_lineage(
+    root: Path, store: str,
+) -> dict[str, Any] | None:
+    """B 轨 target store 的 producer lineage（发布时快照进 generation meta）。
+
+    原子 store：ai_requirements.meta.json 的 producer_lineage（既有行为）；直抽 store：
+    functional_requirements.json 载荷自带的 producer/版本戳（内容在哈希绑定内，可信）。
+    """
+    if store == FUNCTIONAL_REQUIREMENTS_STORE:
+        # 单源：functional_extract.current_producer_lineage（发布与 currency 校验共用；
+        # 不含 execution_status——运行态不是 lineage）
+        from functional_extract import current_producer_lineage
+
+        return dict(current_producer_lineage())
+    meta_path = root / "ai_requirements.meta.json"
+    if not meta_path.is_file():
+        return None
+    payload = _read_json(meta_path, label="AI requirements meta")
+    lineage = payload.get("producer_lineage")
+    return dict(lineage) if isinstance(lineage, dict) else None
+
+
 def publish_shadow_generation(
     out_dir: Path | str,
     catalog_build: dict[str, Any],
@@ -3657,6 +3714,7 @@ def publish_shadow_generation(
     *,
     run_id: str,
     requirements_sha256: str = "",
+    requirements_store: str = "ai_requirements.jsonl",
 ) -> dict[str, Any]:
     root = Path(out_dir).expanduser().resolve()
     with claim_publication_lock(root):
@@ -3672,6 +3730,7 @@ def publish_shadow_generation(
                 shadow_result,
                 run_id=run_id,
                 requirements_sha256=requirements_sha256,
+                requirements_store=requirements_store,
             )
         except BaseException:
             try:
@@ -3703,9 +3762,18 @@ def _publish_shadow_generation_unlocked(
     *,
     run_id: str,
     requirements_sha256: str = "",
+    requirements_store: str = "ai_requirements.jsonl",
 ) -> dict[str, Any]:
-    """Publish an immutable base generation and its Phase 0 effective snapshot."""
+    """Publish an immutable base generation and its Phase 0 effective snapshot.
+
+    §3.4（2026-08-15）：B 轨 target store 可选 ``functional_requirements.json``（直抽模式，
+    FRE- 主键）——哈希绑定/读取/generation meta 记录都指向该 store；原子模式默认值不变。
+    """
     root = Path(out_dir).expanduser().resolve()
+    if requirements_store not in B_TRACK_TARGET_STORES:
+        raise ClaimArtifactError(
+            f"unknown B-track requirements store: {requirements_store}"
+        )
     catalog_meta = dict(catalog_build.get("meta") or {})
     shadow_meta = dict(shadow_result.get("meta") or {})
     catalog = list(catalog_build.get("catalog") or [])
@@ -3739,13 +3807,14 @@ def _publish_shadow_generation_unlocked(
     review_states: dict[str, dict[str, Any]] = {}
     if shadow_meta.get("delivery_track") == "B":
         if not requirements_sha256:
-            raise ClaimArtifactError("B-track claim generation must bind ai_requirements.jsonl")
+            raise ClaimArtifactError(
+                f"B-track claim generation must bind {requirements_store}")
         _require_hash(
-            root / "ai_requirements.jsonl",
+            root / requirements_store,
             requirements_sha256,
-            label="ai_requirements.jsonl",
+            label=requirements_store,
         )
-        requirements = _read_jsonl(root / "ai_requirements.jsonl", label="AI requirements")
+        requirements = _read_b_track_requirements(root, requirements_store)
         from ai_review_actions import read_ai_review_states
         from claim_ledger import b_track_authority_state
 
@@ -3767,6 +3836,8 @@ def _publish_shadow_generation_unlocked(
         ledger=ledger,
         requirements=requirements,
         review_states=review_states,
+        root=root,
+        requirements_store=requirements_store,
     )
 
     attempt_recovery = _shadow_verifier_attempt_recovery(
@@ -3792,16 +3863,10 @@ def _publish_shadow_generation_unlocked(
         recovery=attempt_recovery,
     )
 
-    requirements_producer_lineage: dict[str, Any] | None = None
+    requirements_producer_lineage = _b_track_requirements_producer_lineage(
+        root, requirements_store,
+    )
     requirements_meta_path = root / "ai_requirements.meta.json"
-    if requirements_meta_path.is_file():
-        requirements_meta_payload = _read_json(
-            requirements_meta_path,
-            label="AI requirements meta",
-        )
-        producer_lineage = requirements_meta_payload.get("producer_lineage")
-        if isinstance(producer_lineage, dict):
-            requirements_producer_lineage = dict(producer_lineage)
 
     # 含表块的当前版本目录必须带 canonical cell 产物——缺失即哈希绑定空洞，
     # 拒绝提交（base 一旦没有 cell 绑定，篡改/删除 cell 产物将无法检出）
@@ -3837,6 +3902,7 @@ def _publish_shadow_generation_unlocked(
         ),
         "delivery_track": str(shadow_meta.get("delivery_track") or "B"),
         "target_kind": str(shadow_meta.get("target_kind") or "ai_requirement"),
+        "requirements_store": str(requirements_store),
         "requirements_sha256": str(requirements_sha256 or ""),
         "requirements_meta_sha256": (
             file_sha256(requirements_meta_path)
@@ -4031,10 +4097,13 @@ def _load_committed_attempt_lineage_unlocked(root: Path) -> dict[str, Any]:
         raise ClaimArtifactError("invalid committed verifier accounting")
     requirements_hash = str(generation.get("requirements_sha256") or "")
     if requirements_hash:
+        # §3.4：哈希校验按 generation meta 记录的 store（直抽=functional_requirements.json）
+        requirements_store = str(
+            generation.get("requirements_store") or "ai_requirements.jsonl")
         _require_hash(
-            root / "ai_requirements.jsonl",
+            root / requirements_store,
             requirements_hash,
-            label="ai_requirements.jsonl",
+            label=requirements_store,
         )
     requirements_meta_hash = str(generation.get("requirements_meta_sha256") or "")
     if requirements_meta_hash:
@@ -5161,6 +5230,7 @@ _EFFECTIVE_SNAPSHOT_STAT_FILES = (
     "table_cell_items.jsonl",
     "atomic_requirements.jsonl",
     "ai_requirements.jsonl",
+    "functional_requirements.json",
     "ai_requirements.meta.json",
     "ai_review_states.jsonl",
     "review_states.jsonl",
@@ -5463,7 +5533,10 @@ def _load_committed_claim_base_unlocked(root: Path) -> dict[str, Any]:
         raise ClaimArtifactError("committed verifier budget differs from its metrics")
     requirements_hash = str(generation.get("requirements_sha256") or "")
     requirements_meta_hash = str(generation.get("requirements_meta_sha256") or "")
-    requirements_path = root / "ai_requirements.jsonl"
+    # §3.4：live target 按 generation meta 记录的 store 取（直抽=functional_requirements.json）
+    requirements_store = str(
+        generation.get("requirements_store") or "ai_requirements.jsonl")
+    requirements_path = root / requirements_store
     requirements_meta_path = root / "ai_requirements.meta.json"
     # Hash each live target file once; the digest feeds both the live-target
     # match and the generation-time binding below.
@@ -5512,11 +5585,10 @@ def _load_committed_claim_base_unlocked(root: Path) -> dict[str, Any]:
     bound_requirements: list[dict[str, Any]] | None = None
     if requirements_live_sha == requirements_hash and requirements_hash:
         try:
-            bound_requirements = _read_jsonl(
-                requirements_path,
-                label="generation-time AI requirements",
+            bound_requirements = _read_b_track_requirements(
+                root, requirements_store,
             )
-        except OSError:
+        except (OSError, ClaimArtifactError):
             bound_requirements = None
     requirements_meta: dict[str, Any] | None = None
     if (
@@ -5541,6 +5613,8 @@ def _load_committed_claim_base_unlocked(root: Path) -> dict[str, Any]:
         requirements=bound_requirements,
         review_states=None,
         validate_review_authority=False,
+        root=root,
+        requirements_store=str(generation.get("requirements_store") or ""),
     )
 
     return {
@@ -5810,12 +5884,20 @@ def committed_base_versions_are_current(
     )
     target_producer_is_current = True
     if generation.get("delivery_track") == "B":
-        from ai_extract import current_ai_requirements_producer_lineage
-
+        # §3.4：lineage 比较按 generation 记录的 store 选预期来源——直抽 generation
+        # 与 ai_extract 的原子 lineage 永不相等，不分支会让 fold 恒判 base_migration_required。
         if "requirements_producer_lineage" in generation:
+            if str(generation.get("requirements_store") or "") == FUNCTIONAL_REQUIREMENTS_STORE:
+                from functional_extract import current_producer_lineage
+
+                expected_lineage: dict[str, Any] = dict(current_producer_lineage())
+            else:
+                from ai_extract import current_ai_requirements_producer_lineage
+
+                expected_lineage = dict(current_ai_requirements_producer_lineage())
             target_producer_is_current = (
                 generation.get("requirements_producer_lineage")
-                == current_ai_requirements_producer_lineage()
+                == expected_lineage
             )
     source_versions_are_current = (
         parser_provenance.get("source_alignment_version") == SOURCE_ALIGNMENT_VERSION

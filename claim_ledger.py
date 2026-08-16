@@ -405,6 +405,120 @@ def evidence_is_current(evidence: dict[str, Any], requirement: dict[str, Any]) -
     return 0 <= start <= end <= len(value) and value[start:end] == str(evidence.get("text") or "")
 
 
+# M2 §4.4：coverage edge 源锚字段（FRE evidence_anchors 的确定性投影）
+FUNCTIONAL_SOURCE_ANCHOR_FIELDS = (
+    "section_id",
+    "block_ids",
+    "sentence_index",
+    "unit_index",
+    "source_text_hash",
+    "match_method",
+)
+
+
+# 锚 match_method 的合法取值（与 functional_extract._obligation_evidence_edges 同源；
+# 三轮复审 P2：forged 之类的伪造方法名不得通过）
+VALID_SOURCE_ANCHOR_MATCH_METHODS = frozenset({
+    "lexical", "cross_script_review", "source_quote",
+})
+
+
+def functional_anchor_obligation_hashes(
+    root: Path | str,
+) -> dict[tuple[str, int], dict[str, Any]]:
+    """复审 P2-1（2026-08-16）+ 三轮 P2：按当前条款重算义务单元**完整身份**。
+
+    返回 {(section_id, unit_index): {"sentence_index": i, "source_text_hash": sha}}——
+    锚的四元组（section/unit/sentence/hash）必须**联合指向同一个当前义务单元**：
+    unit 存在、句序一致、哈希一致。条款产物缺失/解析失败返回空表（调用方按
+    "不可核验"处理，不伪造通过）。
+    """
+    try:
+        from functional_extract import _obligation_index, load_clauses
+
+        sections = load_clauses(Path(root))
+    except Exception:  # noqa: BLE001 — 无条款产物（legacy/测试）→ 不可核验
+        return {}
+    import hashlib as _hashlib
+
+    identities: dict[tuple[str, int], dict[str, Any]] = {}
+    for section in sections:
+        section_id = str(section.get("section_id") or "")
+        if not section_id:
+            continue
+        section_blocks = frozenset(
+            str(b) for b in (section.get("block_ids") or []) if str(b)
+        )
+        for obligation in _obligation_index(section):
+            identities[(section_id, obligation["unit_index"])] = {
+                "sentence_index": obligation["sentence_index"],
+                "source_text_hash": _hashlib.sha256(
+                    obligation["sentence"].encode("utf-8")).hexdigest(),
+                # 四轮复审 P1-2：section 的实际块集——锚的 block_ids 必须落在
+                # 所属 section 的真实块集内，否则"合法 section/unit/hash + 外条款
+                # block"的伪锚可跨条款借位参与他款 Claim 闭合。
+                "section_block_ids": section_blocks,
+            }
+    return identities
+
+
+def functional_source_anchors(requirement: dict[str, Any]) -> list[dict[str, Any]]:
+    """把 FRE 的确定性 ``evidence_anchors`` 投影为 coverage edge 源锚（§4.4）。
+
+    只取锚的可复核身份字段（section_id/block_ids/sentence_index/unit_index/
+    source_text_hash/match_method——后两者由 obligation/evidence 绑定模型提供，
+    缺席时如实缺席）；不可定位（无 section_id 或无 block_ids）的锚不进 edge。
+    原子需求无 ``evidence_anchors`` → 空表（edge 不加该键，行为不变）。
+    """
+    anchors = requirement.get("evidence_anchors")
+    if not isinstance(anchors, list):
+        return []
+    projected: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for anchor in anchors:
+        if not isinstance(anchor, dict):
+            continue
+        row: dict[str, Any] = {}
+        for field in ("section_id", "source_text_hash", "match_method"):
+            value = str(anchor.get(field) or "").strip()
+            if value:
+                row[field] = value
+        block_ids = list(dict.fromkeys(
+            str(block) for block in (anchor.get("block_ids") or []) if str(block)
+        ))
+        if block_ids:
+            row["block_ids"] = block_ids
+        for field in ("sentence_index", "unit_index"):
+            value = anchor.get(field)
+            if isinstance(value, int) and not isinstance(value, bool):
+                row[field] = value
+        # 复审 P2 二轮（2026-08-16）：六字段合同强制——section_id/block_ids/
+        # sentence_index/unit_index/source_text_hash/match_method 缺一不可，
+        # 不完整锚不得成为非 stale edge（此前缺 match_method/sentence_index
+        # 仍能通过）。缺席如实缺席：剔除，不补默认值。
+        if any(field not in row for field in (
+                "sentence_index", "unit_index", "source_text_hash", "match_method")):
+            continue
+        if not row.get("section_id") or not row.get("block_ids"):
+            continue  # 锚无法定位——宁缺勿假，不进 edge
+        key = json.dumps(row, ensure_ascii=False, sort_keys=True)
+        if key in seen:
+            continue
+        seen.add(key)
+        projected.append(row)
+    return projected
+
+
+def _claim_locator_blocks(claim: dict[str, Any]) -> frozenset[str]:
+    """claim locator 指向的源块集合（edge 源锚的辖域）。"""
+    locator = claim.get("locator")
+    locator = locator if isinstance(locator, dict) else {}
+    blocks = {str(locator.get("block_id") or "")}
+    blocks.update(str(value or "") for value in (locator.get("block_ids") or []))
+    blocks.discard("")
+    return frozenset(blocks)
+
+
 def _fact(kind: str, value: str, *, aliases: Iterable[str] = ()) -> dict[str, Any]:
     return {"kind": kind, "value": value, "aliases": list(dict.fromkeys(str(x) for x in aliases))}
 
@@ -544,6 +658,8 @@ def _targets(
             "source_fingerprint": target_source_fingerprint(requirement),
             "requirement": requirement,
             "evidence": target_evidence(requirement),
+            # M2 §4.4：FRE 目标附确定性源锚（原子目标为空表，不影响权威哈希）
+            "source_anchors": functional_source_anchors(requirement),
             "review": review,
         })
     id_counts: dict[str, int] = defaultdict(int)
@@ -1059,6 +1175,8 @@ def _edge(
     target_generation_id: str,
     produced_evidence: list[dict[str, Any]],
     relation: str,
+    claim_locator_blocks: frozenset[str] | None = None,
+    obligation_hashes: dict[tuple[str, int], str] | None = None,
 ) -> dict[str, Any]:
     edge_hash = _sha256({
         "claim_hash": claim_hash,
@@ -1067,7 +1185,7 @@ def _edge(
         "produced_evidence": produced_evidence,
     })
     review = target["review"]
-    return {
+    edge = {
         "edge_id": "CED-" + edge_hash.removeprefix("sha256:")[:16],
         "target_kind": "ai_requirement",
         "target_generation_id": target_generation_id,
@@ -1080,6 +1198,72 @@ def _edge(
         "relation": relation,
         "produced_evidence": produced_evidence,
     }
+    # M2 §4.4：FRE 目标带源锚时，edge 只携带落在该 claim locator 块内的锚（锚必须
+    # 能定位到本 claim 的源，跨条款锚不参与本 edge 的闭合依据）；全部锚都在辖域外
+    # → edge 标 stale（不得用于关闭 Claim）。无锚目标不加该键（原子目标行为不变）。
+    anchors = target.get("source_anchors")
+    if isinstance(anchors, list) and anchors:
+        locator = claim_locator_blocks if claim_locator_blocks is not None else frozenset()
+        confined = []
+        text_identity_dropped = 0
+        for anchor in anchors:
+            if not isinstance(anchor, dict):
+                continue
+            if not locator & {
+                str(block) for block in (anchor.get("block_ids") or []) if str(block)
+            }:
+                continue  # 辖域外——不参与本 edge（M2 语义不变）
+            # 复审 P2-1：文本身份核验——按当前义务重算 sha256 比对锚的
+            # source_text_hash；义务缺席或哈希失配的锚不可用于关闭 Claim。
+            # 六字段合同:缺 sentence_index/unit_index/source_text_hash/match_method
+            # 的不完整锚直接剔除(与 functional_source_anchors 投影同口径)
+            if not all(
+                anchor.get(field) is not None
+                for field in ("sentence_index", "unit_index",
+                              "source_text_hash", "match_method")
+            ):
+                text_identity_dropped += 1
+                continue
+            # 三轮复审 P2：字段**语义**校验——match_method 必须是合法枚举（forged
+            # 之类直接拒），四元组必须联合指向同一个当前义务单元（unit 存在、
+            # 句序与哈希一致；999 之类的伪句序过不了）。
+            if str(anchor.get("match_method")) not in VALID_SOURCE_ANCHOR_MATCH_METHODS:
+                text_identity_dropped += 1
+                continue
+            if obligation_hashes is not None:
+                key = (
+                    str(anchor.get("section_id") or ""),
+                    anchor.get("unit_index"),
+                )
+                identity = obligation_hashes.get(key) if isinstance(key[1], int) else None
+                anchor_hash = str(anchor.get("source_text_hash") or "")
+                anchor_blocks = {
+                    str(b) for b in (anchor.get("block_ids") or []) if str(b)
+                }
+                # 子集合同：锚块集必须非空且 ⊆ 所属 section 的实际块集——
+                # 外条款块（借位）与空块集都拒；Claim locator 辖域过滤在此之后执行。
+                section_blocks = (
+                    identity.get("section_block_ids")
+                    if isinstance(identity, dict) else None
+                )
+                if (
+                    not isinstance(identity, dict)
+                    or identity.get("sentence_index") != anchor.get("sentence_index")
+                    or not anchor_hash
+                    or anchor_hash != identity.get("source_text_hash")
+                    or not isinstance(section_blocks, frozenset)
+                    or not anchor_blocks
+                    or not anchor_blocks <= section_blocks
+                ):
+                    text_identity_dropped += 1
+                    continue
+            confined.append(dict(anchor))
+        edge["target_source_anchors"] = confined
+        if text_identity_dropped:
+            edge["target_source_anchor_text_mismatch"] = text_identity_dropped
+        if not confined:
+            edge["target_source_anchor_stale"] = True
+    return edge
 
 
 def _group(
@@ -1091,9 +1275,11 @@ def _group(
     verifier_runtime_fingerprint: str,
     validation_generation_run_id: str,
     controlled_term_aliases: dict[str, list[str]] | None,
+    obligation_hashes: dict[tuple[str, int], str] | None = None,
 ) -> dict[str, Any]:
     content, claim_start, claim_end = _claim_content(claim)
     relation = "merged_into" if len(targets) > 1 else "generated_from"
+    locator_blocks = _claim_locator_blocks(claim)
     edges = [
         _edge(
             target,
@@ -1101,6 +1287,8 @@ def _group(
             target_generation_id=target_generation_id,
             produced_evidence=evidence,
             relation=relation,
+            claim_locator_blocks=locator_blocks,
+            obligation_hashes=obligation_hashes,
         )
         for target, _basis, evidence in targets
     ]
@@ -1122,6 +1310,11 @@ def _group(
         )
     )
     inactive = [edge for edge in edges if edge["target_review_eligibility"] != "active"]
+    # M2 §4.4：源锚全部落在 claim locator 辖域外的 edge 标 stale——组保持审计行
+    # 但不得用于关闭 Claim（与 target_rejected 同款 invalid 语义，不改账本行数）。
+    anchor_stale = [
+        edge for edge in edges if edge.get("target_source_anchor_stale") is True
+    ]
     status = "validated" if validation_method == "deterministic_verbatim" else "proposed"
     invalid_reason = ""
     if inactive:
@@ -1130,6 +1323,9 @@ def _group(
             "target_rejected" if any(edge["target_review_eligibility"] == "rejected" for edge in inactive)
             else "target_review_unknown"
         )
+    elif anchor_stale:
+        status = "invalid"
+        invalid_reason = "target_source_anchor_stale"
     elif prefilter["status"] == "reject":
         status = "invalid"
         invalid_reason = "protected_fact_missing"
@@ -1200,6 +1396,7 @@ def coverage_group_record_error(
     target_records: list[dict[str, Any]] | None = None,
     target_generation_id: str = "",
     verifier_runtime_fingerprint: str = "",
+    obligation_hashes: dict[tuple[str, int], str] | None = None,
 ) -> str | None:
     """Return why a persisted coverage group is not a deterministic replay.
 
@@ -1321,6 +1518,7 @@ def coverage_group_record_error(
             )].append(target)
         expected_basis: list[str] = []
         relation = "merged_into" if len(edges) > 1 else "generated_from"
+        locator_blocks = _claim_locator_blocks(claim)
         for edge in edges:
             key = (
                 str(edge.get("target_requirement_id") or ""),
@@ -1337,9 +1535,18 @@ def coverage_group_record_error(
                 target_generation_id=target_generation_id,
                 produced_evidence=evidence,
                 relation=relation,
+                claim_locator_blocks=locator_blocks,
+                obligation_hashes=obligation_hashes,
             )
             if edge != expected_edge:
                 return "edge_target_authority_mismatch"
+            # §4.4 加载/fold 校验：stale 源锚 edge 不得支撑 validated 组（发布与加载
+            # 同一公式，锚漂移/辖域失配在此 fail-closed）。
+            if (
+                edge.get("target_source_anchor_stale") is True
+                and str(group.get("status") or "") == "validated"
+            ):
+                return "target_source_anchor_stale"
             expected_basis.extend(_candidate_basis(claim, target))
         if group.get("proposal_basis") != list(dict.fromkeys(expected_basis)):
             return "proposal_basis_mismatch"
@@ -3263,6 +3470,7 @@ def build_shadow_ledger(
     verifier_attempt_progress: VerifierAttemptProgress | None = None,
     validation_generation_run_id: str = "unpublished",
     mode: str = "full",
+    anchor_obligation_hashes: dict[tuple[str, int], str] | None = None,
 ) -> dict[str, Any]:
     """Build a B-track ledger beside final requirements without changing readiness.
 
@@ -3436,6 +3644,7 @@ def build_shadow_ledger(
                     verifier_runtime_fingerprint=str(runtime.get("fingerprint") or ""),
                     validation_generation_run_id=validation_generation_run_id,
                     controlled_term_aliases=controlled_term_aliases,
+                obligation_hashes=anchor_obligation_hashes,
                 )
                 for target in active_formal_exact
             )
@@ -3448,6 +3657,7 @@ def build_shadow_ledger(
                 verifier_runtime_fingerprint=str(runtime.get("fingerprint") or ""),
                 validation_generation_run_id=validation_generation_run_id,
                 controlled_term_aliases=controlled_term_aliases,
+                obligation_hashes=anchor_obligation_hashes,
             )
             for target in inactive_formal_exact
         )
@@ -3474,6 +3684,7 @@ def build_shadow_ledger(
                         verifier_runtime_fingerprint=str(runtime.get("fingerprint") or ""),
                         validation_generation_run_id=validation_generation_run_id,
                         controlled_term_aliases=controlled_term_aliases,
+                obligation_hashes=anchor_obligation_hashes,
                     ))
                 claim_groups.extend(
                     _group(
@@ -3484,6 +3695,7 @@ def build_shadow_ledger(
                         verifier_runtime_fingerprint=str(runtime.get("fingerprint") or ""),
                         validation_generation_run_id=validation_generation_run_id,
                         controlled_term_aliases=controlled_term_aliases,
+                obligation_hashes=anchor_obligation_hashes,
                     )
                     for target in inactive
                 )
@@ -4179,6 +4391,38 @@ def _write_sampling_deferred_summary(root: Path, shadow: dict[str, Any]) -> None
             pass
 
 
+def _read_store_rows(root: Path, store: str) -> list[dict[str, Any]]:
+    """显式 store 的行读取（JSONL 原子 / JSON items 直抽）。"""
+    from claim_artifacts import _read_b_track_requirements
+
+    return _read_b_track_requirements(root, store)
+
+
+def resolve_b_track_target_store(root: Path | str) -> tuple[str, list[dict[str, Any]]]:
+    """§3.4：解析 B 轨 target store——原子产物在场优先；否则直抽产物（FRE- 主键）。
+
+    返回 (store 文件名, target 行)。直抽产物必须守恒闭合且执行完整
+    （``functional_direct_basis`` 会响亮 raise），不让失败/不守恒产物进 claim 绑定。
+    两者都不在场时抛 FileNotFoundError（与旧缺文件行为同族，不静默空账本）。
+    """
+    from claim_artifacts import FUNCTIONAL_REQUIREMENTS_STORE
+
+    root = Path(root).expanduser().resolve()
+    atomic_path = root / "ai_requirements.jsonl"
+    if atomic_path.is_file():
+        from io_utils import read_jsonl
+        return "ai_requirements.jsonl", list(read_jsonl(atomic_path))
+    from functional_extract import functional_direct_basis
+
+    direct = functional_direct_basis(root)
+    if direct is not None:
+        return FUNCTIONAL_REQUIREMENTS_STORE, list(direct)
+    raise FileNotFoundError(
+        f"no B-track target store under {root}: ai_requirements.jsonl / "
+        f"{FUNCTIONAL_REQUIREMENTS_STORE} are both absent or not a valid direct product"
+    )
+
+
 def publish_b_track_shadow(
     out_dir: Path | str,
     run_id: str,
@@ -4186,6 +4430,7 @@ def publish_b_track_shadow(
     extraction_status: str,
     catalog_build: dict[str, Any] | None = None,
     requirements: list[dict[str, Any]] | None = None,
+    requirements_store: str | None = None,
     scope: str = "full",
     controlled_term_aliases: dict[str, list[str]] | None = None,
     failed_section_block_ids: Iterable[str] | None = None,
@@ -4206,6 +4451,7 @@ def publish_b_track_shadow(
     """Rebuild and atomically publish the B-track Phase 0 shadow generation."""
     from ai_review_actions import read_ai_review_states
     from claim_artifacts import (
+        B_TRACK_TARGET_STORES,
         file_sha256,
         publish_shadow_generation,
         record_verifier_attempt_progress,
@@ -4214,6 +4460,23 @@ def publish_b_track_shadow(
     from io_utils import read_jsonl
 
     root = Path(out_dir).expanduser().resolve()
+    # §3.4：target store 解析——显式传入优先；未传时按在场产物解析（原子优先，直抽次之）。
+    if requirements_store is None:
+        try:
+            requirements_store, resolved_rows = resolve_b_track_target_store(root)
+        except FileNotFoundError:
+            requirements_store, resolved_rows = "ai_requirements.jsonl", read_jsonl(
+                root / "ai_requirements.jsonl")
+    elif requirements_store not in B_TRACK_TARGET_STORES:
+        raise ValueError(f"unknown B-track requirements store: {requirements_store}")
+    else:
+        resolved_rows = None
+    current_requirements = (
+        list(requirements)
+        if requirements is not None
+        else (resolved_rows if resolved_rows is not None else (
+            _read_store_rows(root, requirements_store)))
+    )
     normalized_route = "stub" if route_mode == "stub" else "llm"
     normalized_extraction_status = (
         extraction_status
@@ -4221,10 +4484,14 @@ def publish_b_track_shadow(
         else "success" if extraction_status == "stub" else "failed"
     )
     current_catalog = catalog_build or build_catalog_from_directory(root, scope=scope)
-    current_requirements = (
-        list(requirements)
-        if requirements is not None
-        else read_jsonl(root / "ai_requirements.jsonl")
+    # 复审 P2-1：functional store 的源锚按当前义务重算文本身份（原子目标无锚，
+    # 索引只对带 evidence_anchors 的 target 生效；计算失败=不可核验，如实跳过）
+    from claim_artifacts import FUNCTIONAL_REQUIREMENTS_STORE
+
+    anchor_hashes = (
+        functional_anchor_obligation_hashes(root)
+        if requirements_store == FUNCTIONAL_REQUIREMENTS_STORE
+        else None
     )
     shadow = build_shadow_ledger(
         current_catalog,
@@ -4257,6 +4524,7 @@ def publish_b_track_shadow(
         # S1-5：env 显式设置的 claim ledger mode 在发布路径真实生效（build_shadow_ledger 自身
         # 默认 full，直接调用者/既有测试不动）；env 未设时发布路径默认 full（生产行为不变）。
         mode=_publish_claim_ledger_mode(),
+        anchor_obligation_hashes=anchor_hashes,
     )
     if on_shadow_built is not None:
         # Crash window probe: the paid verifier decisions exist only in memory
@@ -4264,14 +4532,17 @@ def publish_b_track_shadow(
         on_shadow_built(shadow)
     # S1-5：sampling/baseline_gate 模式留痕未抽中 claim 清单到 governed summary（quality_report 口径）。
     _write_sampling_deferred_summary(root, shadow)
-    requirements_path = root / "ai_requirements.jsonl"
-    requirements_hash = file_sha256(requirements_path) if requirements_path.is_file() else ""
+    requirements_path = root / requirements_store
+    requirements_hash = (
+        file_sha256(requirements_path) if requirements_path.is_file() else ""
+    )
     generation = publish_shadow_generation(
         root,
         current_catalog,
         shadow,
         run_id=run_id,
         requirements_sha256=requirements_hash,
+        requirements_store=requirements_store,
     )
     effective_fold: dict[str, Any] | None = None
     try:

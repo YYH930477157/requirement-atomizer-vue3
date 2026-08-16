@@ -1031,6 +1031,17 @@ def _publish_registered_deliverables_unlocked(
     return list(_publish_package_unlocked(result_root, package)["deliverables"])
 
 
+def _functional_product_is_draft(root: Path) -> bool:
+    """直抽产物是否带 stub 草稿水印（缺产物/不可读按非草稿处理——由 stage 完成性负责）。"""
+    try:
+        from requirements_analysis_rules import _read_functional_requirements_payload
+
+        payload = _read_functional_requirements_payload(root)
+    except Exception:  # noqa: BLE001 — 产物缺席不是草稿问题
+        return False
+    return bool(isinstance(payload, dict) and payload.get("draft"))
+
+
 def _completion_evidence(
     root: Path,
     requested_stages: Iterable[str],
@@ -1060,6 +1071,14 @@ def _completion_evidence(
             raise ResultPackageError(
                 f"requested stage does not belong to the active attempt: {stage}"
             )
+    # §3.5（审查 2026-08-15 P1）：直抽 stub 产物（draft 水印）不得形成可发布成功产物
+    # ——完成证据显式拒绝。stage 可能记 ok（显式 stub 是测试/烟测 opt-in），但水印在
+    # 产物里；证据层只认非草稿产物。
+    if "functional-extract" in requested_stages and _functional_product_is_draft(root):
+        raise ResultPackagePartialError(
+            "functional-extract product is a stub draft (route=stub) — "
+            "not publishable; rerun with a real LLM route"
+        )
     snapshot_path = (
         root / INTERNAL_ROOT / "stages" / "completions" / run_id / RUN_MANIFEST_SNAPSHOT
     )

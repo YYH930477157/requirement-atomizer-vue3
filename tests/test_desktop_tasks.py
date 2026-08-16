@@ -1104,6 +1104,14 @@ class ClarificationWorkbookImportTests(unittest.TestCase):
 class ChainAndManifestTests(unittest.TestCase):
     """F1+F7：后端链编排 + run_manifest 显式状态账本。"""
 
+    def setUp(self) -> None:
+        # 本组验证旧 ai-extract 编排合同；默认翻转后必须显式进入回滚模式。
+        env = mock.patch.dict(
+            os.environ, {"RATOMIZER_FUNCTIONAL_EXTRACT": "0"}
+        )
+        env.start()
+        self.addCleanup(env.stop)
+
     def test_ai_extract_manifest_records_committed_claim_components(self) -> None:
         import claim_review_actions
         from tests.test_claim_artifacts import _catalog, _publish

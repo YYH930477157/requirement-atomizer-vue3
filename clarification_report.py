@@ -617,6 +617,11 @@ def collect_questions(out_dir: Path) -> list[dict[str, Any]]:
 
     entries.extend(_weakness_scan_entries(out_dir))
 
+    # §3.3（2026-08-15）：直抽条目护栏信号投影——rejected_codes（受保护编码硬拦留痕）与
+    # numeric_drift（数字漂移软标）此前只被 adjudicate 抽样消费，澄清清单上看不见。
+    # 补齐直抽模式缺席的原子级 suspicion 来源（编码/数字漂移与原子轨策略同口径 BLOCKER）。
+    entries.extend(_functional_guardrail_entries(out_dir))
+
     entries.extend(_parse_audit_entries(out_dir))
     entries.extend(_budget_needs_work_entries(out_dir))
     entries.extend(_unextracted_registry_entries(out_dir))
@@ -626,6 +631,113 @@ def collect_questions(out_dir: Path) -> list[dict[str, Any]]:
     for entry in entries:
         deduped.setdefault(str(entry["clarification_id"]), entry)
     return list(deduped.values())
+
+
+def _functional_guardrail_entries(out_dir: Path) -> list[dict[str, Any]]:
+    """§3.3：功能直抽条目的护栏留痕投影进澄清清单（rejected_codes / numeric_drift_flag）。
+
+    只扫 functional-extract 家族产物里的直抽条目（merge_method=functional_extract）——
+    编码漂移=BLOCKER（与原子轨 编码漂移/数字漂移 策略同口径），数字漂移=BLOCKER 软口径
+    交评审。守恒 warning（条件/例外丢失）同步投影为 important，研发可见。
+    """
+    from ai_review_actions import source_ai_requirement_id
+
+    synth_path = out_dir / "functional_requirements.json"
+    if not synth_path.exists():
+        return []
+    try:
+        payload = json.loads(synth_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    if not isinstance(payload, dict):
+        return []
+    producer = str(payload.get("producer") or "")
+    if not producer.startswith("functional-extract"):
+        return []
+    entries: list[dict[str, Any]] = []
+    conservation = payload.get("conservation") if isinstance(payload.get("conservation"), dict) else {}
+    for item in (payload.get("items") or []) if isinstance(payload.get("items"), list) else []:
+        if not isinstance(item, dict):
+            continue
+        identity = source_ai_requirement_id(item)
+        title = str(item.get("title") or item.get("objective") or identity)[:40]
+        section = str(item.get("source_section") or "")
+        quote = str(item.get("source_quote") or "")
+        module = str(item.get("module") or "").strip() or MODULE_UNASSIGNED
+        rejected_codes = [str(c) for c in (item.get("rejected_codes") or [])]
+        if rejected_codes:
+            entries.append(_entry(
+                CAT_CONFLICT,
+                f"功能「{title}」的叙述含来源条款不存在的编码（{', '.join(rejected_codes[:6])}），"
+                "已被硬拦剔除——请核对是否漏抽了真实编码",
+                section=section, quote=quote, source_id=identity,
+                signal="functional:code_drift", tier=TIER_HARD, audience=AUDIENCE_INTERNAL,
+                blocker_level=BLOCKER_BLOCKING, module=module,
+                evidence={"rejected_codes": rejected_codes[:10], "title": title[:80]},
+                subject_key=f"{identity}:code-drift"))
+        drift_values = [str(v) for v in (item.get("numeric_drift_values") or [])]
+        if item.get("numeric_drift_flag") and drift_values:
+            entries.append(_entry(
+                CAT_CONFLICT,
+                f"功能「{title}」的叙述含来源条款没有的数值（{', '.join(drift_values[:6])}），"
+                "可能是聚合/换算表达——请确认或改回原文数值",
+                section=section, quote=quote, source_id=identity,
+                signal="functional:number_drift", tier=TIER_HARD, audience=AUDIENCE_INTERNAL,
+                blocker_level=BLOCKER_BLOCKING, module=module,
+                evidence={"numeric_drift_values": drift_values[:10], "title": title[:80]},
+                subject_key=f"{identity}:number-drift"))
+    # 守恒 warning（条件/例外丢失——研发上下文，非直接执行字段）→ important 可见
+    preservation = conservation.get("checks", {}).get("preservation") if isinstance(conservation.get("checks"), dict) else None
+    if isinstance(preservation, dict):
+        for loss in preservation.get("warning_losses") or []:
+            if not isinstance(loss, dict):
+                continue
+            entries.append(_entry(
+                CAT_AMBIGUOUS,
+                f"条款 {loss.get('section_id') or ''} 的{str(loss.get('kind') or '上下文')}标记"
+                f"「{str(loss.get('token') or '')[:40]}」未在对应需求叙述中保留——请确认是否有意省略",
+                source_id=str(loss.get("section_id") or ""),
+                signal="functional:preservation_warning", tier=TIER_HARD,
+                audience=AUDIENCE_INTERNAL, blocker_level=BLOCKER_IMPORTANT,
+                evidence={"kind": loss.get("kind"), "token": str(loss.get("token") or "")[:80]},
+                subject_key=f"preservation:{loss.get('section_id')}:{loss.get('kind')}:{str(loss.get('token') or '')[:40]}"))
+    # 复审 P1-2（2026-08-16）：跨语种义务覆盖（cross_script_review 边）必须进入人工
+    # 评审状态机——此前只是守恒 warning，readiness/full closure 照常放行。现为
+    # BLOCKING 内部核对问题：未确认 → unresolved_blocking>0 → readiness NEEDS WORK →
+    # full closure 阻塞；专家在内部核对状态机确认（verified_ok）后自动解除。
+    obligation_coverage = (
+        conservation.get("checks", {}).get("obligation_coverage")
+        if isinstance(conservation.get("checks"), dict) else None
+    )
+    if isinstance(obligation_coverage, dict):
+        for review in obligation_coverage.get("cross_script_review") or []:
+            if not isinstance(review, dict):
+                continue
+            fre_id = str(review.get("functional_requirement_id") or "")
+            section_id = str(review.get("section_id") or "")
+            unit_index = review.get("unit_index")
+            # 复审 P1-2 二轮：subject_key/evidence 绑定源义务文本哈希——义务文本
+            # 变化 → clarification_id 与 evidence_fingerprint 随之换新，旧确认不沿用。
+            source_text_hash = str(review.get("source_text_hash") or "")
+            entries.append(_entry(
+                CAT_AMBIGUOUS,
+                f"功能条目 {fre_id or '未知'} 对条款 {section_id} 义务#{unit_index} 的覆盖"
+                "是跨语种转述（token 判定失效，已按声明+引句采信）——请人工确认该义务"
+                "已被完整表达后在此标记确认",
+                source_id=fre_id or section_id,
+                signal="functional:cross_script_review", tier=TIER_HARD,
+                audience=AUDIENCE_INTERNAL, blocker_level=BLOCKER_BLOCKING,
+                evidence={
+                    "functional_requirement_id": fre_id,
+                    "section_id": section_id,
+                    "unit_index": unit_index,
+                    "source_text_hash": source_text_hash,
+                },
+                subject_key=(
+                    f"cross-script:{fre_id}:{section_id}:{unit_index}"
+                    f":{source_text_hash[:16]}"
+                )))
+    return entries
 
 
 def _weakness_scan_entries(out_dir: Path, functional_items: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:

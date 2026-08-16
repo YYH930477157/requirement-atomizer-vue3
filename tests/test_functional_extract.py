@@ -26,10 +26,10 @@ def _clause(section_id: str, block_ids: list[str], text: str, heading: str = "H"
 
 
 class EntrySwitchTests(unittest.TestCase):
-    def test_default_off(self) -> None:
+    def test_default_on_with_explicit_off_rollback(self) -> None:
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("RATOMIZER_FUNCTIONAL_EXTRACT", None)
-            self.assertFalse(fe.functional_extract_enabled())
+            self.assertTrue(fe.functional_extract_enabled())
             self.assertFalse(fe.functional_extract_enabled("0"))
             self.assertFalse(fe.functional_extract_enabled("false"))
 
@@ -160,19 +160,28 @@ class LLMRouteTests(unittest.TestCase):
 
 
 class ConservationTests(unittest.TestCase):
-    def test_exactly_once_closes(self) -> None:
-        sections = [_clause("5.1", ["B1", "B2"], "t1"), _clause("5.2", ["B3"], "t2")]
+    def test_block_coverage_closes(self) -> None:
+        sections = [
+            _clause("5.1", ["B1", "B2"], "The meter shall log events."),
+            _clause("5.2", ["B3"], "The meter shall support readout."),
+        ]
         items = [
-            {"source_block_ids": ["B1", "B2"], "source_quote": "t1", "functional_requirement_id": "F1"},
-            {"source_block_ids": ["B3"], "source_quote": "t2", "functional_requirement_id": "F2"},
+            {"source_block_ids": ["B1", "B2"], "source_quote": "The meter shall log events.",
+             "objective": "The meter shall log events", "functional_requirement_id": "F1"},
+            {"source_block_ids": ["B3"], "source_quote": "The meter shall support readout.",
+             "objective": "The meter shall support readout", "functional_requirement_id": "F2"},
         ]
         report = fe.conservation_report(sections, items)
         self.assertTrue(report["ok"])
         self.assertFalse(report["block_export"])
 
     def test_missing_clause_blocks_export(self) -> None:
-        sections = [_clause("5.1", ["B1"], "t1"), _clause("5.2", ["B2"], "t2")]
-        items = [{"source_block_ids": ["B1"], "source_quote": "t1"}]  # B2 未覆盖
+        sections = [
+            _clause("5.1", ["B1"], "The meter shall log events."),
+            _clause("5.2", ["B2"], "The meter shall support readout."),
+        ]
+        items = [{"source_block_ids": ["B1"], "source_quote": "The meter shall log events.",
+                  "objective": "The meter shall log events"}]  # B2 未覆盖
         report = fe.conservation_report(sections, items)
         self.assertFalse(report["ok"])
         self.assertTrue(report["block_export"])
@@ -181,20 +190,41 @@ class ConservationTests(unittest.TestCase):
         with self.assertRaises(fe.FunctionalConservationError):
             fe.raise_if_unconserved(report)
 
-    def test_duplicate_assignment_blocks(self) -> None:
-        sections = [_clause("5.1", ["B1"], "t1")]
+    def test_multi_consumption_is_legal_not_duplicate(self) -> None:
+        """§3.1：同一 block 被多条需求引用不再判重——义务句同覆盖但叙述不同=多视角引用。"""
+        sections = [_clause("5.1", ["B1"], "The meter shall log events.")]
         items = [
-            {"source_block_ids": ["B1"], "source_quote": "t1"},
-            {"source_block_ids": ["B1"], "source_quote": "t1"},  # 重复归属
+            {"source_block_ids": ["B1"], "source_quote": "The meter shall log events.",
+             "objective": "The meter shall log events", "functional_requirement_id": "F1"},
+            {"source_block_ids": ["B1"], "source_quote": "The meter shall log events.",
+             "objective": "The meter shall record event logs for audit",
+             "functional_requirement_id": "F2"},
+        ]
+        report = fe.conservation_report(sections, items)
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["duplicate_assignments"], [])
+
+    def test_duplicate_narrative_on_same_obligation_blocks(self) -> None:
+        """§3.1：同一义务句被多条需求覆盖**且**叙述高度相似 → 判重（blocking）。"""
+        sections = [_clause("5.1", ["B1"], "The meter shall log events.")]
+        items = [
+            {"source_block_ids": ["B1"], "source_quote": "The meter shall log events.",
+             "objective": "The meter shall log events", "behaviors": ["log events"],
+             "functional_requirement_id": "F1"},
+            {"source_block_ids": ["B1"], "source_quote": "The meter shall log events.",
+             "objective": "The meter shall log events", "behaviors": ["log events"],
+             "functional_requirement_id": "F2"},
         ]
         report = fe.conservation_report(sections, items)
         self.assertFalse(report["ok"])
+        self.assertIn("duplicates", report["failure_categories"])
         self.assertIn("B1", report["duplicate_assignments"])
 
     def test_drilldown_subatoms_must_consume_parent(self) -> None:
-        sections = [_clause("6.1", ["B1", "B2"], "t")]
+        sections = [_clause("6.1", ["B1", "B2"], "The meter shall log events.")]
         items = [{
-            "source_block_ids": ["B1", "B2"], "source_quote": "t",
+            "source_block_ids": ["B1", "B2"], "source_quote": "The meter shall log events.",
+            "objective": "The meter shall log events",
             "drilled_subatoms": [
                 {"source_block_ids": ["B1"]},  # 缺 B2 → 子原子未完全消费父条款
             ],
@@ -204,9 +234,10 @@ class ConservationTests(unittest.TestCase):
         self.assertTrue(report["evidence_mismatches"])
 
     def test_conserved_drilldown_passes(self) -> None:
-        sections = [_clause("6.1", ["B1", "B2"], "t")]
+        sections = [_clause("6.1", ["B1", "B2"], "The meter shall log events.")]
         items = [{
-            "source_block_ids": ["B1", "B2"], "source_quote": "t",
+            "source_block_ids": ["B1", "B2"], "source_quote": "The meter shall log events.",
+            "objective": "The meter shall log events",
             "drilled_subatoms": [
                 {"source_block_ids": ["B1"]},
                 {"source_block_ids": ["B2"]},

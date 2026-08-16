@@ -1,4 +1,4 @@
-"""WS2 功能需求直抽（旁路新入口，默认关闭）。
+"""WS2 功能需求直抽（默认生产入口，可显式回滚）。
 
 以 ``extract_units`` 的条款切分结果（章节/条款单元）为直接输入，LLM 单次调用直接产出
 功能需求级条目，写入 ``functional_requirements.json``。字段模型完整复用
@@ -22,20 +22,28 @@ source_quote / source_section / source_block_ids），下游成文与评审界�
   占位功能需求，``provenance`` 如实标 ``stub``，绝不伪装真 LLM 输出。
 * **测试中禁止真实 LLM 调用**：单测注入 ``chat`` 回调或走 stub 路由。
 
-入口开关 ``RATOMIZER_FUNCTIONAL_EXTRACT``（默认 ``0``=旧原子化路径）。=1 时 chain_task 把
+入口开关 ``RATOMIZER_FUNCTIONAL_EXTRACT``（默认 ``1``=功能直抽路径）。=1 时 chain_task 把
 ``ai-extract``+``functional-synthesis`` 两阶段整体替换为本模块（``functional-extract`` 阶段）；
+显式设为 ``0`` 时回滚到旧原子化路径。
 也可经 ``ratomizer functional-extract`` 单步子命令直跑。产物路径走
 ``result_package.governed_artifact_path``，缓存指纹按仓库既有模式接入
 （``FUNCTIONAL_EXTRACT_VERSION`` + prompt 版本 + 护栏版本）。
 
-守恒核对（exactly-once）：功能需求集合必须恰好消费条款集合——每条来源条款的 block_ids
-被且只被一条功能需求覆盖；下钻条款递归生效。取证复用
-``merged_consistency.match_source_quote_blocks``（与 ``review_tools.coverage_check`` 同源
-匹配器），不重写核对逻辑。未闭合条款标 "未闭合" 并经 ``raise_if_unconserved`` 阻塞成文
-导出（强制人工），不静默放行。
+守恒核对（§3.1 obligation/evidence 模型，2026-08-15 起）：条款与功能需求是**多对多**关系
+——一个条款可产出多条需求（一句多 shall），一条需求可关联多个来源条款（跨条款引用合法，
+不判重复抽取）。守恒分五项检查（条款覆盖/义务覆盖/无证据需求/重复需求/保留完整性），
+判据全部确定性（句切分与义务模态复用 ``functional_drilldown``；取证复用
+``merged_consistency.match_source_quote_blocks``，与 ``review_tools.coverage_check`` 同源）。
+证据锚（``evidence_anchors``）由确定性后处理派生，LLM 不得填写。任一 blocking 类别未闭合
+即经 ``raise_if_unconserved`` 阻塞成文导出（强制人工），不静默放行。
 
-WS0 功能需求级真值集尚是 pending-human，本切片只交付工程机制：新路径默认关闭、旧路径
-始终合法，验收门禁是"机制正确性可演示"，不是查全/查准数字。
+失败语义（§3.5）：执行结果类别 ``execution_status`` ∈ ok/partial/failed——真实生产运行
+出现 stub 降级（请求了 LLM 路由却全部退化）、mixed（部分条款失败）时，阶段不得记 ok，
+下游 ``functional_direct_basis`` 响亮阻断；缓存行保留执行结果类别，重放不洗白。
+显式 ``route="stub"`` 是测试/烟测的合法 opt-in，不算失败。
+
+WS0 功能需求级真值集尚是 pending-human；默认翻转不放宽守恒、执行完整性或发布门禁，
+旧路径继续作为 ``RATOMIZER_FUNCTIONAL_EXTRACT=0`` 的显式回滚通道。
 """
 from __future__ import annotations
 
@@ -43,6 +51,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 
@@ -54,12 +63,32 @@ FUNCTIONAL_EXTRACT_PROMPT_VERSION = "functional-extract-prompt-v2"
 # S1-8：bump v1→v2。``_reject_drifted_codes`` 清洗范围从仅 objective 扩到全部叙述字段
 # （behaviors/data_constraints/variants/exceptions/preconditions/description），缓存产物内容
 # 变化——指纹含 guards 版本，bump 后旧 stub/LLM 缓存（behaviors 里残留幻觉编码）自然失效。
-FUNCTIONAL_EXTRACT_GUARDS_VERSION = "functional-extract-guards-v2"
+#
+# 2026-08-15 去原子化方案 §3.1：bump v2→v3。守恒模型从 block exactly-once 换成
+# obligation/evidence 多对多（多义务条款出多条不判重、跨条款引用合法），并新增五项分项
+# 检查（条款覆盖/义务覆盖/无证据需求/重复需求/保留完整性）——产物语义变化，旧缓存失效。
+# 三轮复审 P1-2（2026-08-16）：cross_script_review 记录新增 source_text_hash/句子
+# 摘录（跨语种确认身份绑定义务文本）——守恒载荷内容变化，bump v4 → v5 使存量
+# 缓存失效，否则旧缓存恢复的 cross_script_review 无哈希，绕过确认失效机制。
+FUNCTIONAL_EXTRACT_GUARDS_VERSION = "functional-extract-guards-v5"
+# §3.1 新守恒模型版本戳（进 conservation 报告与抽取指纹；模型演进时 bump）。
+# M1（2026-08-16 修复方案 §3.4）：obligation 覆盖从全局叙述并集改为声明局部绑定
+# （eligible-only 边；source_quote 只作锚）——产物语义变化，v1 → v2。
+# 三轮复审 P1-2：同上——conservation 载荷语义变化（cross_script_review 携带文本身份），
+# bump v2 → v3。
+FUNCTIONAL_CONSERVATION_MODEL_VERSION = "functional-conservation-obligation-evidence-v3"
 FUNCTIONAL_REQUIREMENTS_FILENAME = "functional_requirements.json"
 FUNCTIONAL_EXTRACT_CACHE = "functional_extract_cache.jsonl"
 
-# P0-8：负例 few-shot 注入数量上限（可配）。
-FUNCTIONAL_EXTRACT_NEGATIVE_K = int(os.environ.get("RATOMIZER_FUNCTIONAL_EXTRACT_NEGATIVE_K", "2"))
+# P0-8：负例 few-shot 注入数量上限（可配）。§3.6：改经 config 单源读取（运行时求值，
+# 进程内改 env 即生效——旧 import 时常量在同进程 shadow 场景下不刷新）。
+def functional_extract_negative_k() -> int:
+    from config import get_env_int
+    return max(0, get_env_int("RATOMIZER_FUNCTIONAL_EXTRACT_NEGATIVE_K"))
+
+
+# 兼容别名：desktop_tasks 阶段指纹等既有消费点引用的模块常量（真实读取走上面的函数）。
+FUNCTIONAL_EXTRACT_NEGATIVE_K = functional_extract_negative_k()
 
 LOGGER = logging.getLogger("requirement_atomizer")
 
@@ -112,7 +141,11 @@ ExtractChat = Callable[[str, str], dict[str, Any]]
 
 
 class FunctionalConservationError(RuntimeError):
-    """守恒核对未闭合：功能需求集合未恰好消费条款集合，阻塞成文导出（强制人工）。"""
+    """守恒核对未闭合：功能需求集合存在 blocking 失败类别，阻塞成文导出（强制人工）。"""
+
+
+class FunctionalExtractionIncompleteError(RuntimeError):
+    """§3.5 失败语义：直抽执行不完整（stub 降级 / mixed 部分失败），阻塞下游分析与成文。"""
 
 
 # ---------------------------------------------------------------------------
@@ -120,9 +153,9 @@ class FunctionalConservationError(RuntimeError):
 # ---------------------------------------------------------------------------
 
 def functional_extract_enabled(value: str | None = None) -> bool:
-    """RATOMIZER_FUNCTIONAL_EXTRACT 是否开启（默认关）。"""
-    raw = os.environ.get(ENTRY_SWITCH_ENV) if value is None else value
-    return str(raw or "").strip().lower() in {"1", "true", "yes", "on"}
+    """RATOMIZER_FUNCTIONAL_EXTRACT 是否开启（默认开，单源默认值在 config.ENV_REGISTRY）。"""
+    from config import get_env_bool
+    return get_env_bool(ENTRY_SWITCH_ENV, override=value)
 
 
 # ---------------------------------------------------------------------------
@@ -165,7 +198,10 @@ def extraction_fingerprint(
         "version": FUNCTIONAL_EXTRACT_VERSION,
         "prompt": FUNCTIONAL_EXTRACT_PROMPT_VERSION,
         "guards": FUNCTIONAL_EXTRACT_GUARDS_VERSION,
+        "conservation_model": FUNCTIONAL_CONSERVATION_MODEL_VERSION,
         "route_key": str(route_key or ""),
+        # 负例条数改变 prompt 内容 → 必须换键（§3.6：经 config 单源函数运行时读取）。
+        "negative_k": functional_extract_negative_k(),
         "clauses": [clause_fingerprint(section) for section in sections],
     }
     if context_strategy and context_strategy != "legacy":
@@ -443,7 +479,9 @@ def _stub_item(section: dict[str, Any], index: int) -> dict[str, Any]:
     source_text = _source_text(section)
     heading = str(section.get("heading") or "未命名功能").strip() or "未命名功能"
     objective = f"实现{heading}，并满足来源条款。"
-    behaviors = [source_text[:200]] if source_text.strip() else [heading]
+    # §3.1：回显全文（旧 [:200] 截断会让长条款的义务句在守恒核对中"失踪"——stub 是
+    # 占位条目，逐字回显是它对条款集合最诚实的覆盖方式）。
+    behaviors = [source_text] if source_text.strip() else [heading]
     return _coerce_item(
         {
             "objective": objective,
@@ -737,8 +775,411 @@ def _parse_llm_items(payload: Any, sections: Sequence[dict[str, Any]]) -> list[d
 
 
 # ---------------------------------------------------------------------------
-# 守恒核对（exactly-once，复用 match_source_quote_blocks 取证）
+# 守恒核对（§3.1 obligation/evidence 多对多模型）
 # ---------------------------------------------------------------------------
+# 旧模型（exactly-once：每 block 被且只被一条需求消费）把"一句多 shall 的条款"压成一条、
+# 把合法的跨条款引用误判为重复抽取。新模型：
+#   1. 多对多合法——一个条款可产出多条需求，一条需求可关联多个来源条款；
+#   2. 证据锚（evidence anchors）由确定性后处理派生（句切分与义务模态判据复用
+#      functional_drilldown，LLM 不得填写——结构字段冻结纪律不变）；
+#   3. 分项检查各自定性（替换单一 ok 布尔）：
+#      - 条款覆盖率：每条款块至少被一条需求的证据锚覆盖（未覆盖=漏抽，blocking）；
+#      - 义务覆盖率：每个义务句至少被一条需求覆盖（未覆盖=义务丢失，blocking）；
+#      - 无证据需求：source_block_ids 为空或引句不命中任何声明块（blocking）；
+#      - 重复需求：同一义务句被多条需求覆盖**且**叙述高度相似（多视角引用不判重）；
+#      - 保留完整性：条件/例外/否定/数值/单位在需求叙述中的保存（分级：研发直接
+#        执行的数值/单位/否定丢失为 blocking，条件/例外丢失为 warning）。
+
+# 与 functional_drilldown 同源：句切分 + 义务模态词表（不重写判据）。
+from functional_drilldown import (  # noqa: E402 — 同源复用，避免两份判据漂移
+    _OBLIGATION_MODALS as _DRILLDOWN_OBLIGATION_MODALS,
+    _SENTENCE_SPLIT_RE as _DRILLDOWN_SENTENCE_SPLIT_RE,
+)
+
+_EN_MODAL_RE = re.compile(
+    r"\b(?:" + "|".join(
+        re.escape(m) for m in _DRILLDOWN_OBLIGATION_MODALS if m.isascii() and " " not in m
+    ) + r")\b",
+    re.IGNORECASE,
+)
+_EN_MODAL_PHRASE_RE = re.compile(
+    r"\b(?:" + "|".join(
+        re.escape(m) for m in _DRILLDOWN_OBLIGATION_MODALS if m.isascii() and " " in m
+    ) + r")\b",
+    re.IGNORECASE,
+)
+# 中文模态词按字面匹配；"可"排除"可能"（副词，非义务），"须/应/宜/必须/需要"无此歧义。
+_ZH_MODAL_RE = re.compile(r"必须|需要|应|须|宜|可(?!能)")
+
+def _has_obligation_modal(text: str) -> bool:
+    return bool(
+        _EN_MODAL_RE.search(text)
+        or _EN_MODAL_PHRASE_RE.search(text)
+        or _ZH_MODAL_RE.search(text)
+    )
+
+# 义务单元切分：在**每个模态词前**切开——"shall A ... shall B" → ["…subject", "shall A…",
+# "shall B…"]。带头模态 + 至少一个内容词的片段才是义务单元（"The meter shall " 这种
+# 无动作尾巴不成义务；主语片段无模态词不成义务）。
+_OBLIGATION_UNIT_SPLIT_RE = re.compile(
+    r"(?=\b(?:" + "|".join(
+        re.escape(m) for m in _DRILLDOWN_OBLIGATION_MODALS if m.isascii()
+    ) + r")\b)"
+    r"|(?=必须|需要|应|须|宜|可(?!能))"
+)
+
+# 保留完整性标记（确定性；中文否定词只取短语级——单字 不/无/非 在 无线/非常 等词内
+# 误伤率过高，宁漏报 warning 也不误报 blocking）。
+_PRESERVATION_PATTERNS: dict[str, re.Pattern[str]] = {
+    "condition": re.compile(
+        r"\b(?:if|when|whenever|in case|where|depending on|either|or|otherwise|once)\b"
+        r"|如果|若是|或者|否则|视.{0,8}而定|当.{0,12}时|在.{0,12}时",
+        re.IGNORECASE,
+    ),
+    "exception": re.compile(r"\b(?:except|unless)\b|除非|除外", re.IGNORECASE),
+    "negation": re.compile(
+        r"\b(?:not|no|neither|nor|never|without|cannot)\b"
+        r"|不得|不能|不应|不可|无法|禁止|尚未",
+        re.IGNORECASE,
+    ),
+}
+# 数值/单位/否定 = 研发直接执行的字段（丢失即 blocking）；条件/例外 = 上下文修饰（warning）。
+_PRESERVATION_SEVERITY = {
+    "condition": "warning",
+    "exception": "warning",
+    "negation": "blocking",
+    "number": "blocking",
+    "unit": "blocking",
+}
+_NUMBER_UNIT_RE = re.compile(
+    r"(?<![A-Za-z0-9])(\d+(?:\.\d+)?)\s*"
+    r"(kWh|kvar|kVA|kHz|MHz|GHz|Hz|kV|mV|V|mA|A|kW|W|var|ms|s|min|h|°C|%)(?![A-Za-z])"
+)
+
+_CONTENT_WORD_RE = re.compile(r"[a-z]{3,}|\d+(?:\.\d+)?|[一-鿿]")
+_EN_STOPWORDS = frozenset({
+    "the", "and", "for", "with", "that", "this", "from", "are", "was", "were",
+    "been", "have", "has", "had", "but", "all", "any", "its", "their", "when",
+    "than", "then", "into", "shall", "must", "will", "should", "may", "not",
+    "set", "one", "two", "used", "using", "use", "each", "which", "who", "such",
+})
+
+
+def _content_tokens(text: str) -> set[str]:
+    """内容 token 集：≥3 字符英文词（去停用词）+ 数字 + 中文字符。"""
+    tokens = set()
+    for raw in _CONTENT_WORD_RE.findall(str(text or "").casefold()):
+        if raw.isascii() and raw.isalpha() and raw in _EN_STOPWORDS:
+            continue
+        tokens.add(raw)
+    return tokens
+
+
+def _squashed(text: str) -> str:
+    return "".join(str(text or "").split())
+
+
+def _sentence_covered_by(
+    sentence: str, narrative: str, *, ignore_tokens: frozenset[str] | set[str] = frozenset(),
+) -> bool:
+    """义务单元是否被需求叙述覆盖：逐字包含，或内容 token 重叠率 ≥ 0.6（确定性）。
+
+    ``ignore_tokens`` 剔除章节引用号等非内容 token（"as defined in 4.1" 的 4.1 是引用，
+    不是覆盖义务的一部分）。
+    """
+    sentence = str(sentence or "").strip()
+    narrative = str(narrative or "")
+    if not sentence:
+        return True
+    if not narrative.strip():
+        return False
+    if _squashed(sentence) in _squashed(narrative):
+        return True
+    sentence_tokens = _content_tokens(sentence) - set(ignore_tokens)
+    if not sentence_tokens:
+        return True  # 纯停用词/标点/引用号单元——无从判漏，视为覆盖（宁漏勿错作用于门禁）
+    narrative_tokens = _content_tokens(narrative)
+    overlap = len(sentence_tokens & narrative_tokens)
+    return overlap / len(sentence_tokens) >= 0.6
+
+
+def _narrative_similarity(a: str, b: str) -> float:
+    ta, tb = _content_tokens(a), _content_tokens(b)
+    if not ta or not tb:
+        return 0.0
+    return len(ta & tb) / len(ta | tb)
+
+
+_NARRATIVE_FIELDS = (
+    "objective", "description", "preconditions", "variants", "exceptions",
+)
+
+
+def item_narrative(item: dict[str, Any]) -> str:
+    """需求自己的叙述（不含 source_quote——保留完整性检查的对象是叙述本身）。"""
+    parts: list[str] = []
+    for field in _NARRATIVE_FIELDS:
+        parts.append(str(item.get(field) or ""))
+    for field in ("behaviors", "data_constraints", "related_dlms_objects"):
+        values = item.get(field)
+        if isinstance(values, list):
+            parts.extend(str(v) for v in values)
+    return "\n".join(p for p in parts if p.strip())
+
+
+def _section_sentences(section: dict[str, Any]) -> list[str]:
+    """条款句切分（句号/分号/换行级，切分正则与 functional_drilldown 同源）。"""
+    text = str(section.get("text") or "")
+    return [s.strip() for s in _DRILLDOWN_SENTENCE_SPLIT_RE.split(text) if s.strip()]
+
+
+def _obligation_units(sentence: str) -> list[str]:
+    """句内义务单元：模态词带头、且除模态/停用词外至少一个内容词的片段。"""
+    units: list[str] = []
+    for part in _OBLIGATION_UNIT_SPLIT_RE.split(sentence):
+        part = part.strip()
+        if not part or not _has_obligation_modal(part):
+            continue
+        if _content_tokens(part):
+            units.append(part)
+    return units
+
+
+def _obligation_index(section: dict[str, Any]) -> list[dict[str, Any]]:
+    """条款的义务单元清单（模态动词支配的独立行为；判据与 drilldown 多行为信号同源）。
+
+    ``unit_index`` 是条款内义务单元的顺序号（跨句连续），作守恒/判重的稳定键。
+    """
+    rows: list[dict[str, Any]] = []
+    for sentence_index, sentence in enumerate(_section_sentences(section)):
+        for unit in _obligation_units(sentence):
+            rows.append({
+                "sentence_index": sentence_index,
+                "unit_index": len(rows),
+                "sentence": unit,
+            })
+    return rows
+
+
+def _script_profile(text: str) -> set[str]:
+    """文本使用的文字系统（latin/cjk）——跨语种叙述的确定性判据。
+
+    按**实质内容**判定：单个拉丁字母（id 里的 B1/FRE- 尾巴）不算 latin——须有 ≥3
+    连续字母的英文词；≥2 个汉字才算 cjk。否则 ZH 叙述里引一个编号就会误判双语境。
+    """
+    scripts: set[str] = set()
+    if re.search(r"[A-Za-z]{3,}", text or ""):
+        scripts.add("latin")
+    if len(re.findall(r"[一-鿿]", text or "")) >= 2:
+        scripts.add("cjk")
+    return scripts
+
+
+def _scripts_disjoint(a: set[str], b: set[str]) -> bool:
+    """语种不相交：token 覆盖/词面保留对跨语种转述（EN 条款 ↔ ZH 叙述）天然失效。"""
+    return not (a & b)
+
+
+def _preservation_findings(
+    section: dict[str, Any], narrative_union: str,
+    known_section_ids: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    """条款中的条件/例外/否定/数值/单位在需求叙述并集里是否保留（丢失=分级 finding）。
+
+    基准文本只取条款正文（``text``）——heading 是条款编号/标题，其编号数字不该要求在
+    需求叙述里复现。正文里对**其他条款的引用编号**（"as defined in 4.1"）同样不是可执行
+    数值：已知章节号先从基准文本剔除，再抽数值/单位。
+
+    跨语种（条款与叙述语种不相交）：条件/例外/否定的**词面**标记无法跨语种核对
+    （EN "not" 不会出现在 ZH 叙述里），跳过词面检查只保留数值/单位（数字跨语种通用）；
+    义务覆盖侧同理由锚定回退（见 conservation_report）——确定性判据宁漏勿错，不误报 blocking。
+    """
+    source_text = str(section.get("text") or "")
+    if _scripts_disjoint(
+        _script_profile(source_text), _script_profile(narrative_union),
+    ):
+        word_kinds: tuple[str, ...] = ()
+    else:
+        word_kinds = tuple(_PRESERVATION_PATTERNS)
+    own_ids = {str(section.get("section_id") or "")}
+    for segment in (section.get("section_path") or []):
+        text_segment = str(segment or "").strip()
+        if text_segment:
+            own_ids.add(text_segment)
+    for token in sorted(own_ids | set(known_section_ids or ())):
+        if token:
+            source_text = source_text.replace(token, " ")
+    findings: list[dict[str, Any]] = []
+    for kind in word_kinds:
+        pattern = _PRESERVATION_PATTERNS[kind]
+        source_hits = {m.group(0).lower() for m in pattern.finditer(source_text)}
+        narrative_hits = {m.group(0).lower() for m in pattern.finditer(narrative_union)}
+        for token in sorted(source_hits - narrative_hits):
+            findings.append({
+                "kind": kind, "token": token,
+                "severity": _PRESERVATION_SEVERITY[kind],
+            })
+    source_ints = set(extract_ints(source_text))
+    narrative_ints = set(extract_ints(narrative_union))
+    for value in sorted(source_ints - narrative_ints):
+        findings.append({"kind": "number", "token": str(value), "severity": "blocking"})
+    narrative_squashed_units = {
+        m.group(2).lower() for m in _NUMBER_UNIT_RE.finditer(narrative_union)
+    }
+    for match in _NUMBER_UNIT_RE.finditer(source_text):
+        number, unit = match.group(1), match.group(2)
+        if number in narrative_ints and unit.lower() not in narrative_squashed_units:
+            findings.append({
+                "kind": "unit", "token": f"{number} {unit}", "severity": "blocking",
+            })
+    return findings
+
+
+def _known_section_tokens(sections: Sequence[dict[str, Any]]) -> set[str]:
+    """全部已知章节号/路径段（义务覆盖判定的引用号剔除集）。"""
+    tokens: set[str] = set()
+    for section in sections:
+        sid = str(section.get("section_id") or "").strip()
+        if sid:
+            tokens.add(sid)
+        for segment in (section.get("section_path") or []):
+            text_segment = str(segment or "").strip()
+            if text_segment:
+                tokens.add(text_segment)
+    return tokens
+
+
+def _obligation_evidence_edges(
+    items: Sequence[dict[str, Any]],
+    sections: Sequence[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """M1（§3.2/3.3）：obligation/evidence 局部绑定边——守恒检查与证据锚的唯一权威。
+
+    eligible = 声明块与该义务所属条款块**相交**的 item（声明即绑定）。义务覆盖只在
+    eligible items 内判定，彻底删除"所有叙述的全局并集"借位——F1 声明 B1 却复述 B2、
+    F2 占位声明 B2 的组合不再可能假通过。
+
+    ``match_method`` 优先级：
+    - ``lexical``：需求叙述对义务单元的确定性 token 覆盖（计入义务覆盖）；
+    - ``source_quote``：引句逐字含义务单元——只作证据锚（下游展示/Claim 溯源），
+      **不计入义务覆盖**（占位叙述不能靠引句回充当覆盖，测试矩阵 §3.5-1）；
+    - ``cross_script_review``：跨语言无法确定性比较，但声明有效且引句命中该条款——
+      覆盖成立、必须进入人工复核，且只能覆盖**当前声明**的条款（不得借他款叙述）。
+
+    合法多对多保留：一个义务可有多条边；一条 FRE 可声明多个 section 并各得边。
+    """
+    edges: list[dict[str, Any]] = []
+    ignore_tokens = _known_section_tokens(sections)
+    for section_index, section in enumerate(sections):
+        section_blocks = {
+            str(b) for b in (section.get("block_ids") or []) if str(b)
+        }
+        if not section_blocks:
+            continue
+        section_id = str(section.get("section_id") or "")
+        section_text = str(section.get("text") or "")
+        section_label = " / ".join(
+            str(s) for s in (section.get("section_path") or [])
+        ) or section_id
+        clause_scripts = _script_profile(section_text)
+        for obligation in _obligation_index(section):
+            sentence = obligation["sentence"]
+            source_text_hash = hashlib.sha256(
+                sentence.encode("utf-8")).hexdigest()
+            for item_index, item in enumerate(items):
+                declared = {
+                    str(b) for b in (item.get("source_block_ids") or []) if str(b)
+                }
+                if not declared & section_blocks:
+                    continue  # 未声明该条款——不是 eligible，不得借位
+                narrative = item_narrative(item)
+                quote = str(item.get("source_quote") or "")
+                if _sentence_covered_by(
+                        sentence, narrative, ignore_tokens=ignore_tokens):
+                    method = "lexical"
+                elif (
+                    narrative.strip()
+                    and quote.strip()
+                    and _scripts_disjoint(clause_scripts, _script_profile(narrative))
+                    and (
+                        _squashed(quote) in _squashed(section_text)
+                        or _squashed(section_text) in _squashed(quote)
+                    )
+                ):
+                    # 跨语种优先于 source_quote：引句回显验证不了跨语种叙述，
+                    # 诚实语义是"声明+引句有效 → 覆盖成立但须人工复核"。
+                    method = "cross_script_review"
+                elif quote.strip() and _squashed(sentence) in _squashed(quote):
+                    method = "source_quote"
+                else:
+                    continue
+                edges.append({
+                    "functional_requirement_id": str(
+                        item.get("functional_requirement_id") or ""),
+                    "item_index": item_index,
+                    "section_index": section_index,
+                    "section_id": section_id,
+                    "section": section_label,
+                    "sentence_index": obligation["sentence_index"],
+                    "unit_index": obligation["unit_index"],
+                    "declared_block_ids": sorted(declared),
+                    "block_ids": sorted(section_blocks),
+                    "quote": sentence[:400],
+                    "source_text_hash": source_text_hash,
+                    "match_method": method,
+                })
+    return edges
+
+
+# 计入义务覆盖的边方法（source_quote 只作锚，不当覆盖——占位叙述不得靠引句回充）
+_COVERAGE_EDGE_METHODS = frozenset({"lexical", "cross_script_review"})
+
+
+def _edges_as_anchors(edges: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """边 → 持久化 evidence_anchors 形态（下游展示/Claim 溯源用；守恒永远现算）。"""
+    return [
+        {
+            "section_id": edge["section_id"],
+            "section": edge["section"],
+            "block_ids": edge["block_ids"],
+            "quote": edge["quote"],
+            "sentence_index": edge["sentence_index"],
+            "unit_index": edge["unit_index"],
+            "source_text_hash": edge["source_text_hash"],
+            "match_method": edge["match_method"],
+            "kind": "obligation",
+            "origin": "declared",
+        }
+        for edge in edges
+    ]
+
+
+def _anchors_for_item(
+    item: dict[str, Any],
+    sections: Sequence[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """单条 item 的证据锚（= 其全部绑定边；与守恒共用 _obligation_evidence_edges）。"""
+    edges = _obligation_evidence_edges([item], sections)
+    return _edges_as_anchors(edges)
+
+
+def assign_evidence_anchors(
+    items: Sequence[dict[str, Any]],
+    sections: Sequence[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """给每条需求盖确定性证据锚（``evidence_anchors``）——LLM 不得填写。
+
+    M1 起，锚 = 该 item 的全部 obligation/evidence 绑定边（含 match_method 与
+    source_text_hash）。只声明才锚定：叙述复述未声明条款不再产生锚。
+    """
+    edges = _obligation_evidence_edges(items, sections)
+    by_item: dict[int, list[dict[str, Any]]] = {}
+    for edge in edges:
+        by_item.setdefault(edge["item_index"], []).append(edge)
+    for index, item in enumerate(items):
+        item["evidence_anchors"] = _edges_as_anchors(by_item.get(index, []))
+    return list(items)
+
 
 def conservation_report(
     sections: Sequence[dict[str, Any]],
@@ -746,39 +1187,186 @@ def conservation_report(
     *,
     blocks: Sequence[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """功能需求集合必须恰好消费条款集合：每条来源 block_id 被且只被一条功能需求覆盖。
+    """obligation/evidence 守恒报告（§3.1 多对多模型，五项分项检查）。
 
     取证复用 ``merged_consistency.match_source_quote_blocks``（与
-    ``review_tools.coverage_check`` 同源匹配器）校验每条 item 的 source_quote 是否真的命中
-    其声明的 source_block_ids——不重写核对逻辑，只做 exactly-once 集合运算 + 证据完整性复核。
+    ``review_tools.coverage_check`` 同源匹配器）校验每条 item 的 source_quote 是否命中
+    其声明的 source_block_ids。下钻条款递归守恒保留：``drilled_subatoms`` 的子原子
+    block_ids 并集必须等于父条款 block_ids。
 
-    下钻条款递归生效：若 item 带 ``drilled_subatoms``，其子原子的 block_ids 并集必须恰好
-    等于父条款 block_ids（见 functional_drilldown 回填）。
+    报告同时保留旧字段镜像（missing/extra/duplicate_assignments/evidence_mismatches），
+    但语义随模型升级：``duplicate_assignments`` 现在指"重复需求组涉及的块"（多消费合法，
+    只有义务句+叙述双重命中才判重），不再是"被多条需求声明的块"。
     """
-    from collections import Counter
     from merged_consistency import match_source_quote_blocks
 
-    clause_block_ids: list[str] = []
-    for section in sections:
-        clause_block_ids.extend(str(b) for b in (section.get("block_ids") or []) if str(b))
-    clause_set = sorted(set(clause_block_ids))
+    section_block_ids = [
+        sorted({str(b) for b in (section.get("block_ids") or []) if str(b)})
+        for section in sections
+    ]
+    clause_block_set = {b for blocks_ids in section_block_ids for b in blocks_ids}
 
-    assigned: list[str] = []
-    evidence_mismatches: list[dict[str, Any]] = []
+    narratives = [item_narrative(item) for item in items]
+    # M1：统一边生成——守恒检查与证据锚共用同一结果；持久化 anchors 只是下游展示数据，
+    # 守恒永远现算（产物里被篡改/陈旧的锚不能伪造覆盖结论）。
+    edges = _obligation_evidence_edges(items, sections)
+    edges_by_obligation: dict[tuple[str, int], list[dict[str, Any]]] = {}
+    for edge in edges:
+        edges_by_obligation.setdefault(
+            (edge["section_id"], edge["unit_index"]), []).append(edge)
+    edges_by_item: dict[int, list[dict[str, Any]]] = {}
+    for edge in edges:
+        edges_by_item.setdefault(edge["item_index"], []).append(edge)
+
+    # ---- 检查 1：条款覆盖率（每条款块至少被一条需求的声明/绑定边覆盖）----
+    covered_blocks: set[str] = set()
     for item in items:
+        covered_blocks.update(str(b) for b in (item.get("source_block_ids") or []) if str(b))
+    for edge in edges:
+        covered_blocks.update(str(b) for b in (edge.get("block_ids") or []) if str(b))
+    uncovered_sections: list[dict[str, Any]] = []
+    for section, blocks_ids in zip(sections, section_block_ids):
+        if blocks_ids and not set(blocks_ids) & covered_blocks:
+            uncovered_sections.append({
+                "section_id": str(section.get("section_id") or ""),
+                "heading": str(section.get("heading") or "")[:80],
+                "block_ids": blocks_ids,
+            })
+    missing_block_ids = sorted(clause_block_set - covered_blocks)
+    declared_ids = [str(b) for item in items for b in (item.get("source_block_ids") or []) if str(b)]
+    extra_block_ids = sorted({b for b in declared_ids if b not in clause_block_set})
+
+    # ---- 检查 2：义务覆盖率（局部绑定：每个义务单元至少被一条 eligible 边覆盖）----
+    # M1：覆盖只认 lexical / cross_script_review 边（声明即绑定）；source_quote 边只作
+    # 证据锚。跨语种边覆盖成立但必须人工复核（cross_script_review 清单留痕，warning 级）。
+    ignore_tokens = _known_section_tokens(sections)
+    uncovered_obligations: list[dict[str, Any]] = []
+    cross_script_review: list[dict[str, Any]] = []
+    sentence_cover_items: dict[tuple[str, int], list[int]] = {}
+    for section, blocks_ids in zip(sections, section_block_ids):
+        section_id = str(section.get("section_id") or "")
+        for obligation in _obligation_index(section):
+            key = (section_id, obligation["unit_index"])
+            obligation_edges = edges_by_obligation.get(key) or []
+            covering = [
+                edge["item_index"] for edge in obligation_edges
+                if edge["match_method"] == "lexical"
+            ]
+            if covering:
+                sentence_cover_items[key] = covering
+            if any(
+                edge["match_method"] in _COVERAGE_EDGE_METHODS
+                for edge in obligation_edges
+            ):
+                for edge in obligation_edges:
+                    if edge["match_method"] == "cross_script_review":
+                        # 复审 P1-2 二轮：复核记录必须绑定**源义务文本身份**——
+                        # 只有 FRE id/section/unit 的话，专家确认后改义务文本，
+                        # 确认 ID 与指纹都不变，旧确认被自动沿用。source_text_hash
+                        # 随义务文本变化，下游澄清问题的身份随之换新。
+                        cross_script_review.append({
+                            "section_id": section_id,
+                            "unit_index": obligation["unit_index"],
+                            "functional_requirement_id":
+                                edge["functional_requirement_id"],
+                            "source_text_hash": edge["source_text_hash"],
+                            "sentence": obligation["sentence"][:160],
+                        })
+            else:
+                uncovered_obligations.append({
+                    "section_id": section_id,
+                    "sentence_index": obligation["sentence_index"],
+                    "unit_index": obligation["unit_index"],
+                    "sentence": obligation["sentence"][:160],
+                })
+
+    # ---- 检查 3：无证据需求（无声明块 / 引句零命中或不命中声明块 / 叙述与声明条款错绑）----
+    no_evidence_items: list[dict[str, Any]] = []
+    evidence_mismatches: list[dict[str, Any]] = []
+    binding_mismatches: list[dict[str, Any]] = []
+    # 错绑检测（审查 2026-08-15 P1）：声明的 source_block_ids 与叙述实际覆盖的义务单元
+    # 所属条款不一致——叙述互换/错误溯源会让条款覆盖假通过。跨语种（token 覆盖失效）
+    # 与无义务单元的家条款无从判定，跳过（宁漏勿错，不误报 blocking）。
+    clause_units: list[list[dict[str, Any]]] = [_obligation_index(s) for s in sections]
+    for item_index, item in enumerate(items):
+        narrative = narratives[item_index]
         ids = [str(b) for b in (item.get("source_block_ids") or []) if str(b)]
-        assigned.extend(ids)
-        # 证据完整性：source_quote 命中的块集合应与声明的 source_block_ids 有交集
-        if blocks is not None:
+        fre_id = str(item.get("functional_requirement_id") or "")
+        if not ids:
+            no_evidence_items.append({
+                "functional_requirement_id": fre_id, "reason": "empty_source_block_ids",
+            })
+            continue
+        if blocks:  # 空列表 = 无 blocks 证据可用，不做引句命中校验（不伪造通过也不误报）
             quote = str(item.get("source_quote") or "")
             if quote.strip():
                 hit_block_ids, _method = match_source_quote_blocks(quote, list(blocks))
-                if hit_block_ids and not set(hit_block_ids).intersection(ids):
+                if not hit_block_ids:
+                    # 引句在全文零命中 = 无效证据（审查 P1：旧逻辑零命中直接放行）
                     evidence_mismatches.append({
-                        "functional_requirement_id": str(item.get("functional_requirement_id") or ""),
+                        "functional_requirement_id": fre_id,
+                        "reason": "quote_matches_no_block",
+                        "declared_block_ids": ids,
+                        "quote_hit_block_ids": [],
+                    })
+                elif not set(hit_block_ids).intersection(ids):
+                    evidence_mismatches.append({
+                        "functional_requirement_id": fre_id,
                         "declared_block_ids": ids,
                         "quote_hit_block_ids": hit_block_ids,
                     })
+        declared_set = set(ids)
+        home_indices = [
+            i for i, blocks_ids in enumerate(section_block_ids) if blocks_ids and set(blocks_ids) & declared_set
+        ]
+        home_with_units = [
+            i for i in home_indices
+            if clause_units[i]
+            and not _scripts_disjoint(
+                _script_profile(str(sections[i].get("text") or "")),
+                _script_profile(narrative),
+            )
+        ]
+        if home_with_units and narrative.strip():
+            # M1 §3.3-7：声明了含义务单元的条款（同语种），却连一条本地边都没有
+            # （lexical/cross_script_review/source_quote 任一方法）——叙述与引句都
+            # 锚不住本条款的占位声明。注意：义务覆盖缺口由检查 2 兜底（eligible-only），
+            # 此处不要求"覆盖级"边——合法的多视角转述（0.5 重叠 + 引句锚）不受罚。
+            local_edge_sections = {
+                edge["section_index"] for edge in (edges_by_item.get(item_index) or [])
+            }
+            if not (set(home_with_units) & local_edge_sections):
+                binding_mismatches.append({
+                    "functional_requirement_id": fre_id,
+                    "reason": "declared_section_has_no_local_obligation_coverage",
+                    "declared_block_ids": ids,
+                    "declared_section_ids": [
+                        str(sections[i].get("section_id") or "") for i in home_with_units
+                    ],
+                })
+                continue
+            covered_clause_indices = {
+                i for i, units in enumerate(clause_units)
+                if any(
+                    _sentence_covered_by(unit["sentence"], narrative, ignore_tokens=ignore_tokens)
+                    for unit in units
+                )
+            }
+            if covered_clause_indices and not (
+                set(home_with_units) & covered_clause_indices
+            ):
+                binding_mismatches.append({
+                    "functional_requirement_id": fre_id,
+                    "reason": "narrative_covers_other_clauses_not_declared",
+                    "declared_block_ids": ids,
+                    "declared_section_ids": [
+                        str(sections[i].get("section_id") or "") for i in home_with_units
+                    ],
+                    "narrative_covers_section_ids": [
+                        str(sections[i].get("section_id") or "")
+                        for i in sorted(covered_clause_indices)
+                    ],
+                })
         # 下钻子原子递归守恒：并集 == 父条款 block_ids
         subatoms = item.get("drilled_subatoms")
         if isinstance(subatoms, list) and subatoms:
@@ -791,40 +1379,200 @@ def conservation_report(
             parent_blocks = set(ids)
             if child_blocks and parent_blocks and child_blocks != parent_blocks:
                 evidence_mismatches.append({
-                    "functional_requirement_id": str(item.get("functional_requirement_id") or ""),
+                    "functional_requirement_id": fre_id,
                     "reason": "drilldown_subatoms_do_not_consume_parent",
                     "parent_block_ids": sorted(parent_blocks),
                     "child_block_union": sorted(child_blocks),
                 })
 
-    counter = Counter(assigned)
-    duplicate_assignments = sorted(k for k, v in counter.items() if v > 1)
-    assigned_set = set(assigned)
-    missing = sorted(set(clause_set) - assigned_set)
-    extra = sorted(assigned_set - set(clause_set))
-    ok = not (missing or duplicate_assignments or extra or evidence_mismatches)
+    # ---- 检查 4：重复需求（同一义务句被多条覆盖**且**叙述高度相似）----
+    duplicate_groups: list[dict[str, Any]] = []
+    duplicate_block_ids: set[str] = set()
+    section_by_id = {
+        str(section.get("section_id") or ""): blocks_ids
+        for section, blocks_ids in zip(sections, section_block_ids)
+    }
+    for (section_id, unit_index), covering in sorted(sentence_cover_items.items()):
+        if len(covering) < 2:
+            continue
+        pairs: set[frozenset[int]] = set()
+        for i in covering:
+            for j in covering:
+                if i < j and _narrative_similarity(narratives[i], narratives[j]) >= 0.8:
+                    pairs.add(frozenset((i, j)))
+        if not pairs:
+            continue  # 多视角引用同一义务单元——合法，不判重
+        group_items = sorted(
+            {i for pair in pairs for i in pair},
+            key=lambda i: str(items[i].get("functional_requirement_id") or ""),
+        )
+        group_blocks = sorted(
+            {b for i in group_items for b in (items[i].get("source_block_ids") or [])}
+            | set(section_by_id.get(section_id) or [])
+        )
+        duplicate_block_ids.update(group_blocks)
+        duplicate_groups.append({
+            "section_id": section_id,
+            "unit_index": unit_index,
+            "functional_requirement_ids": [
+                str(items[i].get("functional_requirement_id") or "") for i in group_items
+            ],
+            "block_ids": group_blocks,
+        })
+
+    # ---- 检查 5：保留完整性（条件/例外/否定/数值/单位，分级）----
+    known_section_ids: set[str] = set()
+    for section in sections:
+        sid = str(section.get("section_id") or "")
+        if sid:
+            known_section_ids.add(sid)
+        for segment in (section.get("section_path") or []):
+            text_segment = str(segment or "").strip()
+            if text_segment:
+                known_section_ids.add(text_segment)
+    preservation_losses: list[dict[str, Any]] = []
+    for section, blocks_ids in zip(sections, section_block_ids):
+        # M1：保留完整性的叙述并集 = 声明了该条款的 items（绑定边只落在声明条款上）
+        anchored_narratives = [
+            narratives[i] for i, item in enumerate(items)
+            if set(str(b) for b in (item.get("source_block_ids") or []) if str(b)) & set(blocks_ids)
+        ]
+        if not anchored_narratives:
+            continue  # 条款本身未覆盖——已由检查 1 阻塞，保留完整性无从谈起
+        narrative_union = "\n".join(anchored_narratives)
+        for finding in _preservation_findings(section, narrative_union, known_section_ids):
+            preservation_losses.append({
+                "section_id": str(section.get("section_id") or ""),
+                **finding,
+            })
+
+    blocking_losses = [f for f in preservation_losses if f.get("severity") == "blocking"]
+    warning_losses = [f for f in preservation_losses if f.get("severity") != "blocking"]
+
+    checks = {
+        "clause_coverage": {
+            "ok": not uncovered_sections,
+            "uncovered_sections": uncovered_sections[:50],
+        },
+        "obligation_coverage": {
+            "ok": not uncovered_obligations,
+            "uncovered_obligations": uncovered_obligations[:50],
+            # 跨语种边：覆盖成立但必须人工复核（M1 §3.2 cross_script_review）
+            "cross_script_review": cross_script_review[:50],
+        },
+        "evidence_presence": {
+            "ok": not no_evidence_items and not evidence_mismatches
+            and not binding_mismatches,
+            "items_without_evidence": no_evidence_items[:50],
+            "evidence_mismatches": evidence_mismatches[:50],
+            "binding_mismatches": binding_mismatches[:50],
+        },
+        "duplicates": {
+            "ok": not duplicate_groups,
+            "groups": duplicate_groups[:50],
+        },
+        "preservation": {
+            "ok": not blocking_losses,
+            "blocking_losses": blocking_losses[:50],
+            "warning_losses": warning_losses[:50],
+        },
+    }
+    failure_categories = sorted(
+        name for name, result in checks.items() if not result["ok"]
+    )
+    ok = not failure_categories
     return {
+        "model": FUNCTIONAL_CONSERVATION_MODEL_VERSION,
         "ok": ok,
-        "clause_block_count": len(clause_set),
-        "covered_block_count": len(assigned_set & set(clause_set)),
-        "missing_block_ids": missing[:50],
-        "duplicate_assignments": duplicate_assignments[:50],
-        "extra_block_ids": extra[:50],
+        "failure_categories": failure_categories,
+        "checks": checks,
+        "warning_count": len(warning_losses) + len(cross_script_review),
+        # 旧字段镜像（adjudicate / orchestration_gaps / shadow 门等消费点不变，
+        # 语义随模型升级——见 docstring）
+        "clause_block_count": len(clause_block_set),
+        "covered_block_count": len(covered_blocks & clause_block_set),
+        "missing_block_ids": missing_block_ids[:50],
+        "duplicate_assignments": sorted(duplicate_block_ids)[:50],
+        "extra_block_ids": extra_block_ids[:50],
         "evidence_mismatches": evidence_mismatches[:50],
-        "block_export": not ok,  # 未闭合 → 阻塞成文导出（强制人工）
+        "block_export": not ok,  # 存在任一 blocking 类别 → 阻塞成文导出（强制人工）
     }
 
 
 def raise_if_unconserved(report: dict[str, Any]) -> None:
-    """成文导出闸门：守恒核对未闭合即抛 FunctionalConservationError，不静默放行。"""
-    if not report.get("ok"):
-        raise FunctionalConservationError(
-            "功能需求守恒核对未闭合，阻塞成文导出（强制人工）："
+    """成文导出闸门：守恒核对存在任一 blocking 失败类别即抛 FunctionalConservationError。
+
+    兼容旧形报告（只有顶层 ok）——ok=False 一律阻塞；新形报告按分项类别给出计数。
+    """
+    if report.get("ok", True):
+        return
+    checks = report.get("checks") if isinstance(report.get("checks"), dict) else {}
+    if checks:
+        detail = "；".join(
+            f"{name}={_check_failure_count(name, result)}"
+            for name, result in sorted(checks.items())
+            if not result.get("ok", True)
+        )
+    else:
+        detail = (
             f"missing={len(report.get('missing_block_ids') or [])} "
             f"duplicate={len(report.get('duplicate_assignments') or [])} "
             f"extra={len(report.get('extra_block_ids') or [])} "
             f"evidence_mismatch={len(report.get('evidence_mismatches') or [])}"
         )
+    raise FunctionalConservationError(
+        f"功能需求守恒核对未闭合（{detail}），阻塞成文导出（强制人工）"
+    )
+
+
+def _check_failure_count(name: str, result: dict[str, Any]) -> int:
+    for key in ("uncovered_sections", "uncovered_obligations", "items_without_evidence",
+                "evidence_mismatches", "binding_mismatches", "groups", "blocking_losses"):
+        value = result.get(key)
+        if isinstance(value, list):
+            return len(value)
+    return 1
+
+
+# ---------------------------------------------------------------------------
+# §3.5 执行结果类别（ok / partial / failed）——manifest、readiness、结果包完成证据、
+# 缓存行、下游闸门共用同一份语义：真实生产运行出现 stub 降级或 mixed 部分失败，
+# 不得记 ok。显式 route="stub"（测试/烟测 opt-in）不算失败。
+# ---------------------------------------------------------------------------
+
+def execution_status(
+    route_requested: Any,
+    executed_route: Any,
+    *,
+    requested_label: str = "",
+) -> str:
+    """从请求/执行路由标签推导执行结果类别。
+
+    ``requested_label`` 是 ``_resolve_route_label`` 的缓存键标签（injected / llm:model /
+    stub）——非 stub 即"LLM 能力被真实尝试过"。执行侧全部退化为 stub → failed；部分
+    条款 stub（mixed）→ partial；显式 stub 请求且无 LLM 尝试 → ok（诚实 opt-in）。
+    """
+    executed = str(executed_route or "stub")
+    if executed == "mixed":
+        return "partial"
+    attempted = bool(requested_label) and requested_label != "stub"
+    if executed == "stub" and attempted:
+        return "failed"
+    return "ok"
+
+
+def _payload_execution_status(payload: dict[str, Any]) -> str:
+    """产物/缓存行的执行结果类别：优先读持久化字段；旧缓存行按路由字段推导。"""
+    stored = str(payload.get("execution_status") or "").strip()
+    if stored in {"ok", "partial", "failed"}:
+        return stored
+    requested = str(payload.get("route_requested") or "stub")
+    executed = str(payload.get("route") or "stub")
+    if executed == "mixed":
+        return "partial"
+    if executed == "stub" and requested not in ("", "stub", None):
+        return "failed"
+    return "ok"
 
 
 def _notify_budget_degraded(reason: str) -> None:
@@ -944,7 +1692,7 @@ def _negative_exemplars_for_section(section: dict[str, Any], bank: dict[str, Any
     from adjudication_bank import render_negative_exemplars, select_negative_exemplars
     module = _derive_module(section)
     text = _source_text(section)
-    negs = select_negative_exemplars(bank, module, text, k=FUNCTIONAL_EXTRACT_NEGATIVE_K)
+    negs = select_negative_exemplars(bank, module, text, k=functional_extract_negative_k())
     return render_negative_exemplars(negs) if negs else ""
 
 
@@ -1007,7 +1755,9 @@ def extract_functional_requirements(
         _notify_budget_degraded("functional_extract_degraded_to_stub")
     # T3-1：盖跨再生成稳定 UID（条款序号定位，与内容哈希解耦）。旧 functional_requirement_id
     # 保留为别名映射字段不动。
+    # §3.1：盖确定性证据锚（义务句 → block/引句/句序），LLM 不得填写。
     assign_stable_uids(items, sections)
+    assign_evidence_anchors(items, sections)
     return items, executed_route
 
 
@@ -1056,7 +1806,24 @@ def _extract_by_context_packages(
             else "functional_extract_degraded_to_stub"
         )
     assign_stable_uids(items, sections)
+    assign_evidence_anchors(items, sections)
     return items, final_route
+
+
+def current_producer_lineage() -> dict[str, str]:
+    """直抽产物的代码 lineage（发布侧记录与 currency 校验侧比较共用单源）。
+
+    只含代码版本常量——execution_status 是运行态不是 lineage，进了比较会让
+    ok/partial 之间的合法重跑被误判为陈旧。
+    """
+    return {
+        "producer": FUNCTIONAL_EXTRACT_VERSION,
+        "prompt_version": FUNCTIONAL_EXTRACT_PROMPT_VERSION,
+        "guards_version": FUNCTIONAL_EXTRACT_GUARDS_VERSION,
+        # 三轮复审 P1-2：守恒模型版本进 lineage——generation 的 currency 校验随
+        # 守恒载荷语义演进同步失效（与缓存指纹同源）。
+        "conservation_model": FUNCTIONAL_CONSERVATION_MODEL_VERSION,
+    }
 
 
 def functional_direct_basis(root: Path | str) -> list[dict[str, Any]] | None:
@@ -1079,6 +1846,16 @@ def functional_direct_basis(root: Path | str) -> list[dict[str, Any]] | None:
         # 缺守恒块按现状放行（与 requirements_analysis 消费端闸门同口径）；
         # 有块未闭合 = 响亮失败，绝不静默进成文。
         raise_if_unconserved(conservation)
+    # §3.5：执行不完整（stub 降级 / mixed 部分失败）同样响亮阻断下游——缓存行携带的
+    # 失败语义在这里保持为失败（_payload_execution_status 不用当前请求路由重算）。
+    status = _payload_execution_status(payload)
+    if status != "ok":
+        raise FunctionalExtractionIncompleteError(
+            f"功能直抽执行不完整（execution_status={status}，"
+            f"route_requested={payload.get('route_requested')}, route={payload.get('route')}），"
+            "阻塞需求分析/澄清/成文下游；请修复 LLM 路由后重跑直抽"
+            "（显式 route=stub 仅限测试/烟测 opt-in）"
+        )
     items = payload.get("items")
     return items if isinstance(items, list) else None
 
@@ -1097,7 +1874,7 @@ def run_functional_extract(
     """运行功能需求直抽，写 functional_requirements.json（governed 路径 + 原子写）。
 
     ``sections`` 缺省时从 ``chunks.jsonl``（extract_units 条款切分产物）惰性加载——
-    不改 extract_units / atomize（硬边界：直抽是旁路新入口，默认关）。
+    不改 extract_units / atomize（硬边界：直抽替换下游两阶段，旧路径可显式回滚）。
 
     A2：``strategy`` 缺省读 ``RATOMIZER_CONTEXT_PACK_STRATEGY``（默认 legacy 不变）；
     clause_family 下自动只读加载 A1 整篇地图（``doc_map.load_doc_map``，缺席/不可用
@@ -1147,15 +1924,24 @@ def run_functional_extract(
         strategy=resolved_strategy, doc_map=doc_map, max_chars=max_chars,
     )
     conservation = conservation_report(sections, items, blocks=blocks)
+    # §3.5：执行结果类别随产物持久化（缓存行同样携带——重放不洗白失败语义）。
+    resolved_status = execution_status(
+        route, executed_route, requested_label=route_label,
+    )
 
     payload = {
         "schema_version": 1,
         "producer": FUNCTIONAL_EXTRACT_VERSION,
         "prompt_version": FUNCTIONAL_EXTRACT_PROMPT_VERSION,
         "guards_version": FUNCTIONAL_EXTRACT_GUARDS_VERSION,
+        "conservation_model": FUNCTIONAL_CONSERVATION_MODEL_VERSION,
         "provenance": provenance("functional_extract", FUNCTIONAL_EXTRACT_VERSION),
         "route_requested": route or "stub",
         "route": executed_route,
+        "execution_status": resolved_status,
+        # §3.5 stub 草稿水印：占位条目永不形成可发布成功产物（claim 不绑定、
+        # full closure 显式缺口、结果包完成证据拒绝）。
+        "draft": executed_route == "stub",
         "context_pack_strategy": resolved_strategy,
         "clause_count": len(sections),
         "functional_requirements": len(items),
@@ -1163,8 +1949,11 @@ def run_functional_extract(
         "conservation": conservation,
         "items": items,
     }
-    # 缓存 stub 与 llm 产物（指纹一致即放行，route 标签随产物保留）
-    _write_cache_entry(out_dir, fingerprint, payload)
+    # §3.5 缓存纪律：ok/partial 照常缓存（缓存行携带 execution_status，重放保留失败语义
+    # ——mixed 重放仍是 partial）；**failed 不落缓存**——全退化多为瞬时故障（网络/超时），
+    # 钉进缓存会让下次健康重跑永远重放失败；重跑就该真实再试。
+    if resolved_status != "failed":
+        _write_cache_entry(out_dir, fingerprint, payload)
     return _finalize_payload(payload, out_dir, route, write=True)
 
 
@@ -1193,6 +1982,9 @@ def _finalize_payload(
         "functional_requirements": payload.get("functional_requirements", 0),
         "route_requested": route or "stub",
         "route": payload.get("route", "stub"),
+        # §3.5：结果摘要与产物/manifest 同一失败语义（ok/partial/failed）+ 草稿水印。
+        "execution_status": _payload_execution_status(payload),
+        "draft": bool(payload.get("draft")),
         "conservation": payload.get("conservation", {}),
         "written": [FUNCTIONAL_REQUIREMENTS_FILENAME] if write else [],
     }
@@ -1229,7 +2021,13 @@ def load_clauses(out_dir: Path | str) -> list[dict[str, Any]]:
                 "section_path": section_path,
                 "heading": str(row.get("heading") or (section_path[-1] if section_path else "")),
                 "text": str(row.get("text") or ""),
-                "block_ids": [str(b) for b in (row.get("block_ids") or [])],
+                # 回滚演练实证（2026-08-16）：真实 parse 产物的 chunks.jsonl 用
+                # source_block_ids 字段——只认 block_ids 会让守恒锚定全空（义务
+                # 覆盖/evidence 双 blocking 的假失败）。两字段都认（真实优先）。
+                "block_ids": [str(b) for b in (
+                    row.get("block_ids")
+                    if isinstance(row.get("block_ids"), list) and row.get("block_ids")
+                    else row.get("source_block_ids") or [])],
             })
         if sections:
             return sections

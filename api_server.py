@@ -584,6 +584,9 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
         if parsed.path == "/ai-review-actions":
             self.handle_ai_review_action()
             return
+        if parsed.path == "/functional-review-actions":
+            self.handle_functional_review_action()
+            return
         if parsed.path == "/table-review-actions":
             self.handle_table_review_action()
             return
@@ -1596,20 +1599,175 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
                         "total": len(served)})
 
     def handle_functional_requirements_get(self) -> None:
-        """WS-F：读 functional_requirements.json items（governed 双路径探测）。只读。
+        """WS-F：读 functional_requirements.json items（governed 双路径探测）。
 
-        envelope 与既有 GET 端点同构（schema/数据/total/错误面）。前端 HTTP 优先、
-        无此端点的旧后端经 Electron readArtifact IPC 降级兜底。
+        §3.3（2026-08-15）：条目附评审权威投影（status/module/ownership 覆盖、
+        needs_reconfirmation、level=functional、CAS 三元组）——ai_review_states.jsonl 仍是
+        唯一专家裁决存储，本端点只做投影，不新增状态文件。
         """
-        from requirements_analysis_rules import read_functional_requirements
+        from requirements_analysis_rules import (
+            _read_functional_requirements_payload,
+            read_functional_requirements,
+        )
         try:
             items = read_functional_requirements(self.output_dir)
         except (TimeoutError, OSError) as exc:
             self.send_json({"error": "functional_requirements_unavailable", "detail": str(exc),
                             "retryable": True}, status=503)
             return
-        self.send_json({"schema": "functional-requirements/v1", "items": items,
-                        "total": len(items)})
+        try:
+            payload = _read_functional_requirements_payload(self.output_dir) or {}
+        except (TimeoutError, OSError):
+            payload = {}
+        served = _project_functional_review_view(self.output_dir, items, payload)
+        self.send_json({"schema": "functional-requirements/v1", "items": served,
+                        "total": len(served)})
+
+    def handle_functional_review_action(self) -> None:
+        """§3.3 功能级专家裁决：唯一写权威仍是 ai_review_states.jsonl（level=functional）。
+
+        CAS 纪律与 /ai-review-actions 同族：提交方必须带回 GET 投影的
+        source_fingerprint + review_subject_fingerprint + expected_target_fingerprint
+        （产物指纹，产物重生成即失配）+ expected_target_authority_write_revision；
+        任一失配 → 409 needs_reconfirmation，不静默沿用旧裁决。
+        """
+        payload = self.read_json_body()
+        if payload is None:
+            return
+        req_id = str(
+            payload.get("ai_req_id")
+            or payload.get("functional_requirement_id")
+            or ""
+        ).strip()
+        status = str(payload.get("status") or "").strip()
+        clear_module_override = payload.get("clear_module_override", False)
+        if not isinstance(clear_module_override, bool):
+            self.send_json({"error": "clear_module_override must be boolean"}, status=400)
+            return
+        module_override_supplied = "module_override" in payload
+        if clear_module_override and module_override_supplied:
+            self.send_json(
+                {"error": "module_override and clear_module_override are mutually exclusive"},
+                status=400)
+            return
+        submitted_module_override: str | None = None
+        if module_override_supplied:
+            try:
+                submitted_module_override = normalize_module_override(payload.get("module_override"))
+            except ValueError as exc:
+                self.send_json({"error": str(exc)}, status=400)
+                return
+        ownership_override = str(payload.get("ownership_override") or "").strip() or None
+        reason = str(payload.get("reason") or "").strip()
+        actor = str(payload.get("actor") or "").strip() or None
+        if not req_id or not status:
+            self.send_json(
+                {"error": "ai_req_id (or functional_requirement_id) and status are required"},
+                status=400)
+            return
+        from ai_review_actions import VALID_AI_STATUS
+        if status not in VALID_AI_STATUS:
+            self.send_json({"error": f"invalid status: {status}"}, status=400)
+            return
+        submitted_source = str(payload.get("source_fingerprint") or "").strip()
+        submitted_subject = str(payload.get("review_subject_fingerprint") or "").strip()
+        expected_target_fingerprint = str(
+            payload.get("expected_target_fingerprint") or "").strip()
+        expected_authority = str(
+            payload.get("expected_target_authority_write_revision") or "").strip()
+        if not submitted_source or not submitted_subject or not expected_target_fingerprint \
+                or not expected_authority:
+            self.send_json({
+                "error": (
+                    "source_fingerprint, review_subject_fingerprint, "
+                    "expected_target_fingerprint, and expected_target_authority_write_revision "
+                    "are required"
+                ),
+                "needs_reconfirmation": True,
+            }, status=400)
+            return
+        from omission_actions import extraction_operation_lock
+        try:
+            with extraction_operation_lock(
+                    self.output_dir, operation="functional-review-action"):
+                from requirements_analysis_rules import _read_functional_requirements_payload
+                try:
+                    fr_payload = _read_functional_requirements_payload(self.output_dir) or {}
+                except (TimeoutError, OSError) as exc:
+                    self.send_json({"error": "functional_requirements_unavailable",
+                                    "detail": str(exc), "retryable": True}, status=503)
+                    return
+                items = fr_payload.get("items") if isinstance(fr_payload, dict) else None
+                if not isinstance(items, list):
+                    self.send_json({"error": "functional product has no items"}, status=409)
+                    return
+                current = next(
+                    (row for row in items
+                     if isinstance(row, dict)
+                     and source_ai_requirement_id(row) == req_id),
+                    None,
+                )
+                if current is None:
+                    self.send_json({
+                        "error": "functional requirement is not present in the current product",
+                    }, status=409)
+                    return
+                current_source = source_fingerprint(current)
+                current_subject = review_subject_fingerprint(current)
+                current_target_fingerprint = str(fr_payload.get("fingerprint") or "")
+                from ai_review_actions import (
+                    ai_target_authority_write_revision as authority_revision,
+                    read_ai_review_authority_snapshot,
+                )
+                snapshot = read_ai_review_authority_snapshot(self.output_dir)
+                current_authority = authority_revision(req_id, snapshot)
+                if (
+                    submitted_source != current_source
+                    or submitted_subject != current_subject
+                    or expected_target_fingerprint != current_target_fingerprint
+                    or expected_authority != current_authority
+                ):
+                    self.send_json({
+                        "error": "functional requirement changed; refresh before adjudicating",
+                        "needs_reconfirmation": True,
+                        "source_fingerprint": current_source,
+                        "review_subject_fingerprint": current_subject,
+                        "target_fingerprint": current_target_fingerprint,
+                        "target_authority_write_revision": current_authority,
+                    }, status=409)
+                    return
+                existing_state = review_state_for_requirement(current, snapshot.get("states") or {})
+                if clear_module_override:
+                    module_override = None
+                elif module_override_supplied:
+                    module_override = submitted_module_override
+                else:
+                    existing_module = (existing_state or {}).get("module_override")
+                    module_override = (
+                        normalize_module_override(existing_module) if existing_module else None
+                    )
+                state = apply_ai_review_action(
+                    self.output_dir,
+                    req_id,
+                    status,
+                    module_override=module_override,
+                    ownership_override=ownership_override,
+                    reason=reason,
+                    actor=actor,
+                    source_fingerprint_value=current_source,
+                    review_subject_fingerprint_value=current_subject,
+                    review_anchor_fingerprint_value=review_anchor_fingerprint(current),
+                    expected_target_authority_write_revision=expected_authority,
+                    level="functional",
+                )
+        except AIReviewAuthorityConflict as exc:
+            self.send_json({
+                "error": "review authority changed; refresh before adjudicating",
+                "needs_reconfirmation": True,
+                "target_authority_write_revision": getattr(exc, "current_revision", ""),
+            }, status=409)
+            return
+        self.send_json({"state": state})
 
     def handle_manual_requirements_get(self) -> None:
         """WS-F：读 manual_requirements.jsonl（手工建需求记录）。只读。"""
@@ -2400,6 +2558,52 @@ def anchor_block_id(
     return span[0] if span else ""
 
 
+def _project_functional_review_view(
+    output_dir: Path,
+    items: list[dict],
+    payload: dict,
+) -> list[dict]:
+    """功能条目 × 评审权威投影（§3.3）：ai_review_states 是唯一裁决存储，这里只读投影。
+
+    每条附 status/module_effective/ownership_effective/needs_reconfirmation 与 CAS 三元组
+    （source/review_subject 指纹 + 产物指纹 target_fingerprint + authority write revision），
+    供 FunctionalReview 工作台展示与 POST /functional-review-actions 提交。
+    """
+    from ai_review_actions import (
+        ai_target_authority_write_revision,
+        read_ai_review_authority_snapshot,
+    )
+
+    snapshot = read_ai_review_authority_snapshot(output_dir)
+    states = dict(snapshot.get("states") or {})
+    product_fingerprint = str(payload.get("fingerprint") or "")
+    rows: list[dict] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        row = dict(item)
+        state = review_state_for_requirement(row, states)
+        needs_reconfirmation = review_state_needs_reconfirmation(row, state)
+        effective_state = None if needs_reconfirmation else state
+        rid = source_ai_requirement_id(row)
+        row["level"] = "functional"
+        row["review_state"] = state
+        row["needs_reconfirmation"] = needs_reconfirmation
+        row["status"] = (effective_state or {}).get("status") or "draft"
+        row["module_effective"] = (
+            (effective_state or {}).get("module_override") or row.get("module")
+        )
+        row["ownership_effective"] = (
+            (effective_state or {}).get("ownership_override") or row.get("ownership")
+        )
+        row["source_fingerprint"] = source_fingerprint(row)
+        row["review_subject_fingerprint"] = review_subject_fingerprint(row)
+        row["target_fingerprint"] = product_fingerprint
+        row["target_authority_write_revision"] = ai_target_authority_write_revision(rid, snapshot)
+        rows.append(row)
+    return rows
+
+
 def _functional_membership(output_dir: Path) -> dict[str, dict]:
     path = output_dir / "functional_requirements.json"
     try:
@@ -2431,6 +2635,8 @@ def _functional_membership(output_dir: Path) -> dict[str, dict]:
         }
         for source_id in item.get("source_ai_requirement_ids") or []:
             mapping[str(source_id)] = projected
+        # §3.3：直抽条目无原子来源——以自身稳定主键挂功能字段，功能卡在批注视图可见
+        mapping.setdefault(source_ai_requirement_id(item), projected)
     return mapping
 
 
@@ -2507,8 +2713,43 @@ def _build_ai_requirements_impl(output_dir: Path) -> list[dict]:
         ) if (output_dir / name).exists()),
         None,
     )
+    if source_path is not None:
+        return _enrich_ai_requirement_rows(
+            output_dir, _load_ai_requirements(output_dir), freshness_reference=source_path,
+        )
+    # §3.3 直抽模式批注投影：无原子产物时以功能直抽条目为卡片数据源。卡片主键 =
+    # source_ai_requirement_id(FRE-)，quote→block 锚点复用 _enrich_ai_requirement_rows
+    # 的机制（match_source_quote_blocks 同族），不重写锚定逻辑。
+    return _functional_direct_annotation_rows(output_dir)
+
+
+def _functional_direct_annotation_rows(output_dir: Path) -> list[dict]:
+    """直抽模式：FRE 条目 → 批注卡片行（level=functional 如实标注，非原子卡伪装）。"""
+    from requirements_analysis_rules import _read_functional_requirements_payload
+
+    try:
+        payload = _read_functional_requirements_payload(output_dir)
+    except (TimeoutError, OSError):
+        return []
+    if not isinstance(payload, dict):
+        return []
+    if not str(payload.get("producer") or "").startswith("functional-extract"):
+        return []
+    items = payload.get("items")
+    if not isinstance(items, list):
+        return []
+    rows: list[dict] = []
+    for item in items:
+        if isinstance(item, dict):
+            row = dict(item)
+            row["level"] = "functional"
+            rows.append(row)
+    from result_package import governed_artifact_path
+    fr_path = governed_artifact_path(
+        output_dir, "functional_requirements.json", category="pipeline", for_write=False)
     return _enrich_ai_requirement_rows(
-        output_dir, _load_ai_requirements(output_dir), freshness_reference=source_path,
+        output_dir, rows,
+        freshness_reference=fr_path if fr_path.exists() else None,
     )
 
 

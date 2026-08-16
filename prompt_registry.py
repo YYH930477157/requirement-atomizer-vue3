@@ -60,8 +60,13 @@ PROMPT_REGISTRY: list[dict[str, str]] = [
     # Functional-extract direct path
     {"id": "functional-extract", "version": "functional-extract-prompt-v2", "owner_module": "functional_extract",
      "purpose": "Functional requirement direct extraction prompt"},
-    {"id": "functional-extract-guards", "version": "functional-extract-guards-v2", "owner_module": "functional_extract",
+    {"id": "functional-extract-guards", "version": "functional-extract-guards-v5", "owner_module": "functional_extract",
      "purpose": "Functional extract anti-drift guard version"},
+    # 四轮复审 P2：守恒模型版本显式登记——守恒载荷语义演进（如 cross_script_review
+    # 携带文本身份）随 registry/指纹/producer stamp/claim lineage 四处同步失效。
+    {"id": "functional-extract-conservation", "version": "functional-conservation-obligation-evidence-v3",
+     "owner_module": "functional_extract",
+     "purpose": "Functional extract obligation/evidence conservation model version"},
 
     # Table understanding
     {"id": "llm-table-understanding", "version": "llm-table-understanding-prompt-v1",

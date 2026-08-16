@@ -1965,4 +1965,47 @@ describe("DocumentReview", () => {
     expect(wrapper.find('[data-testid="spot-extract-B2"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="spot-extract-B3"]').exists()).toBe(false)
   })
+it("functional rows route adjudication to the functional review endpoint (§3.3)", async () => {
+    // 直抽形态：level=functional 的卡片裁决走 applyFunctionalReviewAction
+    // （ai_review_states level=functional 权威），原子卡不受影响。
+    const applyFunctionalReviewAction = vi.fn().mockResolvedValue({
+      ai_req_id: "FRE-UI1", status: "accepted", module_override: null,
+      target_authority_write_revision: "sha256:authority-fn-v2",
+    })
+    const client = makeClient({
+      loadAiRequirements: vi.fn().mockResolvedValue([
+        {
+          ai_req_id: "FRE-UI1", level: "functional", title: "事件记录",
+          objective: "记录事件", module: "计量", module_effective: "计量",
+          type: "functional", priority: "P1", status: "draft",
+          source_section: "4.1", source_quote: "The meter shall log events.",
+          source_block_ids: ["B2"], ownership: "software", ownership_effective: "software",
+          source_fingerprint: "fn-source-v1", review_subject_fingerprint: "fn-subject-v1",
+          target_fingerprint: "fp-functional-product",
+          target_authority_write_revision: "sha256:authority-fn-v1",
+          review_state: null,
+        },
+      ]),
+      applyFunctionalReviewAction,
+    })
+    const wrapper = mount(DocumentReview, { props: { client, active: true } })
+    await flushPromises()
+
+    await wrapper.find('[data-testid="anno-FRE-UI1"]').trigger("click")
+    await wrapper.find('[data-testid="dd-accept"]').trigger("click")
+    await flushPromises()
+
+    expect(applyFunctionalReviewAction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        aiReqId: "FRE-UI1",
+        status: "accepted",
+        sourceFingerprint: "fn-source-v1",
+        reviewSubjectFingerprint: "fn-subject-v1",
+        expectedTargetFingerprint: "fp-functional-product",
+        expectedTargetAuthorityWriteRevision: "sha256:authority-fn-v1",
+      }),
+    )
+    // 原子端点不应被功能卡触发
+    expect(client.applyAiReviewAction).not.toHaveBeenCalled()
+  })
 })

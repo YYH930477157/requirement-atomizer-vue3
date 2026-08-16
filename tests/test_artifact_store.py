@@ -151,7 +151,9 @@ BASELINE_BARE_JOINS: dict[str, dict[str, int]] = {
         "llm_tasks.jsonl": 1, "table_cell_items.jsonl": 1, "table_items.jsonl": 1,
     },
     "claim_artifacts.py": {
-        "ai_requirements.jsonl": 5, "blocks.jsonl": 2, "table_cell_items.jsonl": 4,
+        # §3.4（2026-08-15）：B 轨 target store 抽象——4 处改经 requirements_store 变量
+        # 解析（原子/直抽双态），仅剩 legacy bootstrap 1 处字面裸拼。
+        "ai_requirements.jsonl": 1, "blocks.jsonl": 2, "table_cell_items.jsonl": 4,
         "table_items.jsonl": 2,
     },
     "claim_catalog.py": {"blocks.jsonl": 1, "table_cell_items.jsonl": 1, "table_items.jsonl": 1},

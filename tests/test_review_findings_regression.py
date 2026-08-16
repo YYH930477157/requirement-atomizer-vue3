@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 def _write_jsonl(path: Path, rows: list[dict]) -> None:
@@ -67,6 +69,14 @@ class StageLineageRegressionTests(unittest.TestCase):
         self.assertNotEqual(first, second)
 
 class ChainPreconditionRegressionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        # 这些回归断言针对旧 ai-extract 链，默认翻转后显式选择回滚模式。
+        env = mock.patch.dict(
+            os.environ, {"RATOMIZER_FUNCTIONAL_EXTRACT": "0"}
+        )
+        env.start()
+        self.addCleanup(env.stop)
+
     def test_stub_request_can_reuse_valid_openai_ai_extract_output(self) -> None:
         import os
         from unittest.mock import patch

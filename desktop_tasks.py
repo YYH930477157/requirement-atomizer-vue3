@@ -443,7 +443,82 @@ def functional_extract_task(out_dir: Path, *, route: str | None = "openai_compat
         result["written"] = [str(out_dir / FUNCTIONAL_REQUIREMENTS_FILENAME)]
     if str(result.get("route") or "") == "stub" and route != "stub":
         result["note"] = "功能直抽全部包降级 stub 路由（占位条目，非真 LLM 产物）——请检查 key/网络"
+    # §3.5：执行结果类别如实上提（manifest 由 _stage_completion_status 记 partial/failed；
+    # note 让 GUI 在「运行完成」之外看到降级事实）
+    if str(result.get("execution_status") or "") in {"partial", "failed"}:
+        result.setdefault(
+            "note",
+            f"功能直抽执行不完整（execution_status={result.get('execution_status')}），"
+            "下游分析与成文将被阻断",
+        )
+    # §3.4（2026-08-15）：直抽模式 claim 发布——执行完整且守恒闭合才发布 B 轨 shadow
+    # （target store=functional_requirements.json，FRE- 主键）；失败/不守恒产物不进绑定。
+    # §3.5（复审 P1）：stub 草稿（draft 水印）同样不绑定 claim——占位条目不形成可发布
+    # 成功产物。发布失败响亮 raise（claim 是发布门的一部分，与 ai-extract 的 ledger 纪律同族）。
+    conservation = result.get("conservation") if isinstance(result.get("conservation"), dict) else {}
+    if result.get("draft"):
+        result["claim_shadow"] = {
+            "skipped": "draft_stub_product",
+            "reason": "stub 占位条目不绑定 claim（§3.5 草稿水印）",
+        }
+    elif str(result.get("execution_status") or "ok") == "ok" and conservation.get("ok", True):
+        claim_shadow = _publish_functional_claim_shadow(out_dir, route=route)
+        result["claim_shadow"] = claim_shadow
+        result.setdefault("written", []).extend(claim_shadow.get("written") or [])
     return result
+
+
+def _publish_functional_claim_shadow(out_dir: Path, *, route: str | None) -> dict[str, Any]:
+    """直抽模式 B 轨 claim shadow 发布（确定性、零 verifier 调用）。
+
+    与 ai-extract 的 refresh_claim_shadow 同族但 target store 换成
+    functional_requirements.json：目录来自解析产物（blocks/table），coverage target =
+    FRE 条目（source_ai_requirement_id 主键，§3.3/§3.4 打通）。发布后折叠 effective。
+    """
+    import uuid
+
+    from claim_catalog import build_catalog_from_directory
+    from claim_ledger import publish_b_track_shadow
+    from claim_artifacts import FUNCTIONAL_REQUIREMENTS_STORE
+    from requirements_analysis_rules import _read_functional_requirements_payload
+
+    root = out_dir.expanduser().resolve()
+    payload = _read_functional_requirements_payload(root) or {}
+    items = payload.get("items") if isinstance(payload.get("items"), list) else []
+    published = publish_b_track_shadow(
+        root,
+        run_id=uuid.uuid4().hex,
+        route_mode="stub" if route == "stub" else "llm",
+        extraction_status="success",
+        catalog_build=build_catalog_from_directory(root, scope="full"),
+        requirements=[row for row in items if isinstance(row, dict)],
+        requirements_store=FUNCTIONAL_REQUIREMENTS_STORE,
+    )
+    generation = dict(published.get("generation_meta") or {})
+    shadow_meta = dict((published.get("shadow") or {}).get("meta") or {})
+    # package_v1 下 claim 产物在 .ratomizer/state/——经 governed 解析，不硬拼根路径
+    from result_package import governed_artifact_path
+
+    written = []
+    for name in (
+        "claim_catalog.jsonl", "claim_catalog.meta.json", "claim_ledger.jsonl",
+        "claim_coverage_groups.jsonl", "claim_shadow_metrics.json",
+        "claim_generation.meta.json", "claim_effective_ledger.jsonl",
+        "claim_effective.meta.json",
+    ):
+        try:
+            if governed_artifact_path(root, name, category="state", for_write=False).is_file():
+                written.append(str(root / name))
+        except Exception:  # noqa: BLE001 — 列表仅摘要用途
+            continue
+    return {
+        "store": FUNCTIONAL_REQUIREMENTS_STORE,
+        "catalog_count": generation.get("catalog_count"),
+        "target_kind": shadow_meta.get("target_kind"),
+        "document_ready": shadow_meta.get("document_ready"),
+        "generation_run_id": generation.get("run_id"),
+        "written": [str(root / name) for name in written],
+    }
 
 
 @_leased_pipeline_stage("compose")
@@ -1327,9 +1402,10 @@ def stage_producer(stage: str, *, out_dir: Path | None = None,
                 *producer_lineage_versions().values(),
             ))
         elif stage == "functional-extract":
-            # 版本戳覆盖影响产物的全部代码层：功能/prompt/护栏三版本任一 bump，
+            # 版本戳覆盖影响产物的全部代码层：功能/prompt/护栏/守恒模型四版本任一 bump，
             # 旧 functional-extract 阶段缓存即失效（同 ai-extract lineage 纪律）。
             from functional_extract import (
+                FUNCTIONAL_CONSERVATION_MODEL_VERSION,
                 FUNCTIONAL_EXTRACT_GUARDS_VERSION,
                 FUNCTIONAL_EXTRACT_PROMPT_VERSION,
                 FUNCTIONAL_EXTRACT_VERSION,
@@ -1339,6 +1415,7 @@ def stage_producer(stage: str, *, out_dir: Path | None = None,
                 FUNCTIONAL_EXTRACT_VERSION,
                 FUNCTIONAL_EXTRACT_PROMPT_VERSION,
                 FUNCTIONAL_EXTRACT_GUARDS_VERSION,
+                FUNCTIONAL_CONSERVATION_MODEL_VERSION,
             ))
         elif stage == "atomize":
             # PDF text repair changes blocks consumed by every downstream stage. Include both
@@ -2193,6 +2270,30 @@ def evaluate_full_closure(out_dir: Path) -> dict[str, Any]:
         from requirements_analysis_rules import _read_functional_requirements_payload
 
         fr_payload = _read_functional_requirements_payload(root) or {}
+        # §3.5（复审 P1）：stub 草稿水印 → 显式缺口，draft 不可能通过 full closure。
+        if fr_payload.get("draft"):
+            gaps.append({
+                "kind": "functional_extract_draft",
+                "route": fr_payload.get("route"),
+                "message": (
+                    "功能直抽产物是 stub 草稿（route=stub 占位条目）——"
+                    "不可发布，需以真实 LLM 路由重跑"
+                ),
+            })
+        # §3.5：执行结果类别与 manifest/结果包同一失败语义——直抽产物不完整时
+        # full closure 显式缺口，不静默放行（空账本 ≠ 已完成的同族纪律）。
+        exec_status = str(fr_payload.get("execution_status") or "").strip()
+        if exec_status in {"partial", "failed"}:
+            gaps.append({
+                "kind": "functional_extract_incomplete",
+                "execution_status": exec_status,
+                "route": fr_payload.get("route"),
+                "route_requested": fr_payload.get("route_requested"),
+                "message": (
+                    f"功能直抽执行不完整（execution_status={exec_status}），"
+                    "下游交付物不可发布"
+                ),
+            })
         conservation = fr_payload.get("conservation")
         if isinstance(conservation, dict) and not conservation.get("ok", True):
             missing = [str(b) for b in (conservation.get("missing_block_ids") or []) if str(b)]
@@ -2202,6 +2303,9 @@ def evaluate_full_closure(out_dir: Path) -> dict[str, Any]:
             mismatch_count = len(mismatches) if isinstance(mismatches, list) else 0
             gaps.append({
                 "kind": "conservation_open",
+                "failure_categories": [
+                    str(c) for c in (conservation.get("failure_categories") or [])
+                ],
                 "missing_block_ids": missing,
                 "extra_block_ids": extra,
                 "duplicate_assignments": duplicate,
@@ -2517,6 +2621,12 @@ def _stage_completion_status(stage: str, payload: Any) -> str:
         failed_sections = int(payload.get("failed_sections") or quality.get("failed_sections") or 0)
         if failed_sections > 0:
             return "partial"
+    # §3.5（2026-08-15）：直抽执行结果类别与 manifest 同语义——stub 降级=failed、
+    # mixed=partial，不记 ok（run_manifest / readiness / 结果包完成证据三处口径一致）。
+    if stage == "functional-extract" and isinstance(payload, dict):
+        status = str(payload.get("execution_status") or "").strip()
+        if status in {"partial", "failed"}:
+            return status
     if stage == "export-annotation-html" and isinstance(payload, dict):
         translations = payload.get("translations")
         if isinstance(translations, dict):
@@ -2535,13 +2645,14 @@ def _functional_extract_stage_config() -> dict[str, Any]:
     """
     from functional_extract import (
         CONTEXT_PACK_STRATEGY_ENV,
-        FUNCTIONAL_EXTRACT_NEGATIVE_K,
         context_pack_strategy,
+        functional_extract_negative_k,
     )
     return {
         "strategy": context_pack_strategy(),
         "strategy_env_raw": os.environ.get(CONTEXT_PACK_STRATEGY_ENV, ""),
-        "negative_k": FUNCTIONAL_EXTRACT_NEGATIVE_K,
+        # §3.6：运行时求值（修掉 import 时常量在同进程不刷新的缺陷）
+        "negative_k": functional_extract_negative_k(),
     }
 
 
@@ -2562,9 +2673,9 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
     ordered = [s for s in CHAIN_ORDER if s in set(stages)]
     if not ordered:
         raise ValueError("阶段清单为空")
-    # WS2 条款直抽（默认关）：RATOMIZER_FUNCTIONAL_EXTRACT=1 时 ai-extract（拆原子）+
+    # WS2 条款直抽（默认开）：RATOMIZER_FUNCTIONAL_EXTRACT=1 时 ai-extract（拆原子）+
     # functional-synthesis（重并）整体替换为 functional-extract——UI/CLI 仍传旧阶段名，
-    # 替换在此单点完成并落账，不静默改行为。
+    # 替换在此单点完成并落账；显式 =0 时保留旧原子化回滚路径。
     functional_extract_replaced: list[str] = []
     from functional_extract import functional_extract_enabled
     if functional_extract_enabled():
@@ -2752,7 +2863,10 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
                         payload[key] = stage_payload[key]
             elif stage == "functional-extract":
                 # 统计取自产物文件（单一真相源）：skipped 路径的 stage payload 不带计数键
-                summary: dict[str, Any] = {"count": None, "route": None, "conservation": None}
+                summary: dict[str, Any] = {
+                    "count": None, "route": None, "execution_status": None,
+                    "conservation": None,
+                }
                 try:
                     from requirements_analysis_rules import _read_functional_requirements_payload
                     fr = _read_functional_requirements_payload(out_dir)
@@ -2760,6 +2874,7 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
                         summary = {
                             "count": fr.get("functional_requirements"),
                             "route": fr.get("route"),
+                            "execution_status": fr.get("execution_status"),
                             "conservation": fr.get("conservation"),
                         }
                 except Exception:  # noqa: BLE001 — 聚合失败不影响链结果

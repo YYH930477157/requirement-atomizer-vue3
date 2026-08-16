@@ -555,6 +555,54 @@ def _target_publication_revision(
     )
 
 
+def _resolve_b_target_store(root: Path) -> str:
+    """§3.4：B 轨 fold/权威读取的 target store。
+
+    权威顺序（复审 2026-08-15 P1）：**已提交 generation meta 记录的 store 优先**——
+    旧 ai_requirements.jsonl 残留时文件在场启发式会劫持当前 functional generation，
+    让 fold/队列走向旧原子产物。无已提交 meta 时才按文件在场（原子优先，直抽次之）。
+    """
+    try:
+        from claim_artifacts import CLAIM_GENERATION_META, _read_json
+
+        meta = _read_json(
+            claim_artifact_path(root, CLAIM_GENERATION_META),
+            label="claim generation meta",
+        )
+        committed = str(meta.get("requirements_store") or "").strip()
+    except Exception:  # noqa: BLE001 — 无已提交 meta（未发布过 claim）→ 文件启发式
+        committed = ""
+    if committed in ("ai_requirements.jsonl", "functional_requirements.json"):
+        return committed
+    if (root / _B_TARGET_STORE).is_file():
+        return _B_TARGET_STORE
+    functional_store = "functional_requirements.json"
+    if (root / functional_store).is_file():
+        return functional_store
+    return _B_TARGET_STORE
+
+
+def _parse_b_target_rows(
+    target_bytes: bytes, *, present: bool, store: str,
+) -> list[dict[str, Any]]:
+    """按 store 解析 B 轨 target 行：JSONL（原子）/ JSON items（直抽）。"""
+    if not present:
+        return []
+    if store == "functional_requirements.json":
+        try:
+            payload = json.loads(target_bytes.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ClaimReviewActionError(
+                "functional requirements store is not valid JSON"
+            ) from exc
+        if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
+            raise ClaimReviewActionError(
+                "functional requirements store has no items list"
+            )
+        return [row for row in payload["items"] if isinstance(row, dict)]
+    return _parse_jsonl_objects(target_bytes, label="AI requirements")
+
+
 def _load_b_track_authority(
     root: Path,
     *,
@@ -565,15 +613,14 @@ def _load_b_track_authority(
         read_ai_review_authority_snapshot_readonly,
     )
 
-    target_path = root / _B_TARGET_STORE
+    target_store = _resolve_b_target_store(root)
+    target_path = root / target_store
     target_present, target_bytes = _read_optional_authority_bytes(
         target_path,
-        label="AI requirements",
+        label="B-track requirements",
     )
-    requirements = (
-        _parse_jsonl_objects(target_bytes, label="AI requirements")
-        if target_present
-        else []
+    requirements = _parse_b_target_rows(
+        target_bytes, present=target_present, store=target_store,
     )
     try:
         review_snapshot = (
@@ -600,11 +647,11 @@ def _load_b_track_authority(
     return {
         **authority,
         "requirements": requirements,
-        "target_source_store": _B_TARGET_STORE,
+        "target_source_store": target_store,
         "review_source_store": _B_REVIEW_STORE,
         "target_file_sha256": target_file_sha256,
         "target_publication_revision": _target_publication_revision(
-            _B_TARGET_STORE,
+            target_store,
             target_file_sha256,
             source_present=target_present,
         ),

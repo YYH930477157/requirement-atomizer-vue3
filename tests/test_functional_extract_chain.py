@@ -104,7 +104,7 @@ class ChainSubstitutionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             out = Path(td)
             _write_min_corpus(out)
-            env = {k: v for k, v in os.environ.items() if k != "RATOMIZER_FUNCTIONAL_EXTRACT"}
+            env = {**os.environ, "RATOMIZER_FUNCTIONAL_EXTRACT": "0"}
             with mock.patch.dict(os.environ, env, clear=True):
                 with mock.patch.object(
                     desktop_tasks,
@@ -216,6 +216,17 @@ class FingerprintDisciplineTests(unittest.TestCase):
         self.assertIn(fe.FUNCTIONAL_EXTRACT_VERSION, producer)
         self.assertIn(fe.FUNCTIONAL_EXTRACT_PROMPT_VERSION, producer)
         self.assertIn(fe.FUNCTIONAL_EXTRACT_GUARDS_VERSION, producer)
+        # 四轮复审 P2：守恒模型版本进 producer stamp 与 prompt registry
+        self.assertIn(fe.FUNCTIONAL_CONSERVATION_MODEL_VERSION, producer)
+        import prompt_registry
+        registered = {
+            (row["id"], row["version"]) for row in prompt_registry.PROMPT_REGISTRY
+        }
+        self.assertIn(
+            ("functional-extract-conservation",
+             fe.FUNCTIONAL_CONSERVATION_MODEL_VERSION),
+            registered,
+        )
 
     def test_entry_switch_env_changes_stage_fingerprint(self) -> None:
         with tempfile.TemporaryDirectory() as td:
