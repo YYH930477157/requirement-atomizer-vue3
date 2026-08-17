@@ -349,6 +349,18 @@ def functional_targeted_reextract(
     if not sections:
         raise FunctionalReextractError("no clauses are available for re-extraction")
 
+    product_path, payload = _read_current_payload(root)
+    # §17 unit 路由同口径：产物在 clause_family 路由下生成时，重抽的条款池与守恒基线
+    # 用当前代码确定性重算路由（不信产物记录的清单——与守恒永远现算同纪律）；legacy
+    # 产物零变化。指向被路由出表格块的 claim 会找不到条款族 → 如实报错（表格归 A 轨）。
+    if str(payload.get("context_pack_strategy") or "legacy") == "clause_family":
+        sections, _routing_meta = fe.apply_unit_routing(
+            sections, blocks=fe._load_blocks(root), out_dir=root)
+        if not sections:
+            raise FunctionalReextractError(
+                "all clauses are routed out of the B track by unit routing; "
+                "there is no functional scope to re-extract")
+
     family = _affected_clause_family(sections, list(affected_block_ids))
     family_block_ids = {
         str(b)
@@ -357,7 +369,6 @@ def functional_targeted_reextract(
         if str(b)
     }
 
-    product_path, payload = _read_current_payload(root)
     from claim_artifacts import file_sha256
 
     current_fingerprint = file_sha256(product_path)
@@ -477,6 +488,9 @@ def functional_targeted_reextract(
             "executed_route": executed_route,
         },
     })
+    # §17：路由审计块随重抽刷新（确定性重算的当前事实；legacy 产物本就无此块）。
+    if isinstance(payload.get("unit_routing"), dict):
+        new_payload["unit_routing"] = _routing_meta
 
     import json
 

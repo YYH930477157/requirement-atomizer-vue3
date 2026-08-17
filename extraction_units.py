@@ -32,7 +32,8 @@ from extract_units import (
 from io_utils import read_jsonl
 
 EXTRACTION_UNIT_SCHEMA = "extraction-unit/v1"
-EXTRACTION_UNIT_PLANNER_VERSION = "extraction-unit-planner-v1"
+# v2（2026-08-17）：COSEM 行的格单元继承 cosem_structured 角色（表/行级语境下沉）。
+EXTRACTION_UNIT_PLANNER_VERSION = "extraction-unit-planner-v2"
 EXTRACTION_UNITS_FILENAME = "extraction_units.jsonl"
 EXTRACTION_UNIT_PLAN_SCHEMA = "extraction-unit-plan/v1"
 
@@ -177,6 +178,22 @@ def _table_units(blocks: list[dict[str, Any]], table_items: list[dict[str, Any]]
         cells_by_row.setdefault(
             (str(cell.get("table_block_id") or ""), int(cell.get("row_index") or 0)),
             []).append(cell)
+    # v2：COSEM 语境下沉到表内全部格单元——它是表/行级属性（判定权威 atomize.
+    # is_cosem_object_header/is_cosem_attribute_row 的表头形状 + 任一行携带
+    # cosem_object_context）。Comment/Meaning 列的参数叙述格文本里没有 OBIS/class，
+    # 且稀疏行（Object/CL 值为空）连行级 context 都没有——不看表级语境就会把这些
+    # 说明格误判纯 B 义务（unit_router v2 依赖此角色把 COSEM 表整体归 A 轨权威）。
+    cosem_tables: set[str] = set()
+    for item in table_items:
+        table_id = str(item.get("table_id") or "")
+        if not table_id:
+            continue
+        if item.get("cosem_object_context"):
+            cosem_tables.add(table_id)
+            continue
+        field_keys = {str(key) for key in (item.get("fields") or {})}
+        if "Object/attribute name" in field_keys:
+            cosem_tables.add(table_id)
 
     def _disposition_roles(cell_id: str, fallback: list[str]) -> list[str]:
         disposition = dispositions.get(cell_id, {})
@@ -199,7 +216,9 @@ def _table_units(blocks: list[dict[str, Any]], table_items: list[dict[str, Any]]
         row_index = int(item.get("row_index") or 0)
         row_cells = cells_by_row.get((block_id, row_index), [])
         roles = ["requirement_candidate"] if item.get("requirement_like") else ["context"]
-        if item.get("cosem_object_context"):
+        if item.get("cosem_object_context") or str(item.get("table_id") or "") in cosem_tables:
+            # 行级 context 判定按行值（atomize），稀疏行（Object/CL 空、只剩 Meaning/
+            # Comment 列）拿不到——表级语境兜底，行单元 headers 只含本行非空列。
             roles.append("cosem_structured")
         unit = _unit(
             f"UNIT-{item.get('item_id')}", "table_row", str(item.get("text") or ""),
@@ -232,6 +251,8 @@ def _table_units(blocks: list[dict[str, Any]], table_items: list[dict[str, Any]]
         roles = _disposition_roles(cell_id, ["context"])
         if cell.get("requirement_like") and "context" in roles:
             roles = ["requirement_candidate"]
+        if str(cell.get("table_id") or "") in cosem_tables:
+            roles = sorted(set(roles) | {"cosem_structured"})
         unit = _unit(
             f"UNIT-{cell_id}", "table_cell", text,
             block={"block_id": block_id, "section_path": cell.get("section_path") or []},
