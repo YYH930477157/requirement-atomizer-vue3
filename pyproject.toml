@@ -59,6 +59,7 @@ py-modules = [
   "claim_queue_execution",
   "claim_ledger",
   "claim_reextract_attempts",
+  "claim_events_journal",
   "claim_review_actions",
   "claim_structural_operations",
   "claim_structural_confirmation",
