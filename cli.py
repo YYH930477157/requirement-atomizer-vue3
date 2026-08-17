@@ -92,6 +92,26 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     compose.add_argument("--out", type=Path, required=True)
     add_verbosity_arguments(compose)
 
+    route_units = subparsers.add_parser(
+        "route-units",
+        help="Shadow: plan extraction units and emit deterministic routing decisions (no pipeline change).")
+    route_units.add_argument("--out", type=Path, required=True)
+    route_units.add_argument("--no-plan", action="store_true",
+                             help="Route the existing extraction_units.jsonl only; do not replan.")
+
+    plan = subparsers.add_parser(
+        "plan",
+        help="Build (and write) a PipelinePlan for this output dir; no pipeline stages run.")
+    plan.add_argument("--out", type=Path, required=True)
+    plan.add_argument("--execution-policy", default=None,
+                      choices=["quality_first", "force_a", "force_b",
+                               "full_dual_audit", "legacy_combined"])
+    plan.add_argument("--translation", default=None,
+                      choices=["off", "markers", "full"])
+    plan.add_argument("--budget-mode", default=None, choices=["off", "observe", "enforce"])
+    plan.add_argument("--delivery", default="",
+                      help="Comma-separated delivery toggles like software_requirements=1,cosem_spec=0")
+
     analyze = subparsers.add_parser("analyze", help="Run requirements analysis agent.")
     analyze.add_argument("--out", type=Path, required=True)
     analyze.add_argument("--template", type=Path, default=None)
@@ -196,6 +216,10 @@ def main(argv: list[str] | None = None) -> int:
             envelope = command_export(args, started, timing_ms)
         elif args.command == "compose":
             envelope = command_compose(args, started, timing_ms)
+        elif args.command == "route-units":
+            envelope = command_route_units(args, started, timing_ms)
+        elif args.command == "plan":
+            envelope = command_plan(args, started, timing_ms)
         elif args.command == "analyze":
             envelope = command_analyze(args, started, timing_ms)
         elif args.command == "claim-ledger-fold":
@@ -304,6 +328,42 @@ def command_compose(args: argparse.Namespace, started: float, timing_ms: dict[st
     timing_ms["total"] = timing_ms["compose"]
     envelope = success_envelope("compose", args.out, exports=exports, timing_ms=timing_ms)
     envelope["engineering"] = model.get("analysis", {})
+    return envelope
+
+
+def command_route_units(args: argparse.Namespace, started: float, timing_ms: dict[str, int]) -> dict[str, Any]:
+    from unit_router import route_document
+
+    summary = route_document(args.out, plan_if_missing=not args.no_plan)
+    timing_ms["route-units"] = elapsed_ms(started)
+    timing_ms["total"] = timing_ms["route-units"]
+    envelope = success_envelope("route-units", args.out, timing_ms=timing_ms)
+    envelope["routing"] = summary
+    return envelope
+
+
+def command_plan(args: argparse.Namespace, started: float, timing_ms: dict[str, int]) -> dict[str, Any]:
+    from pipeline_plan import build_pipeline_plan, write_pipeline_plan
+
+    delivery: dict[str, bool] = {}
+    for part in filter(None, (p.strip() for p in args.delivery.split(","))):
+        key, sep, value = part.partition("=")
+        if not sep or key not in ("software_requirements", "cosem_spec",
+                                  "template_workbook", "annotation_bundle"):
+            raise AtomizerInputError(f"非法交付开关: {part}（形如 cosem_spec=0）")
+        delivery[key] = value.strip().lower() not in ("0", "false", "no", "off")
+    plan_payload = build_pipeline_plan(
+        args.out,
+        execution_policy=args.execution_policy,
+        delivery=delivery or None,
+        translation_mode=args.translation,
+        budget_mode=args.budget_mode,
+    )
+    write_pipeline_plan(args.out, plan_payload)
+    timing_ms["plan"] = elapsed_ms(started)
+    timing_ms["total"] = timing_ms["plan"]
+    envelope = success_envelope("plan", args.out, timing_ms=timing_ms)
+    envelope["plan"] = plan_payload
     return envelope
 
 

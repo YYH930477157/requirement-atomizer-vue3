@@ -59,7 +59,7 @@ from cosem_behavior_spec import extract_codes, extract_ints
 from requirement_record import provenance
 
 FUNCTIONAL_EXTRACT_VERSION = "functional-extract-v1"
-FUNCTIONAL_EXTRACT_PROMPT_VERSION = "functional-extract-prompt-v2"
+FUNCTIONAL_EXTRACT_PROMPT_VERSION = "functional-extract-prompt-v3"
 # S1-8：bump v1→v2。``_reject_drifted_codes`` 清洗范围从仅 objective 扩到全部叙述字段
 # （behaviors/data_constraints/variants/exceptions/preconditions/description），缓存产物内容
 # 变化——指纹含 guards 版本，bump 后旧 stub/LLM 缓存（behaviors 里残留幻觉编码）自然失效。
@@ -70,7 +70,7 @@ FUNCTIONAL_EXTRACT_PROMPT_VERSION = "functional-extract-prompt-v2"
 # 三轮复审 P1-2（2026-08-16）：cross_script_review 记录新增 source_text_hash/句子
 # 摘录（跨语种确认身份绑定义务文本）——守恒载荷内容变化，bump v4 → v5 使存量
 # 缓存失效，否则旧缓存恢复的 cross_script_review 无哈希，绕过确认失效机制。
-FUNCTIONAL_EXTRACT_GUARDS_VERSION = "functional-extract-guards-v5"
+FUNCTIONAL_EXTRACT_GUARDS_VERSION = "functional-extract-guards-v6"
 # §3.1 新守恒模型版本戳（进 conservation 报告与抽取指纹；模型演进时 bump）。
 # M1（2026-08-16 修复方案 §3.4）：obligation 覆盖从全局叙述并集改为声明局部绑定
 # （eligible-only 边；source_quote 只作锚）——产物语义变化，v1 → v2。
@@ -120,6 +120,8 @@ _SYSTEM_PROMPT_BASE = (
     "②只填叙述字段（objective/behaviors/preconditions/data_constraints/variants/exceptions/"
     "related_dlms_objects/description）；③不得填写 id/模块/归属/编码等结构字段（由下游确定性派生）；"
     "④每条产出必须回指来源条款的 section 与 block_ids（取自输入，原样回填）。"
+    "⑤叙述字段必须使用与来源条款相同的语言（英文条款→英文叙述，禁止翻译成中文）；"
+    "source_quote 必须是条款原文的逐字摘录（禁止改写/翻译/截断）。"
     "输出 JSON：{\"items\":[{objective, behaviors[], preconditions[], data_constraints[], "
     "variants[], exceptions[], related_dlms_objects[], description, source_quote, source_section, "
     "source_block_ids[]}]}。"
@@ -597,6 +599,8 @@ _PACKAGE_SYSTEM_PROMPT_BASE = (
     "②只填叙述字段（objective/behaviors/preconditions/data_constraints/variants/exceptions/"
     "related_dlms_objects/description）；③不得填写 id/模块/归属/编码等结构字段；"
     "④每条产出必须回指目标条款的 source_block_ids（取自输入，原样回填）。\n"
+    "⑤叙述字段必须使用与目标条款相同的语言（英文条款→英文叙述，禁止翻译成中文）；"
+    "source_quote 必须是条款原文的逐字摘录（禁止改写/翻译/截断）。\n"
     "输出 JSON：{\"items\":[{objective, behaviors[], preconditions[], data_constraints[], "
     "variants[], exceptions[], related_dlms_objects[], description, source_quote, "
     "source_block_ids[]}]}。"
@@ -830,6 +834,18 @@ _OBLIGATION_UNIT_SPLIT_RE = re.compile(
 
 # 保留完整性标记（确定性；中文否定词只取短语级——单字 不/无/非 在 无线/非常 等词内
 # 误伤率过高，宁漏报 warning 也不误报 blocking）。
+# 表格标题前缀（chunk 渲染产物，形如 "[TBL-000008] Table 7 (continuation)"）是管线
+# 定位符而非原文内容：LLM 引句常原样带回该前缀导致引文零命中（evidence 假失败）；
+# 其中的 6 位数字也不得进入保真基线（preservation 假 blocking）。守恒检查侧统一剥离。
+_TABLE_MARKER_RE = re.compile(r"\[TBL-\d{6}\][^\n]*")
+
+
+def _strip_table_markers(text: str) -> str:
+    return _TABLE_MARKER_RE.sub("", text)
+
+
+
+
 _PRESERVATION_PATTERNS: dict[str, re.Pattern[str]] = {
     "condition": re.compile(
         r"\b(?:if|when|whenever|in case|where|depending on|either|or|otherwise|once)\b"
@@ -994,7 +1010,8 @@ def _preservation_findings(
     （EN "not" 不会出现在 ZH 叙述里），跳过词面检查只保留数值/单位（数字跨语种通用）；
     义务覆盖侧同理由锚定回退（见 conservation_report）——确定性判据宁漏勿错，不误报 blocking。
     """
-    source_text = str(section.get("text") or "")
+    # 表格标记（[TBL-NNNNNN] …）是管线定位符：其数字不是文档内容，剥离后再建基线（guards-v6）
+    source_text = _strip_table_markers(str(section.get("text") or ""))
     if _scripts_disjoint(
         _script_profile(source_text), _script_profile(narrative_union),
     ):
@@ -1298,7 +1315,8 @@ def conservation_report(
             })
             continue
         if blocks:  # 空列表 = 无 blocks 证据可用，不做引句命中校验（不伪造通过也不误报）
-            quote = str(item.get("source_quote") or "")
+            # 表格标题前缀是渲染产物不是原文——剥离后再匹配（guards-v6）
+            quote = _strip_table_markers(str(item.get("source_quote") or ""))
             if quote.strip():
                 hit_block_ids, _method = match_source_quote_blocks(quote, list(blocks))
                 if not hit_block_ids:

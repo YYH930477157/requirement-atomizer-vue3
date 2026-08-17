@@ -563,19 +563,21 @@
 
           <div class="settings-body">
             <section class="settings-section">
-              <div class="settings-section-title">运行阶段（点「运行」后按依赖顺序依次执行）</div>
-              <label class="settings-toggle">
-                <input v-model="runStages.llmReview" type="checkbox" data-testid="stage-llm-review" />
-                <span><strong>LLM 审查（规则候选复核）</strong><small>逐条复核规则切出的原子候选。DLMS profile 类文档（对象表密集）建议开；散文类标准可关——交付物主要来自 AI 抽取轨，可省大量审查调用。</small></span>
-              </label>
-              <label class="settings-toggle">
-                <input v-model="runStages.aiExtract" type="checkbox" data-testid="stage-ai-extract" />
-                <span><strong>AI 抽取（双引擎）</strong><small>LLM 行为需求 + 确定性结构合并，产 merged_spec 与一致性报表。</small></span>
-              </label>
-              <label class="settings-toggle">
-                <input v-model="runStages.assemble" type="checkbox" data-testid="stage-assemble" />
-                <span><strong>装配实现规格</strong><small>P1-P3 装配《DLMS/COSEM 实现规格》JSON + Word/MD/Excel。</small></span>
-              </label>
+              <div class="settings-section-title">交付物（业务目标）</div>
+              <div class="settings-form-grid">
+                <label class="settings-field">
+                  <span>翻译交付模式</span>
+                  <select v-model="translationMode" data-testid="settings-translation-mode">
+                    <option value="full">全文双语交付（默认）</option>
+                    <option value="markers">仅批注标记翻译</option>
+                    <option value="off">关闭翻译（零翻译调用）</option>
+                  </select>
+                </label>
+              </div>
+              <p class="settings-hint">选择要交付什么：需求列表 / COSEM 规格按下方「交付阶段」自动决定；技术路径（A/B 轨）由系统自动路由，无需手动选择。</p>
+            </section>
+            <section class="settings-section">
+              <div class="settings-section-title">交付阶段</div>
               <label class="settings-toggle">
                 <input v-model="runStages.analyze" type="checkbox" data-testid="stage-analyze" />
                 <span><strong>软件需求分析</strong><small>软/硬/协同归属 + software_requirements.xlsx。<em>依赖 AI 抽取</em>。</small></span>
@@ -594,8 +596,24 @@
                 <button class="button" type="button" data-testid="template-pick" @click="handleSelectTemplate"><FolderOpen :size="15" aria-hidden="true" />选择</button>
                 <button class="button" type="button" :disabled="!templatePath" @click="templatePath = ''"><Trash2 :size="15" aria-hidden="true" />清除</button>
               </div>
-              <p class="settings-hint">LLM 富化跟随上方「LLM 富化」开关：开→AI 抽取/装配/分析走 openai_compatible，关→纯确定性。</p>
+              <p class="settings-hint">LLM 富化跟随下方「LLM 富化」开关：开→AI 抽取/装配/分析走 openai_compatible，关→纯确定性。</p>
             </section>
+            <details class="settings-section settings-advanced" data-testid="settings-advanced">
+              <summary>高级：执行阶段（诊断 / 轨道对照用，普通交付无需调整）</summary>
+              <div class="settings-section-title">轨道阶段（A/B 技术选择）</div>
+              <label class="settings-toggle">
+                <input v-model="runStages.llmReview" type="checkbox" data-testid="stage-llm-review" />
+                <span><strong>LLM 审查（规则候选复核）</strong><small>逐条复核规则切出的原子候选。DLMS profile 类文档（对象表密集）建议开；散文类标准可关——交付物主要来自 AI 抽取轨，可省大量审查调用。</small></span>
+              </label>
+              <label class="settings-toggle">
+                <input v-model="runStages.aiExtract" type="checkbox" data-testid="stage-ai-extract" />
+                <span><strong>AI 抽取（双引擎）</strong><small>LLM 行为需求 + 确定性结构合并，产 merged_spec 与一致性报表。</small></span>
+              </label>
+              <label class="settings-toggle">
+                <input v-model="runStages.assemble" type="checkbox" data-testid="stage-assemble" />
+                <span><strong>装配实现规格</strong><small>P1-P3 装配《DLMS/COSEM 实现规格》JSON + Word/MD/Excel。</small></span>
+              </label>
+            </details>
             <section class="settings-section">
               <div class="settings-section-title">运行模式与模型 API</div>
               <label class="settings-toggle">
@@ -948,6 +966,49 @@ watch(runStages, (value) => {
     /* 持久化失败忽略，不影响本次运行 */
   }
 }, { deep: true })
+
+// §20.1 业务交付设置：翻译交付模式（off=零翻译调用 / markers=只翻批注 / full=全文双语）。
+// 默认 full=既有行为；off/markers 由后端链强制（M6：全文翻译阶段拿掉 + export 零 marker 调用）。
+type TranslationMode = "off" | "markers" | "full"
+const TRANSLATION_MODE_KEY = "ratomizer.translationMode.v1"
+function loadTranslationMode(): TranslationMode {
+  try {
+    const raw = typeof localStorage !== "undefined" ? localStorage.getItem(TRANSLATION_MODE_KEY) : null
+    if (raw === "off" || raw === "markers" || raw === "full") return raw
+  } catch {
+    /* 读取失败回落默认 */
+  }
+  return "full"
+}
+const translationMode = ref<TranslationMode>(loadTranslationMode())
+watch(translationMode, (value) => {
+  try {
+    localStorage?.setItem(TRANSLATION_MODE_KEY, value)
+  } catch {
+    /* 持久化失败忽略 */
+  }
+})
+
+// §20.3 单元路由进度（shadow 只读）：运行后从 /unit-routing 拉取计数摘要
+const unitRoutingSummary = ref("")
+async function refreshUnitRouting(): Promise<void> {
+  const client = apiClient.value
+  if (!client) return
+  try {
+    const payload = await client.loadUnitRouting()
+    if (!payload.available || !payload.routing) {
+      unitRoutingSummary.value = ""
+      return
+    }
+    const counts = payload.routing.counts_by_route || {}
+    unitRoutingSummary.value =
+      `单元路由（自动解析，待审不阻塞交付）：共 ${payload.routing.unit_count} 单元 —` +
+      ` 结构化 ${counts.a_track ?? 0} / 行为 ${counts.b_track ?? 0} / 混合 ${counts.mixed ?? 0} /` +
+      ` 上下文 ${counts.context ?? 0} / 待专家 ${counts.review ?? 0}`
+  } catch {
+    unitRoutingSummary.value = ""
+  }
+}
 
 // 公司标准化需求列表模板（V2.3.x）：设置后 analyze 用其词表，且分析结果按模板格式成文
 const TEMPLATE_PATH_KEY = "ratomizer.templatePath"
@@ -1960,7 +2021,7 @@ function plannedAutomaticStages(options: { llmReviewLimit?: number }): string[] 
     if (templatePath.value) stages.push("template-write")
     stages.push("clarification-report")
   }
-  if (useLlm) stages.push("full-translation")
+  if (useLlm && translationMode.value === "full") stages.push("full-translation")
   if (runStages.value.compose) stages.push("compose")
   if (runStages.value.annotationHtml) stages.push("export-annotation-html")
   return [...new Set(stages)]
@@ -2060,6 +2121,7 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
     currentOutputDir.value = finalOutDir
     let apiReconnectWarning = formatApiReconnectWarning(finalOutDir, stringOr(payload.api_warning, ""))
     apiReconnectWarning ||= await refreshAfterDesktopTask(finalOutDir)
+    void refreshUnitRouting()
 
     // 追加交付物链：按「运行阶段」配置依次执行（测试运行只跑基础解析+限量审查，不追加）
     type ConsistencySummary = { duplicate_groups?: number; obis_values_differ?: number; uncovered_requirement_like?: number }
@@ -2093,7 +2155,15 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
           }
         }
       }
-      if (useLlm) stages.push("full-translation")
+      if (useLlm && translationMode.value === "full") {
+        stages.push("full-translation")
+      } else if (useLlm) {
+        // 翻译交付模式 off/markers：全文翻译不进链（后端同样拿掉并落账），阶段卡如实降级
+        setRunStageState("full-translation", {
+          status: "disabled", percent: 0,
+          detail: translationMode.value === "off" ? "翻译模式=关闭，未运行" : "翻译模式=仅批注，未运行",
+        })
+      }
       if (runStages.value.compose) stages.push("compose")
       if (runStages.value.annotationHtml) stages.push("export-annotation-html")
       if (stages.length && bridge.runChain) {
@@ -2108,6 +2178,9 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
             templatePath: templatePath.value || undefined,
             ...(stages.includes("export-annotation-html")
               ? { annotationLayoutMode: "pdf_original" }
+              : {}),
+            ...(translationMode.value !== "full"
+              ? { translationMode: translationMode.value }
               : {}),
           })
         } catch (chainError) {
@@ -2221,7 +2294,8 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
         ? `；${apiReconnectWarning}`
         : ""
       runProgressDetail.value = `全部阶段完成：抽取与审查${tail}`
-      apiMessage.value = `运行完成：抽取与审查${tail}${warn}${readinessNote}${apiWarn}${packageNote}`
+      apiMessage.value = `运行完成：抽取与审查${tail}${warn}${readinessNote}${apiWarn}${packageNote}` +
+        (unitRoutingSummary.value ? `；${unitRoutingSummary.value}` : "")
     }
   } catch (error) {
     const detail = error instanceof Error ? error.message : "抽取与审查失败"

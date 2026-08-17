@@ -28,14 +28,19 @@ M3（去原子化修复方案 §五，2026-08-15）最终 XLSX 质量门：
   0.20*条件/例外/否定一致 + 0.20*数值单位编码不冲突；覆盖 <0.5、冲突、双方 section
   均非空且不相等（跨条款借位）的候选对不可匹配（不进图）。
 - **最终 XLSX 读取 §5.3**：openpyxl 读 ``软件需求列表-成文.xlsx``，按模板表头别名
-  （中英文，见 ``XLSX_COLUMN_ALIASES``）定位需求正文/条件/验收标准/模块等列；缺必需
-  列、空正文行、不可读单元格 → 该文档 FAIL；precision/recall 必须基于最终 XLSX 行
-  （functional JSON 指标仅诊断）；对**全部真值行**计算条件/例外/否定/数值/单位/编码
-  保存率——分母 = 全部真值行的期望条目，未匹配真值（FN）的期望条目计为未保存（整份
-  文档的真值信息保存率，与 recall 同口径的诚实分母；报告以
-  ``preservation_denominator_scope = "all_truth_rows"`` 说明口径；数值/单位/编码被
-  替换 = 冲突 = 不保存）。注意：A/B 必须使用**空模板**——模板自带
-  样例行会被如实计入 produced 行并拉低 precision。
+  （中英文，见 ``XLSX_COLUMN_ALIASES``）定位需求正文/条件/验收标准/模块等列；签名
+  sheet（表头含 序号+子模块）body 别名不命中时按写入器列契约兜底
+  （``template_writer.WRITER_COLUMN_CONTRACT``——计量需求 sheet 的「需求」列被电表
+  类型列拆分，读的正是写入器写的列位）；**模板校准**：``--template`` 的行界
+  （``_load_template_extents``，与 ``template_writer._next_seq`` 同一追加权威）把
+  annex 清单 sheet（计量列表/费率列表/事件列表等）与需求 sheet 样例行剥离为模板
+  自带内容（``template_rows_skipped``/``template_only_sheets``）——produced 行 =
+  行界之后的真实追加行，无需空模板；缺必需列、空正文行、不可读单元格 → 该文档
+  FAIL；precision/recall 必须基于最终 XLSX 行（functional JSON 指标仅诊断）；对
+  **全部真值行**计算条件/例外/否定/数值/单位/编码保存率——分母 = 全部真值行的期望
+  条目，未匹配真值（FN）的期望条目计为未保存（整份文档的真值信息保存率，与
+  recall 同口径的诚实分母；报告以 ``preservation_denominator_scope =
+  "all_truth_rows"`` 说明口径；数值/单位/编码被替换 = 冲突 = 不保存）。
 - **强制阈值 §5.4**：``REQUIRED_THRESHOLD_KEYS`` 全部 14 项缺一不可；**缺真值集、缺
   阈值文件、或缺任一必需阈值 → NO_GATE**（不 PASS）。阈值按文档独立配置：thresholds
   JSON 可含 ``{"documents": {"<parsed-dir 名或文档 sha256>": {...覆盖...}}}``，文档层
@@ -78,10 +83,14 @@ SWITCH_ENV = "RATOMIZER_FUNCTIONAL_EXTRACT"
 
 PARSED_ARTIFACTS = (
     "blocks.jsonl", "chunks.jsonl", "table_items.jsonl", "table_cell_items.jsonl",
-    "doc_map.json", "unextracted_registry.json", "parse_audit.json",
+    "table_cell_dispositions.jsonl", "doc_map.json", "unextracted_registry.json",
+    "parse_audit.json",
 )
 
-REPORT_SCHEMA = "ab-runner-report/v2"
+# v3（2026-08-17）：最终 XLSX 读取器模板校准——produced 行 = 模板行界之后的追加行
+# （模板样例行/annex 清单 sheet 剥离进 template_rows_skipped/template_only_sheets），
+# 签名 sheet body 别名不命中时按写入器列契约兜底（contract_body_sheets）。
+REPORT_SCHEMA = "ab-runner-report/v3"
 
 FINAL_XLSX = "软件需求列表-成文.xlsx"
 
@@ -334,22 +343,84 @@ def _logical_cell(row: list[Any], columns: dict[str, int], logical: str) -> str:
     return _cell_text(row[column - 1])
 
 
-def _read_final_xlsx_rows(xlsx_path: Path) -> dict[str, Any]:
-    """读最终交付 软件需求列表-成文.xlsx（全 sheet、按别名定位列）。
+def _writer_contract_columns(header_row: tuple[Any, ...]) -> dict[str, int] | None:
+    """V2.3.x 需求 sheet 签名（表头含 序号+子模块）→ 写入器列契约列位。
+
+    WS0 门禁复盘（2026-08-17）：计量需求 sheet 的「需求」列被电表类型列拆分
+    （1P2W_SP/3P4W_DC/3P4W_LVCT，表头别名不命中），而 ``template_writer`` 对全部
+    需求 sheet 按固定列位追加——读取侧直接采用写入器同一列位权威，读的正是写入
+    器写的位置。非签名 sheet 或表头列数不足正文列位 → None（视为缺列，宁判坏）。
+    """
+    from template_writer import REQUIREMENT_SHEET_SIGNATURE, WRITER_COLUMN_CONTRACT
+
+    headers = {_norm_header(cell) for cell in header_row}
+    if not all(_norm_header(cell) in headers for cell in REQUIREMENT_SHEET_SIGNATURE):
+        return None
+    if len(header_row) < WRITER_COLUMN_CONTRACT["body"]:
+        return None
+    return dict(WRITER_COLUMN_CONTRACT)
+
+
+def _load_template_extents(template_path: Path | None) -> dict[str, int] | None:
+    """模板校准（§5.3）：sheet 名 → 模板内最后一个非空行号（1-based）。
+
+    成文器只在模板末个非空行之后追加（``template_writer._next_seq`` 同一判定），
+    因此最终 XLSX 中 ≤ 模板行界的行是模板自带内容（annex 清单 sheet / 需求 sheet
+    样例行 / 留空行），行界之后才是本管线产物。模板缺席/不可读 → None（读取器退回
+    无校准语义；生产路径模板不可读时链路本身已先行失败，不会静默放行）。
+    """
+    if template_path is None:
+        return None
+    path = Path(template_path)
+    if not path.is_file():
+        return None
+    try:
+        from openpyxl import load_workbook
+
+        workbook = load_workbook(path, read_only=True, data_only=True)
+    except Exception:  # noqa: BLE001 — 校准缺席退回旧语义；模板坏在生产链路上先失败
+        return None
+    try:
+        extents: dict[str, int] = {}
+        for worksheet in workbook.worksheets:
+            if worksheet is None:
+                continue
+            last_row = 0
+            for row_number, row in enumerate(worksheet.iter_rows(values_only=True), 1):
+                if row and any(_cell_text(cell) for cell in row):
+                    last_row = row_number
+            extents[worksheet.title] = last_row
+        return extents
+    finally:
+        workbook.close()
+
+
+def _read_final_xlsx_rows(xlsx_path: Path,
+                          *, template_extents: dict[str, int] | None = None) -> dict[str, Any]:
+    """读最终交付 软件需求列表-成文.xlsx（全 sheet、按别名/写入器契约定位列）。
 
     返回::
 
         {"ok", "error", "row_count", "rows", "sheets",
-         "empty_body_rows", "unreadable_cells", "missing_body_sheets"}
+         "empty_body_rows", "unreadable_cells", "missing_body_sheets",
+         "contract_body_sheets", "template_only_sheets", "template_rows_skipped"}
 
     - rows: ``{"sheet", "row_number", "body", "section", "module", "context"}``（context =
       body+条件/验收/说明/描述 拼接，保存率检查的检索面）；
-    - 缺 body 列（有数据行的 sheet）、空正文行、不可读单元格均计入失败明细，由调用方
-      判 FAIL——宁判坏不放过。
+    - 列定位：表头别名优先；签名 sheet（序号+子模块）body 别名不命中时按写入器
+      列契约兜底（``contract_body_sheets`` 记录），计量需求 sheet 的拆分类型列由此
+      可读；
+    - 模板校准（``template_extents``，来自 ``_load_template_extents``）：≤ 模板行界
+      的行是模板自带内容（annex 清单 sheet、需求 sheet 样例行），剥离进
+      ``template_rows_skipped``、纯模板 sheet 记入 ``template_only_sheets``——不计
+      produced、不触发缺列/空正文失败；行界之后才是管线产物；
+    - 缺 body 列（有产物行的 sheet）、空正文行、不可读单元格均计入失败明细，由
+      调用方判 FAIL——宁判坏不放过。
     """
     result: dict[str, Any] = {
         "ok": False, "error": "", "row_count": 0, "rows": [], "sheets": [],
         "empty_body_rows": [], "unreadable_cells": [], "missing_body_sheets": [],
+        "contract_body_sheets": [], "template_only_sheets": [], "template_rows_skipped": 0,
     }
     try:
         from openpyxl import load_workbook
@@ -365,6 +436,7 @@ def _read_final_xlsx_rows(xlsx_path: Path) -> dict[str, Any]:
             rows = [list(row) for row in sheet.iter_rows(values_only=True)]
             header_index: int | None = None
             columns: dict[str, int] = {}
+            contract_sheet = False
             nonempty_seen = 0
             for index, row in enumerate(rows):
                 if not any(_cell_text(cell) for cell in row):
@@ -375,6 +447,12 @@ def _read_final_xlsx_rows(xlsx_path: Path) -> dict[str, Any]:
                     header_index = index
                     columns = candidate
                     break
+                contract = _writer_contract_columns(tuple(row))
+                if contract is not None:
+                    header_index = index
+                    columns = {**candidate, **contract}
+                    contract_sheet = True
+                    break
                 if nonempty_seen >= 10:  # 前 10 个非空行内找不到表头 → 视为缺列
                     break
             first_nonempty = next(
@@ -382,19 +460,26 @@ def _read_final_xlsx_rows(xlsx_path: Path) -> dict[str, Any]:
                  if any(_cell_text(cell) for cell in row)), None)
             if header_index is None:
                 header_index = first_nonempty if first_nonempty is not None else 0
-                data_rows = rows[header_index + 1:]
-            else:
-                data_rows = rows[header_index + 1:]
-            has_data = any(any(_cell_text(cell) for cell in row) for row in data_rows)
-            if not has_data:
-                continue  # 空 sheet 不参与判定
+            extent = template_extents.get(sheet.title) if template_extents else None
+            numbered = list(enumerate(rows[header_index + 1:], header_index + 2))
+            nonempty_numbered = [
+                (row_number, row) for row_number, row in numbered
+                if any(_cell_text(cell) for cell in row)]
+            counted = [
+                (row_number, row) for row_number, row in nonempty_numbered
+                if extent is None or row_number > extent]
+            if extent is not None:
+                result["template_rows_skipped"] += len(nonempty_numbered) - len(counted)
+            if not counted:
+                if nonempty_numbered and extent is not None:
+                    result["template_only_sheets"].append(sheet.title)
+                continue  # 无产物行的 sheet 不参与判定
             result["sheets"].append(sheet.title)
             if "body" not in columns:
                 result["missing_body_sheets"].append(sheet.title)
-            for row_number, row in enumerate(data_rows, header_index + 2):
-                if not any(_cell_text(cell) for cell in row):
-                    continue
-
+            if contract_sheet:
+                result["contract_body_sheets"].append(sheet.title)
+            for row_number, row in counted:
                 for logical in CONTEXT_COLUMNS:
                     value = _logical_cell(row, columns, logical)
                     if value.casefold() in _XLSX_ERROR_LITERALS:
@@ -919,6 +1004,7 @@ def run_ab_for_document(
     work_root: Path | None = None,
     chain_runner: Callable[..., dict[str, Any]] | None = None,
     keep_dirs: bool = False,
+    warm_a_cache: Path | None = None,
 ) -> dict[str, Any]:
     """单文档 A/B：唯一差异 = 直抽开关。返回逐文档报告（PASS/FAIL/NO_GATE + 指标明细）。
 
@@ -929,7 +1015,9 @@ def run_ab_for_document(
     缺必需列/空正文行/不可读单元格 → FAIL；缺真值集（含真值集无本文档行）、缺阈值文
     件或缺任一必需阈值 → **NO_GATE**（本报告不能作为 Go/No-Go 依据，不给 PASS）；两
     者齐备且全部阈值达标才 PASS。precision/recall/F1/保存率全部基于最终交付
-    ``软件需求列表-成文.xlsx`` 的行；functional JSON 指标仅诊断。
+    ``软件需求列表-成文.xlsx`` 的行（行口径 = 模板行界之后的追加行——模板校准
+    ``_load_template_extents`` 剥离样例行/annex 清单 sheet）；functional JSON 指标
+    仅诊断。
     """
     if route == "stub":
         raise ValueError(
@@ -944,6 +1032,10 @@ def run_ab_for_document(
     if not (parsed_dir / "blocks.jsonl").is_file():
         raise FileNotFoundError(f"{parsed_dir} 缺 blocks.jsonl——请先 parse 再跑 A/B")
     doc_keys = _document_keys(parsed_dir)
+
+    # 模板校准（§5.3）：annex 清单 sheet 与需求 sheet 样例行 = 模板自带内容，行界
+    # 之后才是本管线产物——读取器据此剥离，precision/recall 口径 = 真实追加行。
+    template_extents = _load_template_extents(template_path)
 
     work_root = Path(work_root) if work_root else Path(tempfile.mkdtemp(prefix="ab-runner."))
     work_root.mkdir(parents=True, exist_ok=True)
@@ -980,7 +1072,8 @@ def run_ab_for_document(
         items = product.get("items") if isinstance(product.get("items"), list) else []
         result.functional_count = len(items) if items else None
         final_xlsx = out_dir / FINAL_XLSX
-        struct = _read_final_xlsx_rows(final_xlsx) if final_xlsx.is_file() else None
+        struct = (_read_final_xlsx_rows(final_xlsx, template_extents=template_extents)
+                  if final_xlsx.is_file() else None)
         if struct is None:
             result.ok = False
             result.error = result.error or f"最终交付物 {FINAL_XLSX} 缺失或不可读"
@@ -995,6 +1088,9 @@ def run_ab_for_document(
                 "empty_body_row_count": len(struct["empty_body_rows"]),
                 "unreadable_cell_count": len(struct["unreadable_cells"]),
                 "missing_body_sheets": struct["missing_body_sheets"],
+                "contract_body_sheets": struct["contract_body_sheets"],
+                "template_only_sheets": struct["template_only_sheets"],
+                "template_rows_skipped": struct["template_rows_skipped"],
             }
             if struct["missing_body_sheets"]:
                 result.ok = False
@@ -1032,6 +1128,24 @@ def run_ab_for_document(
             result.error = result.error or f"最终交付物 {FINAL_XLSX} 缺失或不可读"
         return result
 
+    warm_cache_info: dict[str, Any] | None = None
+    if warm_a_cache is not None:
+        source = Path(warm_a_cache)
+        cache_file = source / "ai_extract_cache.jsonl"
+        if not cache_file.is_file():
+            raise FileNotFoundError(
+                f"--warm-a-cache 目录缺 ai_extract_cache.jsonl：{source}")
+        import hashlib as _hashlib
+
+        shutil.copy2(cache_file, a_dir / "ai_extract_cache.jsonl")
+        warm_cache_info = {
+            "source": str(source),
+            "sha256": "sha256:" + _hashlib.sha256(
+                cache_file.read_bytes()).hexdigest(),
+            "note": ("A 轨整链仍真实执行（synthesis/analysis/template 全跑），仅抽取命中"
+                     "缓存零付费；指纹含 route/model，不匹配自然全 miss"),
+        }
+
     a_result = _run("A_atoms", a_dir, "0")
     b_result = _run("B_direct", b_dir, "1")
 
@@ -1068,7 +1182,8 @@ def run_ab_for_document(
     if b_result.ok:
         b_product = _read_functional_product(b_dir)
         b_items = b_product.get("items") if isinstance(b_product.get("items"), list) else []
-        b_struct = _read_final_xlsx_rows(b_dir / FINAL_XLSX)
+        b_struct = _read_final_xlsx_rows(b_dir / FINAL_XLSX,
+                                         template_extents=template_extents)
         b_rows = b_struct.get("rows") or []
         conservation = b_product.get("conservation") or {}
         checks = conservation.get("checks") if isinstance(conservation.get("checks"), dict) else {}
@@ -1124,6 +1239,7 @@ def run_ab_for_document(
         "missing_gates": missing_gates,
         "threshold_violations": threshold_violations,
         "work_dirs": {"A": str(a_dir), "B": str(b_dir)} if keep_dirs else {},
+        "a_warm_cache": warm_cache_info,
     }
     if not keep_dirs:
         shutil.rmtree(work_root, ignore_errors=True)
@@ -1154,6 +1270,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="门槛 JSON（REQUIRED_THRESHOLD_KEYS 14 项全必需；可含 "
                              "documents 按文档覆盖层；缺任一必需键 → NO_GATE）")
     parser.add_argument("--out", type=Path, default=None, help="报告输出路径（JSON）")
+    parser.add_argument("--warm-a-cache", type=Path, default=None,
+                        help="A 轨缓存暖启动目录（含 ai_extract_cache.jsonl，如上次 --keep-dirs 的 A_atoms）"
+                             "——重跑门禁时 A 轨抽取零付费，整链仍真实执行")
     parser.add_argument("--keep-dirs", action="store_true",
                         help="保留 A/B 工作目录供人工复核（默认清理）")
     args = parser.parse_args(argv)
@@ -1174,6 +1293,7 @@ def main(argv: list[str] | None = None) -> int:
                 truth_rows=truth_rows,
                 thresholds=thresholds,
                 keep_dirs=args.keep_dirs,
+                warm_a_cache=args.warm_a_cache,
             )
         except Exception as exc:  # noqa: BLE001 — 逐份判定：单份异常不掩盖其他份
             report = {

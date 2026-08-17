@@ -60,6 +60,52 @@ FULL_THRESHOLDS = {
 
 TEMPLATE_HEADERS = ("序号", "子模块", "描述", "需求", "说明、示例、注意事项", "客户需求章节")
 
+# V2.3.12 计量需求 sheet 的真实表头形态：「需求」列被电表类型列拆分（WS0 门禁复盘）
+METERING_SPLIT_HEADERS = (
+    "关闭", "序号", "子模块", "描述", "1P2W_SP", "3P4W_DC", "3P4W_LVCT",
+    "说明、示例、注意事项", "是否客户需求", "客户需求章节",
+)
+
+# 标准 V2.3.x 需求 sheet 表头（写入器列契约列位：子模块=3/需求=6/说明=7/章节=9）
+V2_REQUIREMENT_HEADERS = (
+    "关闭", "序号", "子模块", "描述", "需求模版", "需求",
+    "说明、示例、注意事项", "是否客户需求", "客户需求章节", "驱动/硬件相关",
+)
+
+
+def _v2_template(root: Path) -> Path:
+    """V2.3.x 形态模板：1 个需求 sheet（带样例行）+ 1 个 annex 清单 sheet + 1 个 meta sheet。"""
+    from openpyxl import Workbook
+
+    template = root / "template.xlsx"
+    workbook = Workbook()
+    req = workbook.active
+    req.title = "系统需求"
+    req.append(list(V2_REQUIREMENT_HEADERS))
+    req.append(["", 1, "基本参数", "电表类型：", "SP", "SP", "样例行说明", "", "", ""])
+    annex = workbook.create_sheet("计量列表")
+    annex.append(["瞬时数据列表", "OBIS CODE", "描述", "1P2W_SP", "3P4W_DC"])
+    annex.append(["1", "{3,1-0:32.7.0.255},", "Instantaneous Voltage of L1", "√", "√"])
+    meta = workbook.create_sheet("需求模版Release notes")
+    meta.append(["Realease Notes"])
+    meta.append(["Rev.", "Effective Date", "Reason Of Change"])
+    meta.append(["V1.0.0", "2019.11.18", "1. New release"])
+    workbook.save(template)
+    return template
+
+
+def _final_appended(template: Path, out_dir: Path, rows_by_sheet: dict[str, list[list]]) -> Path:
+    """模拟成文器：在模板副本的各 sheet 末尾追加行，落最终交付 软件需求列表-成文.xlsx。"""
+    from openpyxl import load_workbook
+
+    workbook = load_workbook(template)
+    for sheet, rows in rows_by_sheet.items():
+        for row in rows:
+            workbook[sheet].append(row)
+    final = out_dir / ab.FINAL_XLSX
+    workbook.save(final)
+    return final
+
 
 def _parsed_dir(root: Path) -> Path:
     root.mkdir(parents=True, exist_ok=True)
@@ -399,6 +445,141 @@ class FinalXlsxReaderTests(unittest.TestCase):
             struct = ab._read_final_xlsx_rows(out_dir / ab.FINAL_XLSX)
         self.assertEqual(struct["row_count"], 2)
         self.assertEqual(sorted(struct["sheets"]), ["时钟需求", "计量需求"])
+
+
+class WriterContractBodyTests(unittest.TestCase):
+    """WS0 门禁复盘（docs/ws0-gate-result-2026-08-17.md）：计量需求 sheet 的「需求」列
+    被电表类型列（1P2W_SP/3P4W_DC/3P4W_LVCT）拆分，表头别名不命中 → 读取器对
+    序号+子模块签名的 sheet 按写入器列契约定位正文（读的正是写入器写的列位）。"""
+
+    def test_split_type_columns_body_via_writer_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            out_dir = Path(td)
+            _final_xlsx_raw(
+                out_dir, METERING_SPLIT_HEADERS,
+                # 行1=模板样例行（类型值在 5-7 列）；行2=写入器追加盖行（正文在第 6 列）
+                [("", 1, "基本参数", "火线采样类型：", "1", "1", "1", "①CT采样", "是", ""),
+                 ("", 2, "计量", "描述", "", "电表应支持四象限有功电能记录。",
+                  "样例说明", "是", "6.12", "")])
+            struct = ab._read_final_xlsx_rows(out_dir / ab.FINAL_XLSX)
+        self.assertTrue(struct["ok"])
+        self.assertEqual(struct["missing_body_sheets"], [])
+        self.assertEqual(struct["contract_body_sheets"], [struct["sheets"][0]])
+        self.assertEqual(struct["row_count"], 2)
+        appended = struct["rows"][1]
+        self.assertEqual(appended["body"], "电表应支持四象限有功电能记录。")
+        self.assertEqual(appended["module"], "计量")
+        self.assertEqual(appended["section"], "6.12")  # 契约第 9 列 = 写入器写章节处
+        self.assertIn("样例说明", appended["context"])
+
+    def test_no_template_extents_keeps_legacy_semantics(self) -> None:
+        # template_extents=None（模板缺席/不可读）：全部行照旧计入 produced
+        with tempfile.TemporaryDirectory() as td:
+            out_dir = Path(td)
+            _final_xlsx_raw(
+                out_dir, V2_REQUIREMENT_HEADERS,
+                [("", 1, "基本参数", "电表类型：", "SP", "SP", "样例行说明", "", "", ""),
+                 ("", 2, "系统", "描述", "", "电表应支持四象限有功电能记录。",
+                  "追加说明", "是", "6.12", "")])
+            struct = ab._read_final_xlsx_rows(out_dir / ab.FINAL_XLSX)
+        self.assertEqual(struct["row_count"], 2)
+        self.assertEqual(struct["template_only_sheets"], [])
+        self.assertEqual(struct["template_rows_skipped"], 0)
+        self.assertEqual(struct["contract_body_sheets"], [])  # 别名命中，不落契约
+
+
+class TemplateExtentTests(unittest.TestCase):
+    """模板行界加载（校准权威）：sheet 名 → 模板内最后一个非空行；缺席/不可读 → None。"""
+
+    def test_absent_or_unreadable_template_is_none(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            empty = Path(td) / "t.xlsx"
+            empty.write_bytes(b"")
+            self.assertIsNone(ab._load_template_extents(None))
+            self.assertIsNone(ab._load_template_extents(Path(td) / "missing.xlsx"))
+            self.assertIsNone(ab._load_template_extents(empty))
+
+    def test_extents_are_last_nonempty_row_numbers(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            template = _v2_template(Path(td))
+            self.assertEqual(ab._load_template_extents(template),
+                             {"系统需求": 2, "计量列表": 2, "需求模版Release notes": 3})
+
+
+class TemplateCalibrationTests(unittest.TestCase):
+    """模板校准：列表/Release notes 等 annex sheet 与需求 sheet 的模板样例行是模板
+    自带内容——不计 produced、不触发缺列/空正文失败；行界之后才是管线产物。"""
+
+    def test_template_rows_and_annex_sheets_are_calibrated_out(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            template = _v2_template(Path(td))
+            extents = ab._load_template_extents(template)
+            final = _final_appended(template, Path(td), {"系统需求": [
+                ["", 2, "系统", "描述", "", "电表应支持四象限有功电能记录。",
+                 "追加说明", "是", "6.12", ""]]})
+            struct = ab._read_final_xlsx_rows(final, template_extents=extents)
+        self.assertTrue(struct["ok"])
+        self.assertEqual(struct["sheets"], ["系统需求"])
+        self.assertEqual(struct["row_count"], 1)
+        self.assertEqual(struct["rows"][0]["body"], "电表应支持四象限有功电能记录。")
+        self.assertEqual(struct["rows"][0]["section"], "6.12")
+        self.assertEqual(sorted(struct["template_only_sheets"]),
+                         ["计量列表", "需求模版Release notes"])
+        # 系统需求样例行 1 + 计量列表 1 + Release notes 2 = 4 行模板内容被剥离
+        self.assertEqual(struct["template_rows_skipped"], 4)
+        self.assertEqual(struct["missing_body_sheets"], [])
+        self.assertEqual(struct["empty_body_rows"], [])
+
+    def test_appended_empty_body_row_beyond_extent_still_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            template = _v2_template(Path(td))
+            extents = ab._load_template_extents(template)
+            final = _final_appended(template, Path(td), {"系统需求": [
+                ["", 2, "系统", "描述", "", "", "追加说明", "是", "6.12", ""]]})
+            struct = ab._read_final_xlsx_rows(final, template_extents=extents)
+        self.assertEqual(struct["row_count"], 0)
+        self.assertEqual(struct["empty_body_rows"], ["系统需求@row3"])  # 行界后的产物行才判空正文
+        self.assertEqual(struct["template_rows_skipped"], 4)
+
+    def test_appended_row_on_annex_sheet_without_body_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            template = _v2_template(Path(td))
+            extents = ab._load_template_extents(template)
+            final = _final_appended(template, Path(td),
+                                    {"计量列表": [["2", "{3,1-0:52.7.0.255},", "Voltage L2", "", ""]]})
+            struct = ab._read_final_xlsx_rows(final, template_extents=extents)
+        # annex sheet 出现行界之外的内容 = 契约之外的多余产物 → 仍然 fail-closed
+        self.assertEqual(struct["missing_body_sheets"], ["计量列表"])
+        self.assertEqual(struct["row_count"], 0)
+
+
+class TemplateCalibratedGateTests(unittest.TestCase):
+    """门禁级：run_ab_for_document 用 --template 做校准，报告剥离计数。"""
+
+    def test_gate_uses_template_calibration_for_final_xlsx(self) -> None:
+        truth = [_truth_row("T-1", "6.12", "电表应支持四象限有功电能记录。")]
+        with tempfile.TemporaryDirectory() as td:
+            work = Path(td)
+            template = _v2_template(work)
+
+            def xlsx(out_dir: Path) -> None:
+                _final_appended(template, out_dir, {"系统需求": [
+                    ["", 2, "系统", "", "", truth[0]["expected_text"], "", "是",
+                     truth[0]["section_id"], ""]]})
+
+            report = ab.run_ab_for_document(
+                _parsed_dir(work / FIXTURE_DOC_ID),
+                route="openai_compatible", template_path=template,
+                work_root=work / "ab", truth_rows=truth, thresholds=FULL_THRESHOLDS,
+                chain_runner=_chain_runner_factory(
+                    b_items=[{"functional_requirement_id": "FRE-1",
+                              "objective": truth[0]["expected_text"],
+                              "source_section": "6.12"}],
+                    b_xlsx=xlsx, a_xlsx=xlsx))
+        self.assertEqual(report["verdict"], "PASS")
+        final_xlsx = report["metrics"]["final_xlsx"]
+        self.assertEqual(final_xlsx["row_count"], 1)
+        self.assertEqual(final_xlsx["template_rows_skipped"], 4)
 
 
 class TruthMatchingTests(unittest.TestCase):
@@ -1094,6 +1275,64 @@ class CliContractTests(unittest.TestCase):
             self.assertEqual(saved["document_count"], 2)
             self.assertEqual(saved["documents"][0]["verdict"], "NO_GATE")
             self.assertEqual(saved["documents"][1]["verdict"], "FAIL")
+
+
+class WarmACacheTests(unittest.TestCase):
+    """--warm-a-cache：A 轨缓存暖启动（整链仍执行；来源/哈希入报告；缺失响亮报错）。"""
+
+    def test_warm_cache_copied_before_a_chain_and_recorded(self) -> None:
+        import json as _json
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            parsed = _parsed_dir(root / "parsed")
+            warm = root / "prev_A_atoms"
+            warm.mkdir()
+            cache_row = _json.dumps(
+                {"fingerprint": "fp-demo", "requirements": []}, ensure_ascii=False)
+            (warm / "ai_extract_cache.jsonl").write_text(
+                cache_row + "\n", encoding="utf-8")
+            seen: dict[str, Any] = {}
+
+            def chain_runner(out_dir: Path, *, stages, route, template_path):
+                cache = out_dir / "ai_extract_cache.jsonl"
+                seen[str(out_dir.name)] = (
+                    cache.read_text(encoding="utf-8") if cache.is_file() else "")
+                _write_b_product(out_dir, route="llm:test")
+                _fake_final_xlsx(out_dir)
+                return {"kind": "chain"}
+
+            report = ab.run_ab_for_document(
+                parsed, route="openai_compatible",
+                template_path=root / "t.xlsx",
+                truth_rows=[_truth_row("T1", "4.1", "The meter shall log events.")],
+                thresholds=FULL_THRESHOLDS,
+                chain_runner=chain_runner, keep_dirs=True,
+                warm_a_cache=warm)
+
+            # A 轨链执行时缓存已在场；B 轨不受影响
+            self.assertEqual(seen.get("A_atoms", ""), cache_row + "\n")
+            self.assertEqual(seen.get("B_direct", ""), "")
+            info = report.get("a_warm_cache") or {}
+            self.assertEqual(info.get("source"), str(warm))
+            self.assertTrue(str(info.get("sha256", "")).startswith("sha256:"))
+            # 工作目录里的缓存与来源一致
+            a_dir = Path(report["work_dirs"]["A"])
+            self.assertEqual((a_dir / "ai_extract_cache.jsonl").read_text(
+                encoding="utf-8"), cache_row + "\n")
+
+    def test_warm_cache_missing_file_fails_loudly(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            parsed = _parsed_dir(root / "parsed")
+            empty = root / "empty"
+            empty.mkdir()
+            with self.assertRaises(FileNotFoundError):
+                ab.run_ab_for_document(
+                    parsed, route="openai_compatible",
+                    template_path=root / "t.xlsx",
+                    chain_runner=_chain_runner_factory(),
+                    warm_a_cache=empty)
 
 
 if __name__ == "__main__":

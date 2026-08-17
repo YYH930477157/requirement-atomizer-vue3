@@ -131,6 +131,11 @@ ENV_REGISTRY: tuple[EnvVar, ...] = (
     EnvVar("RATOMIZER_HISTORICAL_SAMPLE", "", "真实历史抽取样本路径（合并决策回归门；客户数据不进仓,未设置则该门跳过）", False),
     # --- 桌面/运维 ---
     EnvVar("RATOMIZER_PYTHON", "", "Electron dev 模式指定后端 Python 解释器路径", False),
+    # --- quality-first 单元路由（2026-08-17 方案 §11/§14；默认保持既有执行方式） ---
+    EnvVar("RATOMIZER_EXECUTION_POLICY", "legacy_combined", "执行策略（quality_first|force_a|force_b|full_dual_audit|legacy_combined；默认 legacy——Router 过真实语料门禁前不翻默认，§31）", False),
+    EnvVar("RATOMIZER_TRANSLATION_MODE", "full", "翻译交付模式（off|markers|full；默认 full=既有行为；off/markers 由 M6 接线强制零隐藏调用）", False),
+    EnvVar("RATOMIZER_BUDGET_MODE", "off", "预算模式（off|observe|enforce；默认 off=既有行为；observe/enforce 由 M6 接线）", False),
+    EnvVar("RATOMIZER_UNIT_ROUTER_RULES", "", "单元路由规则集覆盖（保留给真实语料标定后的阈值集；空=内置规则）", False),
 )
 
 ENV_NAMES = frozenset(v.name for v in ENV_REGISTRY)

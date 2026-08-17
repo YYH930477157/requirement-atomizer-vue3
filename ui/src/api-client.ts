@@ -434,6 +434,21 @@ export type TranslationPayload = {
   model?: string
 }
 
+export type UnitRoutingPayload = {
+  available: boolean
+  detail?: string
+  routing?: {
+    schema: string
+    router_version: string
+    shadow_mode: boolean
+    unit_count: number
+    counts_by_route: Record<string, number>
+    counts_by_rule?: Record<string, number>
+    review_rate?: number
+    context_rate?: number
+  }
+}
+
 export type HealthPayload = {
   ok: boolean
   service: string
@@ -1259,6 +1274,11 @@ export class RequirementApiClient {
   async loadHealth(): Promise<HealthPayload> {
     // D7 预备：/health 不依赖鉴权，携带 text_mode 开关状态
     return this.request<HealthPayload>("/health")
+  }
+
+  async loadUnitRouting(): Promise<UnitRoutingPayload> {
+    // §20.3 单元路由进度（shadow 只读）：无单元产物时 available=false
+    return this.request<UnitRoutingPayload>("/unit-routing")
   }
 
   async loadResultPackage(options: { verify?: boolean } = {}): Promise<ResultPackagePayload> {

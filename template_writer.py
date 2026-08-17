@@ -43,6 +43,17 @@ _COL_IS_CUSTOMER = 8
 _COL_SECTION = 9
 _COL_HW = 10         # 驱动/硬件相关
 
+# 需求 sheet 表头签名 + 列契约（读取侧 ab_runner 门禁共享；V2.3.x 实测布局）。
+# 计量需求 sheet 的「需求」列被电表类型列拆分（1P2W_SP/3P4W_DC/... 表头别名定位
+# 失效）——写入与读取共用此固定列位权威，读取的正是写入器写入的位置。
+REQUIREMENT_SHEET_SIGNATURE = ("序号", "子模块")
+WRITER_COLUMN_CONTRACT = {
+    "module": _COL_SUBMODULE,
+    "body": _COL_ANSWER,
+    "notes": _COL_NOTES,
+    "section": _COL_SECTION,
+}
+
 # 抽取轨模块名 → 模板 sheet 名（sheet 存在性运行时校验；缺的落 FALLBACK）
 MODULE_TO_SHEET = {
     "计量": "计量需求", "时钟": "时钟需求", "费率": "费率需求", "显示": "显示需求",

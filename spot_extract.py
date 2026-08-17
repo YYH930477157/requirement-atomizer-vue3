@@ -164,12 +164,19 @@ def _covered_text_for_block(requirements: list[dict[str, Any]], block_id: str) -
 
 def _llm_spot_rows(out_dir: Path, *, block: dict[str, Any], text: str,
                    existing: list[dict[str, Any]], route: str,
-                   blocks: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+                   blocks: list[dict[str, Any]] | None = None,
+                   row_index: int | None = None) -> list[dict[str, Any]]:
     """单段文本 LLM 抽取：复用 targeted_reextract 的调用方式（chat_json + critique_section
     护栏），范围限定该段文本——合成只含本段的单块 section，prompt 看不见其他内容。
-    blocks：调用方已加载的完整块列表（免二次整读 blocks.jsonl）。"""
+    blocks：调用方已加载的完整块列表（免二次整读 blocks.jsonl）。
+
+    M8 迁移：chat 闭包经 LLMJobRunner——critique_section 自检循环的**每一轮**调用
+    各自成 job（stage=spot-extract/processor=critique_section，unit_id=定位键），
+    attempt 落账本、归属进 llm_trace；失败重抛原始异常，fail-loudly 语义不变。
+    spot 是用户定点操作：不带缓存（cache=None，与既有行为一致）。"""
     import ai_extract
-    from llm_client import apply_min_tokens, chat_json
+    from llm_client import apply_min_tokens
+    from llm_job_runner import LLMJob, LLMJobRunner
 
     if route != "openai_compatible":
         raise SpotExtractUnavailableError("spot extract requires openai_compatible route")
@@ -178,8 +185,18 @@ def _llm_spot_rows(out_dir: Path, *, block: dict[str, Any], text: str,
         raise SpotExtractUnavailableError("openai_compatible route is not configured")
     config = apply_min_tokens(config, "extract")
 
+    runner = LLMJobRunner(Path(out_dir), route_config=config)
+    unit_id = f"spot:{block.get('block_id') or ''}"
+    if row_index is not None:
+        unit_id += f":R{row_index}"
+
     def chat(system: str, user: str) -> dict[str, Any]:
-        return chat_json(config, system, user)
+        result = runner.run(LLMJob(
+            stage="spot-extract", processor="critique_section", unit_id=unit_id,
+            system_prompt=system, user_prompt=user, route=route))
+        if not result.ok:
+            raise result.exception or SpotExtractUnavailableError(result.error)
+        return result.data or {}
 
     root = Path(out_dir)
     block_id = str(block.get("block_id") or "")
@@ -325,7 +342,8 @@ def spot_extract(out_dir: Path, *, block_id: str, row_index: int | None = None,
                 strategy = "deterministic_param_row"
         if not already_covered and not rows:
             rows = _llm_spot_rows(root, block=block, text=text,
-                                  existing=block_existing, route=route, blocks=blocks)
+                                  existing=block_existing, route=route, blocks=blocks,
+                                  row_index=row_index)
             if cell is not None:
                 for row in rows:
                     row["source_cell_id"] = str(cell.get("cell_id") or "")

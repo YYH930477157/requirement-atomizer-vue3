@@ -138,8 +138,28 @@ _PENDING_RESERVATION: ContextVar[tuple[str, int] | None] = ContextVar(
 )
 
 
+def budget_mode() -> str:
+    """预算模式（方案 §14，第 9 项）：off | observe | enforce。
+
+    - off（默认）：行为面零变化——账本开关仍由 ``RATOMIZER_LLM_BUDGET`` 决定
+      （开启即沿既有 enforce 语义）；
+    - observe：账本开启、逐调用记账 + 超限预警日志，**不阻断**（耗尽不抛
+      LLMBudgetExceeded、不降级 stub）；
+    - enforce：账本开启 + 既有事前拦截语义。
+    """
+    from config import get_env
+
+    mode = str(get_env("RATOMIZER_BUDGET_MODE") or "off").strip().lower()
+    if mode not in ("off", "observe", "enforce"):
+        raise ValueError(
+            f"未知预算模式: {mode}（可用: off | observe | enforce）")
+    return mode
+
+
 def budget_enabled(value: str | None = None) -> bool:
-    """``RATOMIZER_LLM_BUDGET`` 是否开启（默认关）。"""
+    """预算账本是否开启：mode observe/enforce 强制开；off 时由 legacy 开关决定。"""
+    if budget_mode() in ("observe", "enforce"):
+        return True
     raw = os.environ.get(ENTRY_SWITCH_ENV) if value is None else value
     return str(raw or "").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -365,17 +385,31 @@ class LLMBudgetLedger:
         with self._lock:
             sub = self._sub(stage)
             budget = self.sub_budgets[stage]
+            observe_only = budget_mode() == "observe"
             if int(sub["calls"]) >= int(budget["max_calls"]):
                 self._mark_exhausted_unlocked(stage, "call_budget_exhausted")
-                raise _budget_exceeded(f"document budget call-exhausted stage={stage}")
+                if observe_only:
+                    # observe（§14）：预警不阻断——记账继续，调用放行
+                    LOGGER.warning(
+                        "[budget:observe] stage=%s 调用数触顶（%s/%s），放行不阻断",
+                        stage, sub["calls"], budget["max_calls"])
+                else:
+                    raise _budget_exceeded(
+                        f"document budget call-exhausted stage={stage}")
             reserved = int(sub["reserved_tokens"])
             if int(sub["tokens"]) + reserved + ceiling > int(budget["max_tokens"]):
                 self._mark_exhausted_unlocked(stage, "token_budget_exhausted")
-                raise _budget_exceeded(
-                    f"document budget token-exhausted stage={stage} "
-                    f"(tokens={sub['tokens']} reserved={reserved} ceiling={ceiling} "
-                    f"max={budget['max_tokens']})"
-                )
+                if observe_only:
+                    LOGGER.warning(
+                        "[budget:observe] stage=%s token 触顶（tokens=%s reserved=%s "
+                        "ceiling=%s max=%s），放行不阻断",
+                        stage, sub["tokens"], reserved, ceiling, budget["max_tokens"])
+                else:
+                    raise _budget_exceeded(
+                        f"document budget token-exhausted stage={stage} "
+                        f"(tokens={sub['tokens']} reserved={reserved} ceiling={ceiling} "
+                        f"max={budget['max_tokens']})"
+                    )
             sub["calls"] = int(sub["calls"]) + 1
             sub["reserved_tokens"] = reserved + ceiling
             _PENDING_RESERVATION.set((stage, ceiling))

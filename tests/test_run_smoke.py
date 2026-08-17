@@ -12,8 +12,9 @@ class RunSmokeTests(unittest.TestCase):
         modules = run_smoke.load_modules(run_smoke.DEFAULT_MANIFEST)
         suite = run_smoke.build_suite(modules)
         self.assertEqual(len(modules), 90)
-        # 1769 = 1766 remote-main baseline + 3 table-row/source-zone smoke cases.
-        self.assertEqual(suite.countTestCases(), 1769)
+        # 1778 = 1769 + 2（M8 遥测）+ 6（§20/§22：chain 翻译模式 2、/unit-routing 2、
+        # 完成证据 gate 快照 2）+ 1（M8 doc_map 消费者迁移 attempt 账本断言）。
+        self.assertEqual(suite.countTestCases(), 1778)
 
     def test_manifest_rejects_duplicates_and_non_test_modules(self) -> None:
         for content in ("tests.test_atomize\ntests.test_atomize\n", "atomize\n"):

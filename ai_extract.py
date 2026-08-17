@@ -3699,20 +3699,29 @@ def extract_section(section: dict[str, Any], chat: ChatFn, doc_context: str = ""
 # --- 缓存 + 批处理 --------------------------------------------------------
 
 def read_cache(path: Path) -> dict[str, list[dict[str, Any]]]:
-    cache: dict[str, list[dict[str, Any]]] = {}
-    for row in read_jsonl_recover_torn_tail(path):
-        key = str(row.get("fingerprint") or "")
-        if key:
-            cache[key] = row.get("requirements") or []
-    return cache
+    """读缓存：兼容旧顶层行与 PaidCacheStore 行（M7 迁移，§16.1 第一批）。"""
+    from paid_cache_store import read_dual_format
+
+    return {key: row.get("requirements") or []
+            for key, row in read_dual_format(path).items()}
 
 
 def append_cache(path: Path, rows: list[dict[str, Any]]) -> None:
+    """写缓存经 PaidCacheStore（锁 + fsync + 原子替换 + Windows 退避）。
+
+    迁移前是裸 append（无锁无 fsync，2026-08-14 热路径优化只解决了读侧）；同指纹
+    last-wins 与旧读侧一致。"""
     if not rows:
         return
-    with path.open("a", encoding="utf-8", newline="\n") as f:
-        for row in rows:
-            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    from paid_cache_store import PaidCacheStore
+
+    store = PaidCacheStore.from_file(path)
+    store.record_many([
+        (str(row.get("fingerprint") or ""),
+         {key_: value for key_, value in row.items() if key_ != "fingerprint"},
+         None)
+        for row in rows if row.get("fingerprint")
+    ])
 
 
 def _prepare_requirement_rows(

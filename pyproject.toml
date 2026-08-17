@@ -115,6 +115,7 @@ py-modules = [
   "pattern_engine",
   "desktop_backend",
   "desktop_tasks",
+  "desktop_task_args",
   "decide_trace",
   "orchestration_gaps",
   "orchestration_loop",

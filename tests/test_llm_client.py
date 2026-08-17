@@ -1067,5 +1067,81 @@ class AdaptiveRateGateTests(unittest.TestCase):
             self.assertEqual(llm_client._GATES, {})      # 关闭时不创建闸门(行为=旧退避)
 
 
+class CallContextTelemetryTests(unittest.TestCase):
+    """M8（§18）：provider attempt 可归到 stage/processor/unit（llm_trace context 键）。"""
+
+    def test_trace_carries_call_context_and_thread_pool_propagates(self) -> None:
+        import tempfile
+        from concurrent.futures import ThreadPoolExecutor
+        from pathlib import Path
+        import llm_client
+        from context_submit import submit_with_context
+
+        os.environ["RATOMIZER_TEST_KEY"] = "secret-token"
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                trace = Path(tmp) / "llm_trace.jsonl"
+                llm_client.set_trace_path(trace)
+                try:
+                    with MockOpenAIService([
+                        {"body": openai_response({"a": 1})},
+                        {"body": openai_response({"b": 2})},
+                    ]) as service:
+                        config = LLMClientConfig(
+                            base_url=service.base_url, model="mock-model",
+                            api_key_env="RATOMIZER_TEST_KEY", timeout_s=2, max_retries=0)
+                        with llm_client.call_context(stage="functional-extract",
+                                                     processor="clause_family",
+                                                     unit_id="UNIT-X"):
+                            chat_json(config, "s", "u")
+                        # 线程池任务经 submit_with_context 复制上下文——归属随行
+                        with llm_client.call_context(stage="spec_enrich",
+                                                     processor="enrich_one",
+                                                     unit_id="UNIT-Y"), \
+                                ThreadPoolExecutor(max_workers=1) as pool:
+                            submit_with_context(
+                                pool, chat_json, config, "s2", "u2").result()
+                finally:
+                    llm_client.set_trace_path(None)
+                rows = [json.loads(line) for line in
+                        trace.read_text(encoding="utf-8").splitlines()]
+        finally:
+            os.environ.pop("RATOMIZER_TEST_KEY", None)
+
+        self.assertEqual(len(rows), 2)
+        by_prompt = {row["messages"][1]["content"]: row for row in rows}
+        self.assertEqual(by_prompt["u"]["context"],
+                         {"stage": "functional-extract",
+                          "processor": "clause_family", "unit_id": "UNIT-X"})
+        self.assertEqual(by_prompt["u2"]["context"],
+                         {"stage": "spec_enrich",
+                          "processor": "enrich_one", "unit_id": "UNIT-Y"})
+
+    def test_no_context_keeps_trace_shape_unchanged(self) -> None:
+        import tempfile
+        from pathlib import Path
+        import llm_client
+
+        os.environ["RATOMIZER_TEST_KEY"] = "secret-token"
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                trace = Path(tmp) / "llm_trace.jsonl"
+                llm_client.set_trace_path(trace)
+                try:
+                    with MockOpenAIService([{"body": openai_response({"a": 1})}]) as service:
+                        chat_json(LLMClientConfig(
+                            base_url=service.base_url, model="mock-model",
+                            api_key_env="RATOMIZER_TEST_KEY", timeout_s=2,
+                            max_retries=0), "s", "u")
+                finally:
+                    llm_client.set_trace_path(None)
+                rows = [json.loads(line) for line in
+                        trace.read_text(encoding="utf-8").splitlines()]
+        finally:
+            os.environ.pop("RATOMIZER_TEST_KEY", None)
+        self.assertEqual(len(rows), 1)
+        self.assertNotIn("context", rows[0])   # 未设置时行形态不变
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -408,6 +408,29 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
             except (TimeoutError, OSError, ValueError) as exc:
                 self.send_json({"error": str(exc), "retryable": True}, status=503)
             return
+        if parsed.path == "/unit-routing":
+            # §20.3 单元路由进度：shadow 只读——有单元产物才路由/读，绝不触发付费
+            try:
+                from extraction_units import load_extraction_units
+                # 别名导入：函数内同名 import 会把模块级 governed_artifact_path
+                # 变成本地未绑定名（do_GET 早段在用）——UnboundLocalError
+                from result_package import governed_artifact_path as _governed_path
+
+                units_path = _governed_path(
+                    self.output_dir, "extraction_units.jsonl",
+                    category="pipeline", for_write=False)
+                if not units_path.is_file():
+                    self.send_json({"available": False,
+                                    "detail": "尚未规划内容单元（atomize 后可用）"})
+                    return
+                from unit_router import route_document
+
+                self.send_json({"available": True,
+                                "routing": route_document(self.output_dir,
+                                                          plan_if_missing=False)})
+            except (OSError, ValueError) as exc:
+                self.send_json({"error": str(exc), "retryable": True}, status=503)
+            return
         if parsed.path == "/omission-actions":
             from omission_actions import read_current_omission_states
             try:

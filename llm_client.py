@@ -6,6 +6,8 @@ import os
 import threading
 import time
 from collections.abc import Iterable
+import contextlib
+import contextvars
 import http.client
 import urllib.error
 import urllib.request
@@ -164,6 +166,30 @@ def _reset_rate_gates() -> None:
 _TRACE_PATH: Path | None = None
 _TRACE_LOCK = threading.Lock()
 
+# M8（方案 §18）调用归属遥测：provider attempt 必须能归到 stage/processor/unit。
+# contextvar 经 context_submit.submit_with_context 随线程池复制传播；未设置时
+# trace 行形态不变（默认行为面零变化）。
+_CALL_CONTEXT: "contextvars.ContextVar[dict[str, str] | None]" = (
+    contextvars.ContextVar("ratomizer_llm_call_context", default=None))
+
+
+@contextlib.contextmanager
+def call_context(*, stage: str = "", processor: str = "", unit_id: str = "",
+                 parent_attempt_id: str = ""):
+    """给本上下文内的 provider 调用打归属标签（写入 llm_trace 每行的 context 键）。"""
+    token = _CALL_CONTEXT.set({"stage": stage, "processor": processor,
+                               "unit_id": unit_id,
+                               "parent_attempt_id": parent_attempt_id})
+    try:
+        yield
+    finally:
+        _CALL_CONTEXT.reset(token)
+
+
+def current_call_context() -> dict[str, str]:
+    context = _CALL_CONTEXT.get() or {}
+    return {key: value for key, value in context.items() if value}
+
 
 def set_trace_path(path: Path | None) -> None:
     global _TRACE_PATH
@@ -173,6 +199,9 @@ def set_trace_path(path: Path | None) -> None:
 def _write_trace(record: dict[str, Any]) -> None:
     if _TRACE_PATH is None:
         return
+    context = current_call_context()
+    if context:
+        record = {**record, "context": context}
     try:
         line = json.dumps(record, ensure_ascii=False)
         with _TRACE_LOCK:

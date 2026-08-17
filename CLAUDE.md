@@ -1,5 +1,147 @@
 # CLAUDE.md — Requirement Atomizer 项目上下文
 
+## 重大更新（2026-08-17b）——WS0 门禁 XLSX 读取器修复（phase2 交接单第 2 项，零付费）
+
+> 背景：WS0 真值门禁 FAIL 的 A 轨原因不是链路（343 节 → 996 原子 → 1847 行成文跑通），
+> 而是读取器在 V2.3.12 模板上认不出正文列（`docs/ws0-gate-result-2026-08-17.md`）。
+> 实查模板后定性为两个结构性缺口，硬加表头别名（交接单原设想）会误伤：
+> ① 计量需求 sheet 的「需求」列被电表类型列拆分（1P2W_SP/3P4W_DC/3P4W_LVCT）；
+> ② 计量/费率/显示/曲线/事件列表与 Release notes/原始需求对应表/需求变更管理/
+> Dataflash容量计算共 9 个 sheet 根本不是需求 sheet（管线从不写入，无正文列头可加），
+> 且模板自带大量「需求列留空」样例行——别名修完会接着栽在空正文行 FAIL。
+
+- **写入器列契约兜底**（`tools/ab_runner.py::_writer_contract_columns`）：表头别名
+  优先不变；签名 sheet（表头含 `序号+子模块`，`template_writer.REQUIREMENT_SHEET_SIGNATURE`）
+  body 别名不命中且列数足够时，按 `template_writer.WRITER_COLUMN_CONTRACT`
+  （子模块=3/需求=6/说明=7/章节=9，公开常量、写入读取同一权威）定位——计量需求
+  sheet 的正文与 section 读的正是写入器实际落列（纯别名方案会丢 col9 的章节）；
+  `contract_body_sheets` 入报告诊断。
+- **模板校准**（`_load_template_extents` + `_read_final_xlsx_rows(template_extents=)`）：
+  `--template` 行界（与 `template_writer._next_seq` 同一"末个非空行"判定）之内 =
+  模板自带内容（annex 清单 sheet、需求 sheet 样例行、留空行），剥离进
+  `template_rows_skipped`/`template_only_sheets`——不计 produced、不触发缺列/空正文
+  FAIL；行界之后才是管线产物（空正文/缺列/不可读单元格仍 fail-closed，annex sheet
+  出现行界外内容也判缺列）。**produced 口径 = 真实追加行**，"必须空模板"警告作废；
+  模板缺席/不可读 → None 退回旧语义（生产链路模板坏会先失败，不静默放行）。
+  报告 schema `ab-runner-report/v2 → v3`。
+- 验证：tests/test_ab_runner.py 新增 8 测试（契约兜底/行界加载/模板校准/门禁集成，
+  TDD 红→绿）；真实 V2.3.12 模板 E2E——`append_analysis_to_template` 追加 2 条
+  （计量需求+时钟需求）→ 读取器 `missing_body=[]`、`row_count=2`、section 正确读回、
+  2046 行模板内容剥离、26 个纯模板 sheet 列入 `template_only_sheets`。
+  重跑门禁（key 充值后）仍按交接单第 3 项一条命令执行。
+
+## 重大更新（2026-08-17）——效果优先单元级自动路由：M0 基线 + M1-M4/M6/M7 核心落地
+
+> 方案：`docs/quality-first-unit-routing-complete-plan-2026-08-16.md`（最终实施方案）。
+> 本轮交付全部确定性核心（零默认行为变化），并完成 M0 真实基线测量（DeepSeek
+> `openai_compatible`，deepseek-v4-flash）。
+
+- **M1 `extraction_units.py`**（`extraction-unit-planner-v1` / `extraction-unit/v1`）：
+  A/B 共用内容单元的单一事实源——正文按句（functional_drilldown 句切分权威），
+  信号句成 clause_segment、无信号块整块 narrative；表格跟随 leaf 规划（row leaf
+  携 `covers_cell_ids`、cell leaf 逐格）；定义/引用物化 context 单元（与
+  collect_term_entries 同口径，保留 section 归属）。硬校验：每个非空 canonical
+  cell 恰好被一个单元覆盖。
+- **M2 `unit_router.py`**（`unit-router-v1`，shadow、零 LLM、零执行变化）：
+  硬/弱两级信号；A 硬=合法 OBIS/白名单 class/COSEM 上下文（attribute/access 词
+  需核心信号或 COSEM 表语境；"Data" 等泛词类名只在表格语境计数）；B 硬=义务模态
+  （functional_drilldown 唯一权威）或强 normative 模式；弱信号→review（物化）；
+  定义/引用/标题恒 context（引用内嵌 shall 归被引条款）。CLI `route-units`。
+- **M3**：`routing_gaps.py`（`routing-gap/v1`，gap_id=sha256(unit|gate|reason)[:16]
+  稳定去重；review 单元物化为 gap）；`quality_gates.py`（`quality-gates-v1`，
+  只读投影既有权威——守恒/执行状态/closure/路由 review/结果包完成 →
+  pass/retry_local/needs_review/needs_work，PASS 只由质量证据决定）；
+  `routed_execution.py` 合并核心（obligation_identity 去重；implementation_constraints
+  只采白名单 class/归一化 OBIS/attribute/access；Mixed 只产一条 authoritative；
+  narrative 占位如实标 `unit_text`）。
+- **M4 `pipeline_contracts.py`+`pipeline_plan.py`**（`ratomizer-pipeline-plan/v2`，
+  sha256 指纹；策略 quality_first|force_a|force_b|full_dual_audit|legacy_combined）
+  ——CLI `plan`；**默认保持 legacy_combined**（§31：Router 过真实语料门禁前不翻）。
+  env 登记：RATOMIZER_EXECUTION_POLICY/RATOMIZER_TRANSLATION_MODE/RATOMIZER_BUDGET_MODE。
+- **M6 翻译交付模式**：`generate_annotation_translations(translation_mode=off|
+  markers|full)`——off=零调用纯维护（计数 chat 证明）；full=先从
+  document_translations.jsonl 同键采纳（同护栏，provenance=full_translation_sidecar）
+  再补 marker。`export_bundle` env 默认 full 映射 legacy marker 行为（默认面零变化），
+  显式 off/markers 强制；`full_translation_enabled()` 在 mode off/markers 下为假。
+- **M7 首批 `paid_cache_store.py`**：PaidCacheStore（governed JSONL、successful-only、
+  fsync/原子/Windows 退避/撕裂恢复 + 命中遥测；`record_many` 单锁批量重写、
+  `from_file` 接已解析 governed 路径）。**消费者迁移完成第一批**：spec_enrich 与
+  ai_extract 的裸 append 缓存全部改走 PaidCacheStore，读侧兼容旧顶层行与新
+  payload 行（旧缓存零失效、last-wins 语义不变）。
+- **M8 首片调用归属遥测**：`llm_client.call_context(stage/processor/unit_id/
+  parent_attempt_id)` 把归属写进 llm_trace 每行 `context` 键（contextvar 经
+  submit_with_context 随线程池传播；未设置时行形态不变）——§18 的
+  "provider attempts 纳入 ledger 100%" 前置就位。
+- **§20 前端**（App.vue）：设置新增业务"交付物"区（翻译交付模式 off/markers/full，
+  localStorage `ratomizer.translationMode.v1`，默认 full=行为面零变化）；A/B 技术
+  开关（LLM 审查/AI 抽取/装配）收进默认折叠的"高级"区（data-testid 保留）；
+  off/markers 不把 full-translation 排进链并经 Electron 桥透传
+  `--translation-mode`（chain_task 拿掉该阶段并落账 + export 强制）；运行摘要追加
+  `GET /unit-routing`（新增 shadow 只读端点）的单元路由计数行。npm test 277 例
+  （含 DeliverySettings.spec.ts 3 例）+ npm run build 绿。
+- **M8 完整 `llm_job_runner.py`**（`llm-job-runner-v1`）：统一 single-shot/batch
+  付费调用机械——route 经既有 config_for_route 权威、指纹→PaidCacheStore（命中=
+  零调用，成功才写）、LLMRequestBudget 透传、retry 分类（connection/remote）、
+  usage/provenance、governed attempt 账本 `llm_job_attempts.jsonl`（行携带
+  stage/processor/unit_id + outcome + tokens/duration/cache/model）；call_context
+  归属同源进 llm_trace；batch 经 submit_with_context，§3.5 ok/partial/failed
+  语义。**首个消费者已迁移**：doc_map 单遍 LLM 调用走 runner（stage=doc_map、
+  预算环节包裹与 LLMBudgetExceeded 穿透保真、注入 chat 适配器保测试语义、
+  attempt 账本断言在案）；doc_map_cache.jsonl 同步改走 PaidCacheStore
+  （双格式兼容旧行）。（2）spec_enrich：enrich_one/_enrich_batch_unit 可选
+  runner（生产入口构造，直调/测试路径零变化）；失败重抛原始异常
+  （LLMJobResult.exception 仅内存态）保真熔断语义；账本 stage=assemble/
+  processor=spec_enrich，指纹复用既有缓存指纹。（3）spot_extract：chat 闭包
+  runner 化——critique_section 自检循环每轮调用各自成 job（stage=spot-
+  extract，unit_id=spot 定位键）；失败重抛原始异常保真 fail-loudly；定点操作
+  保持无缓存。三个消费者迁移后，直调/测试路径未传 runner 处逐字节不变。
+- **M9 收敛片**：`paid_cache_store.read_dual_format()` 成为双格式缓存读的
+  唯一实现（旧顶层行 + paid payload 行、撕裂修复、中部损坏响亮抛错）——
+  spec_enrich/ai_extract/doc_map 三份手写副本收敛为一。
+- **M9 第 1 刀（大文件拆分）**：按 docs/m9-split-plan-2026-08-17.md 把
+  doc_annotation_export 的翻译子系统（47+ 符号）逐字抽到新模块
+  annotation_translations.py（5473→4457 行），dae 全量重导出；共享渲染态
+  留 dae、generate 无 texts 回退惰性回桥；_fabricated_translation_tokens
+  经 dae 命名空间调用以保 patch 保真（别名导入 patch 目标是扫描盲区，
+  已录进拆分计划）。验证：158+7+256 依赖套件 + 全量 3929（4 项既有
+  golden 漂移）。
+- **M9 首片 ADR**：`docs/adr/2026-08-17-quality-first-unit-routing.md` 记录八项
+  承重决策（单元单一事实源、零 LLM 路由、局部升级复用 claim 队列、付费缓存
+  successful-only、统一 job runner、翻译=交付选项、完成以 gate 证据为准且按
+  运行作用域、无 WS0 真值不翻默认）。
+- **预算模式接线（第 9 项，§14）**：`llm_budget.budget_mode()` 解析
+  RATOMIZER_BUDGET_MODE（off/observe/enforce，默认 off=零行为变化；off 时
+  legacy RATOMIZER_LLM_BUDGET 独管且开启即 enforce）；observe 强制开账本、
+  逐调用记账 + 超限预警不阻断（exhausted 标记照记，成本事实不抹）；enforce
+  保持既有事前拦截。tests/test_budget_mode.py。
+- **§22 结果包完成接质量门禁**：`_completion_evidence` 按
+  `completion_scope_stages`（本次运行声明阶段）评估 quality_gates——overall
+  needs_work 拒绝完成（attempt 保持 running，不冒充）；守恒/执行状态 gate 只在
+  functional-extract 在作用域内时评估（不含直抽的运行记"不适用"而非伪造失败）；
+  结果包完成 gate 在完成时自指跳过；无表格文档 closure 判不适用。每次完成在
+  证据里落 `quality_gate_snapshot`（schema/校验器允许可选第二条目，旧单条 marker
+  仍有效）；needs_review 如实记录不阻塞（blocking 语义仍在各自权威处）。
+- **M5 局部升级接线 `routing_escalation.py`**（`routing-escalation-v1`）：可执行
+  缺口（targeted_secondary_route/targeted_reextract）按块辖域匹配**已发布 pending
+  proposal**（lifecycle=open、parent_block_id 命中）并走既有
+  `execute_claim_queue_proposal`（CAS/WAL/预算/幂等全复用，幂等键
+  `gap-{gap_id}-{salt}`）；无匹配 → no_matching_proposal（绝不伪造 claim 锚）；
+  expert_review/needs_work 永不自动执行；`routing_gaps.gaps_from_functional_product`
+  从守恒失败构建块锚缺口（evidence_mismatches/duplicates→targeted_reextract，
+  无锚义务/执行失败→needs_work）；审计行落 `routing_escalations.jsonl`；E2E 证明
+  队列驱动条款族重抽 + 未受影响 FRE 字节稳定（tests/test_routing_escalation.py）。
+- **M0 基线**（`tools/m0_baseline.py` + `docs/m0-baseline-abnt-summary-2026-08-17.md`）：
+  ABNT 默认链冷跑 350 调用/1.42M tokens——功能直抽是**文档级 2 次调用/235,798
+  tokens**（legacy 大包），deepseek-v4-flash 下守恒确定性失败（duplicates=6 →
+  execution_status=failed，两轮复现），失败不缓存 → 热跑重付直抽 235,798 tokens；
+  翻译是冷成本大头（344 调用/1.18M tokens=82.6%），sidecar 热复用 1,226s→0.4s；
+  计量口径以 llm_trace 为准（预算账本逐阶段重建且漏归属）。对照 M2 shadow 路由
+  （`docs/unit-routing-shadow-abnt-2026-08-17.md`）：同文档 53.5% 单元为确定性
+  A 型、2.1% 真需 B 轨付费。
+- 新测试 54 个：extraction_units/unit_router/routing_gates_merge/pipeline_plan/
+  translation_mode/paid_cache_store；golden 4 项漂移为分支既有（stash 验证），
+  待合并时按流程再生成。
+
 ## 重大更新（2026-08-16f）——四轮复审 P1-1：publication_prepared 事件 + 哈希路由恢复
 
 > 四轮复审定位：三轮的提交顺序重排仍留一个窗口——产品原子替换后、

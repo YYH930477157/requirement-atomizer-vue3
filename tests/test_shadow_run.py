@@ -88,12 +88,17 @@ class LiveShadowRunTests(unittest.TestCase, _LivePairMixin):
         self.assertEqual(d["template"], sr.TPL_DIRECT_EXTRACT)
 
     def test_stub_conservation_is_expected_degradation_not_hard_fail(self):
-        """stub 直抽产物守恒未闭合 = 预期降级（文档 NEEDS WORK），HARD 门放过。"""
+        """stub 直抽守恒：HARD 门必须放过——guards-v6 后 stub 产物可合法闭合。
+
+        guards-v6 剥离 [TBL-NNNNNN] 表格标记伪影后，stub 确定性引句/数字基线在含表
+        文档上不再被假失败卡死——闭合（functional_conservation_closed）与预期降级
+        （functional_conservation_degraded_expected）都是合法 pass，绝不能 HARD 红灯。"""
         gates = sr.hard_gates(self.old, self.new,
                               sr.compare_outputs(self.old, self.new, run_meta=self.meta))
         self.assertEqual(gates["conservation_closed"]["status"], "pass")
-        self.assertEqual(gates["conservation_closed"]["reason"],
-                         "functional_conservation_degraded_expected")
+        self.assertIn(gates["conservation_closed"]["reason"],
+                      ("functional_conservation_degraded_expected",
+                       "functional_conservation_closed"))
 
     def test_decision_pass_and_exit_zero(self):
         """整体裁决 pass，CLI exit 0（HARD 门全绿、无 defect/unexplained）。"""
