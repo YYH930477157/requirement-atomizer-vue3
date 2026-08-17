@@ -5,9 +5,9 @@
 
 ## 一、当前状态（已验证的事实，不要重新推导）
 
-- **分支**：`codex/table-translation-structure`，HEAD `0144773`（5 个实现提交：
-  78d3d83 路由接线 / c767fb2 M9③ / f0d4415 M9④ / c59d902 M9⑤ / 0144773 M9⑥
-  desktop_imports）。全量测试
+- **分支**：`codex/table-translation-structure`，HEAD `6794da3`（路由接线 + M9③-⑥ + **路由 v3 收口**：unit-router-v3/
+  planner-v3/prompt-v4/front-matter——10% 诊断四轮实证，表格类守恒失败全部消除，
+  剩余为 flash 模型质量残差）。全量测试
   **3972 项 OK**（1 机器本地跳过；golden 无漂移）。未推送、未合 main。
 - **第 1 项（B 轨守恒修复）代码已落地**：
   - `functional_extract.apply_unit_routing`（`functional-unit-routing-v1`，仅
@@ -18,8 +18,13 @@
 - **零成本验证 PASS**（`PYTHONPATH=. python out/tools/replay_probe3_conservation.py`）：
   probe3 的 131 条真实 flash 输出重放，50/50 失败簇条款全部路由出；ABNT 全量
   358 节 → 186 提取 / 172 路由出 / 3 张非 COSEM 表保留（含真实 b_track 单元）。
-- **受阻点**：`RATOMIZER_LLM_API_KEY` 未设置——付费全量 B 确认（~236k tokens ≈ 2 元）
-  与门禁重跑（~2 元，warm A）都无法执行。
+- **10% 诊断已完成四轮**（2026-08-18，实付 ~¥4.7）：路由 v3 收口后 B 轨范围
+  358→177 节，表格类守恒失败全部消失；**剩余失败 = flash 模型质量残差**（意译丢
+  表号/引文改写/空响应，非确定性 ~2/33 节）。全量门禁 A 轨冷跑实测 ¥8.07/70 节
+  （外推 ¥45+，缓存已保留在 %TEMP%/ab-runner.uqw4d3je 可暖启）。
+- **待用户决策**（见 CLAUDE.md 2026-08-18 残差定性）：a) 换更强模型再 probe
+  （~¥1.5/轮）；b) 接受残差走 M5 升级/专家审（门禁会 FAIL，不翻默认）；
+  c) 先修 parse（garbled PDF 丢号根因）。
 
 ## 二、新会话工作项（按优先级排序）
 

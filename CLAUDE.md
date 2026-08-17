@@ -1,5 +1,33 @@
 # CLAUDE.md — Requirement Atomizer 项目上下文
 
+## 重大更新（2026-08-18）——10% 诊断驱动的路由 v3 收口（用户 key 实付 ~¥12.8）
+
+> 用户质疑全量门禁成本（A 轨冷跑实测 ¥8.07/70 节，外推 ¥45+）后转向 10% 子集诊断
+> （33-36 条，每轮 ~¥1.5）。四轮真实 flash 诊断（产物 `out/probe10-b/`、日志
+> `out/probe10-run*.log`、脚本 `out/tools/probe10_run.py`——机器本地）把 B 轨守恒
+> 失败从「表格类主导」收敛到「flash 模型质量残差」。提交 `6794da3`。
+
+- **四轮演化**：①v2 路由（表格出 B 轨）duplicates/义务覆盖 PASS，但 3 张保留
+  非 COSEM 表致 preservation（Table 1 表头列名数字）+ 错绑（Table 21 位语言）；
+  ②v3 处置权威路由后 evidence PASS，剩 2 个表号丢失（Table 13/17 引用号）；
+  ③prompt v4 保真落数后 Scope/T&D 样板章节暴露为噪声源；④前置样板章节路由后
+  义务覆盖 PASS，剩 2 个非确定性表号丢失 + 1 引文改写 + Communication profiles
+  （又一样板章节，未入枚举）+ 1-2 条空响应。
+- **路由终态**：358 节 → 177 提取（表格 173 + 前置样板 8 路由出，均带审计 meta）。
+  unit_router v3（表格处置权威优先）、planner v3（行单元补 disposition）、
+  functional-unit-routing v2（front-matter）、functional-extract-prompt v4
+  （registry 登记）、chat 截断升级 2 轮（v4-flash 推理型空响应）。
+- **残差定性（不再 prompt 迭代的理由）**：剩余失败全部是 flash 输出质量——意译丢
+  引用号（每轮 ~2/33、非确定性）、引文改写、空响应 stub（1-3/33，16384 仍空）。
+  守恒护栏在正确拦截（宁漏勿错）。收敛路径换轨：a) 更强模型（route/model 一换
+  指纹即换，probe ~¥1.5 可验）；b) M5 claim 队列逐条升级/专家审；c) 修 parse
+  （garbled PDF 是丢号根因之一）。
+- **成本账**：门禁全量中止时 ¥8.07（70/343 A 抽取缓存保留在
+  `%TEMP%/ab-runner.uqw4d3je/A_atoms`，可 --warm-a-cache 复用）+ 四轮诊断
+  ~¥4.7；key 余额 92.81→81.59。
+- 全量 3976 OK（router v3 + front-matter 新增 5 测试）。
+
+
 ## 重大更新（2026-08-17e）——§17 B 轨 unit 级路由接线落地 + M9 第 3-5 刀（NEXT-SESSION-PLAN 第 1/3 项完成）
 
 > 背景：WS0 门禁 FAIL 的 B 轨根因之二「表格内容混入 B 轨」（phase2 定位正确修法 =
