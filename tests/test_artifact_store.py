@@ -175,8 +175,12 @@ BASELINE_BARE_JOINS: dict[str, dict[str, int]] = {
     "cosem_external_refs.py": {"atomic_requirements.jsonl": 1, "blocks.jsonl": 1, "table_items.jsonl": 1},
     "cosem_object_model.py": {"atomic_requirements.jsonl": 1, "table_items.jsonl": 1},
     "decide_trace.py": {"decide_trace.lock": 1},
+    "desktop_imports.py": {
+        # M9 第 6 刀（2026-08-17）：import_ai_decisions_task 迁入，1 处裸拼随迁。
+        "ai_requirements.jsonl": 1,
+    },
     "desktop_tasks.py": {
-        "ai_requirements.jsonl": 2, "atomic_requirements.jsonl": 1, "llm_review_results.jsonl": 2,
+        "ai_requirements.jsonl": 1, "atomic_requirements.jsonl": 1, "llm_review_results.jsonl": 2,
         "llm_trace.jsonl": 1, "run_manifest.lock": 1,
     },
     "doc_annotation_export.py": {
