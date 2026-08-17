@@ -1,12 +1,13 @@
-# 新会话继续方案（2026-08-17e 交接，基于 codex/table-translation-structure @ c59d902）
+# 新会话继续方案（2026-08-17e 交接，基于 codex/table-translation-structure @ 0144773）
 
 > 本文件是唯一需要带进新会话的入口。上一轮完成了第 1 项（B 轨 unit 级路由接线，
 > 零成本验证 PASS）与第 3 项（M9 第 3-5 刀）；**付费步骤因 API key 未设置未执行**。
 
 ## 一、当前状态（已验证的事实，不要重新推导）
 
-- **分支**：`codex/table-translation-structure`，HEAD `c59d902`（4 个提交：
-  78d3d83 路由接线 / c767fb2 M9③ / f0d4415 M9④ / c59d902 M9⑤）。全量测试
+- **分支**：`codex/table-translation-structure`，HEAD `0144773`（5 个实现提交：
+  78d3d83 路由接线 / c767fb2 M9③ / f0d4415 M9④ / c59d902 M9⑤ / 0144773 M9⑥
+  desktop_imports）。全量测试
   **3972 项 OK**（1 机器本地跳过；golden 无漂移）。未推送、未合 main。
 - **第 1 项（B 轨守恒修复）代码已落地**：
   - `functional_extract.apply_unit_routing`（`functional-unit-routing-v1`，仅
@@ -46,9 +47,9 @@ PYTHONPATH=. RATOMIZER_CONTEXT_PACK_STRATEGY=clause_family RATOMIZER_LLM_API_KEY
 
 ### 2. M9 第 6+ 刀（可选，0 元）
 
-第 3-5 刀已完成（api_server_support / ai_extract_verify / claim_events_journal，
-蓝图 `docs/m9-split-plan-2026-08-17.md`）。剩余大符号仍是依赖簇级搬运
-（desktop_tasks 32 patch 目标未动、ai_extract 函数族、claim_review_actions 主体）；
+第 3-6 刀已完成（api_server_support / ai_extract_verify / claim_events_journal /
+desktop_imports，蓝图 `docs/m9-split-plan-2026-08-17.md`）。剩余：ai_extract 函数族
+（120 函数交织，最难）与 claim_review_actions 主体（effective ledger 权威）；
 每刀纪律：AST 依赖闭包审计（不搬 patch 目标、不反向依赖原模块）→ 逐字搬运 →
 原名重导出 → py-modules 登记 → BASELINE_BARE_JOINS 同步 → 全量测试 → 独立提交。
 
@@ -73,7 +74,7 @@ clause_family 邻居、批注视图章节归属）。
 
 ## 四、新会话开场白（复制即用）
 
-> 仓库 codex/table-translation-structure @ c59d902。按 docs/NEXT-SESSION-PLAN.md 继续：
+> 仓库 codex/table-translation-structure @ 0144773。按 docs/NEXT-SESSION-PLAN.md 继续：
 > key 就位后先跑全量 B 确认（clause_family + 路由接线已落地、零成本重放已 PASS），
 > 然后 --warm-a-cache 跑门禁，exit 0 才翻默认并走 golden 再生成。预算控制在 10 元内。
 

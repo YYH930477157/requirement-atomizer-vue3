@@ -44,7 +44,10 @@
   _append_note 共享 helper；SYSTEM_PROMPT 留守因拼接 MODULE_VOCAB）⑤
   `claim_events_journal.py`（11 符号 ~190 行：事件日志 journal 含
   ClaimReviewActionError/EventLogSnapshot/_scan_event_log_unlocked；7 patch 目标
-  全留守，effective ledger 权威未动）。三刀共同纪律：AST 依赖闭包审计（不搬 patch
+  全留守，effective ledger 权威未动）⑥`desktop_imports.py`（2026-08-17f 第 6 刀，
+  7 符号 ~330 行：线下导入/回灌任务族——澄清/verification 工作簿回灌、
+  set_verification、HTML 裁决 JSON 回灌；重依赖全惰性，顶层仅 ai_extract+
+  requirements_analysis_schema，无环；32 patch 目标留守）。各刀共同纪律：AST 依赖闭包审计（不搬 patch
   目标、不反向依赖原模块）、逐字搬运、原名重导出、py-modules 登记、packaging smoke。
 - 验证：新增 test_functional_unit_routing（15）+ router v2（4）+ 既有 router 测试；
   全量 **3972 OK**（1 机器本地跳过，golden 无漂移）。门禁命令注意补
