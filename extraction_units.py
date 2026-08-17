@@ -33,7 +33,10 @@ from io_utils import read_jsonl
 
 EXTRACTION_UNIT_SCHEMA = "extraction-unit/v1"
 # v2（2026-08-17）：COSEM 行的格单元继承 cosem_structured 角色（表/行级语境下沉）。
-EXTRACTION_UNIT_PLANNER_VERSION = "extraction-unit-planner-v2"
+# v3（2026-08-18）：行单元 table_context 补 disposition（行内格处置的最高优先级：
+# target > composite > review > context）——unit_router v3 依据它把非 target 处置的
+# 表格内容归 claim 体系，行单元此前缺此字段会被词法信号越权认领回 B 轨。
+EXTRACTION_UNIT_PLANNER_VERSION = "extraction-unit-planner-v3"
 EXTRACTION_UNITS_FILENAME = "extraction_units.jsonl"
 EXTRACTION_UNIT_PLAN_SCHEMA = "extraction-unit-plan/v1"
 
@@ -215,6 +218,13 @@ def _table_units(blocks: list[dict[str, Any]], table_items: list[dict[str, Any]]
         order = order_by_block.get(block_id, 0)
         row_index = int(item.get("row_index") or 0)
         row_cells = cells_by_row.get((block_id, row_index), [])
+        # v3：行处置 = 行内格处置最高优先级（target > composite > review > context）
+        row_disposition = ""
+        for rank in ("target", "composite", "review", "context"):
+            if any(str((dispositions.get(str(cell.get("cell_id")) or {}) or {}).get(
+                    "disposition") or "") == rank for cell in row_cells):
+                row_disposition = rank
+                break
         roles = ["requirement_candidate"] if item.get("requirement_like") else ["context"]
         if item.get("cosem_object_context") or str(item.get("table_id") or "") in cosem_tables:
             # 行级 context 判定按行值（atomize），稀疏行（Object/CL 空、只剩 Meaning/
@@ -231,6 +241,7 @@ def _table_units(blocks: list[dict[str, Any]], table_items: list[dict[str, Any]]
                 "row_index": row_index,
                 "column_index": None,
                 "headers": [str(header) for header in (item.get("fields") or {}).keys()],
+                "disposition": row_disposition or None,
             },
             context_refs=_context_refs_for(
                 {"section_path": item.get("section_path") or []}, section_defs),

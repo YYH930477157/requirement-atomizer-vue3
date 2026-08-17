@@ -59,7 +59,7 @@ from cosem_behavior_spec import extract_codes, extract_ints
 from requirement_record import provenance
 
 FUNCTIONAL_EXTRACT_VERSION = "functional-extract-v1"
-FUNCTIONAL_EXTRACT_PROMPT_VERSION = "functional-extract-prompt-v3"
+FUNCTIONAL_EXTRACT_PROMPT_VERSION = "functional-extract-prompt-v4"  # v4（2026-08-18 10% 诊断）：硬约束⑥保真落数——Table N/图号/条款号/标准号等引用号与数值必须原样进叙述字段（flash 意译丢 "Table 13/17" 表号 → preservation 假 blocking）。v3 及以前见 CLAUDE.md。
 # S1-8：bump v1→v2。``_reject_drifted_codes`` 清洗范围从仅 objective 扩到全部叙述字段
 # （behaviors/data_constraints/variants/exceptions/preconditions/description），缓存产物内容
 # 变化——指纹含 guards 版本，bump 后旧 stub/LLM 缓存（behaviors 里残留幻觉编码）自然失效。
@@ -80,7 +80,7 @@ FUNCTIONAL_CONSERVATION_MODEL_VERSION = "functional-conservation-obligation-evid
 # §17 unit 级路由接线（2026-08-17）：clause_family 策略下表格主导条款路由出 B 轨输入
 # 与守恒基线（表格内容归 A 轨/上下文，phase2 探针实证其混入 B 轨是守恒失败根因之一）。
 # 接线版本只进 clause_family 缓存指纹维度（legacy 指纹逐字节不变）；路由判据演进时 bump。
-FUNCTIONAL_UNIT_ROUTING_VERSION = "functional-unit-routing-v1"
+FUNCTIONAL_UNIT_ROUTING_VERSION = "functional-unit-routing-v2"  # v2（2026-08-18 10% 诊断）：前置样板章节（Scope/引用/术语定义/Foreword）路由出 B 轨
 FUNCTIONAL_REQUIREMENTS_FILENAME = "functional_requirements.json"
 FUNCTIONAL_EXTRACT_CACHE = "functional_extract_cache.jsonl"
 
@@ -587,7 +587,9 @@ def _resolve_extract_chat(
             pass
 
     def invoke(system: str, user: str) -> dict[str, Any]:
-        return chat_json(config, system, user, max_truncation_escalations=1)
+        # 截断升级 2 轮（2026-08-18 10% 诊断）：deepseek-v4-flash 属推理型，小 max_tokens
+        # 下 finish=length 且内容为空（推理耗尽预算）——1 轮升到 8192 仍空，2 轮给足预算。
+        return chat_json(config, system, user, max_truncation_escalations=2)
 
     return invoke, f"llm:{config.model}"
 
@@ -621,6 +623,9 @@ _PACKAGE_SYSTEM_PROMPT_BASE = (
     "④每条产出必须回指目标条款的 source_block_ids（取自输入，原样回填）。\n"
     "⑤叙述字段必须使用与目标条款相同的语言（英文条款→英文叙述，禁止翻译成中文）；"
     "source_quote 必须是条款原文的逐字摘录（禁止改写/翻译/截断）。\n"
+    "⑥保真落数：目标条款里的所有数值、单位、档位与引用号（Table N/图号/条款号/标准号）"
+    "必须原样进入该条需求的相关叙述字段（objective/behaviors/data_constraints 等）——"
+    "意译措辞可以，改写或漏掉编号不可以；研发拿不到编号等于没写。\n"
     "输出 JSON：{\"items\":[{objective, behaviors[], preconditions[], data_constraints[], "
     "variants[], exceptions[], related_dlms_objects[], description, source_quote, "
     "source_block_ids[]}]}。"
@@ -1859,6 +1864,15 @@ def _extract_by_context_packages(
 # 正是 flash 重复的来源）。
 _ROUTING_KEEP_ROUTES = frozenset({"b_track", "mixed"})
 
+# §7.5 前置样板章节（2026-08-18 10% 诊断三轮实证）：Scope/Normative references/
+# Terms and Definitions/Foreword/Introduction 是标准文档的通用前言结构——范围声明、
+# 引用清单、术语定义从不产出功能需求，flash 在这些章节上只会产出噪声条目并丢引用号
+# （NBR 61334/IEC 62056 → preservation 假 blocking）。归一化小写匹配顶层路径。
+_FRONT_MATTER_TOP_LEVEL = frozenset({
+    "scope", "normative references", "terms and definitions",
+    "foreword", "introduction", "abstract", "目的", "规范性引用文件", "术语和定义",
+})
+
 
 def _load_routing_units(out_dir: Path) -> tuple[list[dict[str, Any]], bool]:
     """加载（必要时现场规划）extraction units；返回 (units, planned_now)。
@@ -1971,8 +1985,16 @@ def apply_unit_routing(
 
     kept: list[dict[str, Any]] = []
     routed_out: list[dict[str, Any]] = []
+    front_matter: list[dict[str, Any]] = []
     mixed_kept = 0
     for section in sections:
+        path = [str(part).strip() for part in (section.get("section_path") or [])]
+        top = " ".join(path[0].lower().split()) if path else ""
+        if top in _FRONT_MATTER_TOP_LEVEL:
+            # §7.5 前置样板章节：范围/引用/术语定义——归 context 索引，不进 B 轨
+            # （单独计数，与表格路由区分审计）。
+            front_matter.append(section)
+            continue
         block_ids = [str(b) for b in (section.get("block_ids") or []) if str(b)]
         has_table = bool(block_ids) and any(b in table_block_ids for b in block_ids)
         all_table = bool(block_ids) and all(b in table_block_ids for b in block_ids)
@@ -1992,6 +2014,10 @@ def apply_unit_routing(
         sections_total=len(sections),
         sections_extracted=len(kept),
         table_dominated_routed_out=len(routed_out),
+        front_matter_routed_out=len(front_matter),
+        front_matter_section_ids=[
+            " / ".join(str(p) for p in (section.get("section_path") or []))
+            for section in front_matter],
         routed_out_section_ids=[
             str(section.get("section_id") or "") for section in routed_out],
         routed_out_block_ids=sorted({

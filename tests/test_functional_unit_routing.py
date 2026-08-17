@@ -208,6 +208,20 @@ class ApplyUnitRoutingTests(unittest.TestCase):
             self.assertEqual(meta["status"], "ok")
             self.assertEqual(meta["table_dominated_routed_out"], 0)
 
+    def test_front_matter_sections_routed_out(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            _seed_out(out)
+            sections = fe.load_clauses(out) + [{
+                "section_id": "Scope", "section_path": ["Scope"],
+                "heading": "Scope", "text": "This Standard applies to smart meters.",
+                "block_ids": ["B9"]}]
+            kept, meta = fe.apply_unit_routing(
+                sections, blocks=_blocks_jsonl(), out_dir=out)
+            self.assertNotIn("Scope", [s["section_id"] for s in kept])
+            self.assertEqual(meta["front_matter_routed_out"], 1)
+            self.assertEqual(meta["front_matter_section_ids"], ["Scope"])
+
     def test_stale_decisions_recomputed_in_memory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)

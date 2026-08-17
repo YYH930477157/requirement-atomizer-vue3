@@ -37,12 +37,15 @@ from extraction_units import (
 )
 from io_utils import read_jsonl
 
-UNIT_ROUTER_VERSION = "unit-router-v2"
+UNIT_ROUTER_VERSION = "unit-router-v3"
 UNIT_ROUTING_DECISION_SCHEMA = "unit-routing-decision/v1"
 UNIT_ROUTING_DECISIONS_FILENAME = "unit_routing_decisions.jsonl"
 UNIT_ROUTING_SUMMARY_SCHEMA = "unit-routing-summary/v1"
 
 ROUTES = ("a_track", "b_track", "mixed", "context", "review")
+
+# 表格型单元（其路由受表格处置权威约束，见 route_unit v3）
+_TABLE_KINDS = ("table_row", "table_cell")
 
 # 证据 kind（schema 枚举的单点权威）
 EVIDENCE_KINDS = (
@@ -178,11 +181,26 @@ def route_unit(unit: dict[str, Any]) -> dict[str, Any]:
     # 义务，由该条款单元承载——这里再路由只会双重抽取
     headers = [str(header) for header in
                (unit.get("table_context") or {}).get("headers") or []]
-    cosem_table = kind in ("table_row", "table_cell") and (
+    cosem_table = kind in _TABLE_KINDS and (
         "cosem_structured" in roles
         or any(_COSEM_HEADER_RE.search(header) for header in headers))
     if kind in ("definition", "reference", "heading"):
         route, primary, rule, confidence = "context", None, "context_by_kind", 0.9
+    elif kind in _TABLE_KINDS and (
+        disposition := str((unit.get("table_context") or {}).get("disposition") or "")
+    ) not in ("", "target") and (a_hard or b_hard):
+        # v3（2026-08-18 10% 诊断实证）：表格处置权威（table-disposition-rules）优先于
+        # 词法义务信号——target 之外的处置内容归表格 claim 体系：composite → claim 组合
+        # 提升（A 轨权威，rule table_composition_a_authority）；context/excluded/review
+        # 排除确认。诊断反例：矩阵勾号 "X" 被当 normative marker、位定义说明列的
+        # "must be set to 0" 被当义务模态，把三张协议定义表误留在 B 轨（守恒假失败）。
+        # disposition=target（guards-v16 需求形单行）不受影响，词法信号照常判定。
+        if disposition == "composite":
+            route, primary, rule, confidence = (
+                "a_track", "a_track", "table_composition_a_authority", 0.9)
+        else:
+            route, primary, rule, confidence = (
+                "context", None, "context_by_disposition", 0.95)
     elif cosem_table and (a_hard or b_hard):
         # v2（2026-08-17 真实语料标定，phase2 探针实证）：COSEM 结构表（cosem 语境的
         # row/cell 单元）出现义务模态时，模态几乎总在参数叙述列（Meaning/Value 对

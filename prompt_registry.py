@@ -58,7 +58,9 @@ PROMPT_REGISTRY: list[dict[str, str]] = [
      "purpose": "Enrichment anti-drift guard version"},
 
     # Functional-extract direct path
-    {"id": "functional-extract", "version": "functional-extract-prompt-v3", "owner_module": "functional_extract",
+    # v4（2026-08-18 10% 诊断）：硬约束⑥保真落数——引用号（Table N/图号/条款号/标准号）
+    # 与数值必须原样进叙述字段（flash 意译丢表号 → preservation 假 blocking）。
+    {"id": "functional-extract", "version": "functional-extract-prompt-v4", "owner_module": "functional_extract",
      "purpose": "Functional requirement direct extraction prompt"},
     {"id": "functional-extract-guards", "version": "functional-extract-guards-v6", "owner_module": "functional_extract",
      "purpose": "Functional extract anti-drift guard version"},
