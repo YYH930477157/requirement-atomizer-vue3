@@ -1,5 +1,56 @@
 # CLAUDE.md — Requirement Atomizer 项目上下文
 
+## 重大更新（2026-08-17e）——§17 B 轨 unit 级路由接线落地 + M9 第 3-5 刀（NEXT-SESSION-PLAN 第 1/3 项完成）
+
+> 背景：WS0 门禁 FAIL 的 B 轨根因之二「表格内容混入 B 轨」（phase2 定位正确修法 =
+> M1 的 block/unit 级路由）。本会话把 `extraction_units` + `unit_router` 决策真正
+> 接进 `functional_extract` 执行路径；零成本验证 PASS（probe3 重放）；付费全量 B 确认
+> 与门禁重跑因 **API key 未设置**未执行（`RATOMIZER_LLM_API_KEY` 缺席，用户充值后
+> 按 NEXT-SESSION-PLAN 第 2 步继续）。分支 `codex/table-translation-structure`，
+> 提交 78d3d83 → c59d902。
+
+- **`functional_extract.apply_unit_routing`**（`functional-unit-routing-v1`，仅
+  clause_family 策略启用）：纯表格条款（全部声明块为表格块，且这些块上的单元路由无
+  b_track/mixed）路由出 B 轨输入**与守恒基线**；`unit_routing` 审计块（跳过清单/
+  计数/版本身份）进产物与结果摘要，绝不静默。护栏：有表格块但表格解析产物缺席 →
+  如实 `status=unavailable` 退回全量输入（保守，B 多覆盖不丢内容）；单元/决策产物
+  版本陈旧或失配 → 确定性重规划/重算（零 LLM）。指纹：`unit_routing_key`
+  （接线|规划器|路由器版本）只进 clause_family 键空间，legacy 指纹逐字节不变；
+  被路由出条款不进 clauses 列表。缓存命中补写同样携带审计块。
+- **`unit_router` v2**（真实语料标定）：COSEM 结构表（cosem 语境 row/cell 单元）
+  出现义务模态改判 `a_track`（`cosem_table_a_priority`）——模态在参数叙述列
+  （Meaning/Comment/Value），归 A 轨 claim/处置权威（phase2 实证 flash 直抽此类表
+  确定性守恒失败）；prose 的 mixed/b_track 语义不变（§8/§9.1）。
+- **`extraction_units` planner v2**：COSEM 表级语境（任一行 cosem_object_context
+  或字段键含 `Object/attribute name`）下沉到全表行/格单元的 `cosem_structured`
+  角色——行级判定按行值，稀疏行（Object/CL 空、只剩 Meaning/Comment）与 leaf-only
+  表头格都会漏；不看表级语境会把说明格误判纯 B 义务。
+- **`functional_reextract` 同口径**：clause_family 产物重抽的条款池/守恒基线用当前
+  代码确定性重算路由（不信产物记录清单，与守恒永远现算同纪律）；指向被路由出表格块
+  的 claim 找不到条款族 → 如实报错；`unit_routing` 审计块随重抽刷新。
+- **零成本验证**（`out/tools/replay_probe3_conservation.py`，机器本地）：probe3 的
+  131 条真实 flash 输出重放——探针 50 节失败簇**全部**被路由出（50/50，含 321 个
+  review 单元审计）；ABNT 全量 358 节 → 186 提取 / 172 路由出 / 3 张非 COSEM 表
+  （Table 1 服务矩阵、Table 4 安全位、Table 21 状态码——含真实 b_track 单元）保留。
+  gate_verify（上次门禁 B 腿部分降级产物）重放失败属旧运行残骸，非新代码回归。
+- **section_path 撞名根因落档**（未修，parse 侧课题）：ABNT PDF 里 "2.20 Control of
+  disconnection" 被拆成 heading「2 20 Control of」+ 段落「disconnection」（行断裂+
+  点号丢失），且 50 个 heading 中 48 个是目录条目（带页码）——337/358 chunk 共享
+  同一 section_id。本路由按 block_id 判定不受影响；修 parse 需重解析+指纹连锁+golden
+  再生成，留待门禁通过后独立处理。
+- **M9 第 3-5 刀**（每刀独立提交、全量 3972 绿）：③`api_server_support.py`（19 符号
+  ~245 行：解析/鉴权/引句匹配/审阅摘要族；20 patch 目标留守；BASELINE_BARE_JOINS
+  随迁同步）④`ai_extract_verify.py`（7 符号 ~170 行：二遍语义复核簇含 ChatFn/
+  _append_note 共享 helper；SYSTEM_PROMPT 留守因拼接 MODULE_VOCAB）⑤
+  `claim_events_journal.py`（11 符号 ~190 行：事件日志 journal 含
+  ClaimReviewActionError/EventLogSnapshot/_scan_event_log_unlocked；7 patch 目标
+  全留守，effective ledger 权威未动）。三刀共同纪律：AST 依赖闭包审计（不搬 patch
+  目标、不反向依赖原模块）、逐字搬运、原名重导出、py-modules 登记、packaging smoke。
+- 验证：新增 test_functional_unit_routing（15）+ router v2（4）+ 既有 router 测试；
+  全量 **3972 OK**（1 机器本地跳过，golden 无漂移）。门禁命令注意补
+  `RATOMIZER_CONTEXT_PACK_STRATEGY=clause_family`（gate_verify 实证上次门禁 B 腿
+  即此策略运行，runbook 命令已同步）。
+
 ## 重大更新（2026-08-17b）——WS0 门禁 XLSX 读取器修复（phase2 交接单第 2 项，零付费）
 
 > 背景：WS0 真值门禁 FAIL 的 A 轨原因不是链路（343 节 → 996 原子 → 1847 行成文跑通），
