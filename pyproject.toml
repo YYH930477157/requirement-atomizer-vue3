@@ -88,6 +88,7 @@ py-modules = [
   "adjudicate",
   "harvest",
   "api_server",
+  "api_server_support",
   "assemble_spec",
   "atomic_requirement_schema",
   "atomize",
