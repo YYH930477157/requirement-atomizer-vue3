@@ -26,6 +26,10 @@
   `%TEMP%/ab-runner.uqw4d3je/A_atoms`，可 --warm-a-cache 复用）+ 四轮诊断
   ~¥4.7；key 余额 92.81→81.59。
 - 全量 3976 OK（router v3 + front-matter 新增 5 测试）。
+- **合并完成（2026-08-18，merge `6146d55` 已 push origin/main）**：golden 三种子 KB +
+  domain-pack 再生成——counts 逐项一致（1013/358/2077/10393/1999/2223/250，零漂移，
+  零 LLM 11.6s），test_golden_regression 14/14 绿，main 全量 3976 OK。30% 自检两次
+  FAIL 未翻默认（§31），翻转等待：更强模型 / 服务稳定窗口重试。
 
 
 ## 重大更新（2026-08-17e）——§17 B 轨 unit 级路由接线落地 + M9 第 3-5 刀（NEXT-SESSION-PLAN 第 1/3 项完成）
