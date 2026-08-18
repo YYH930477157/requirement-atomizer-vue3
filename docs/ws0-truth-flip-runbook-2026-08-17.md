@@ -72,14 +72,21 @@ python tools/truth_from_review.py   --input "C:/.../人工核对需求表.xlsx" 
 ## 第 3 步：跑门禁（一条命令）
 
 ```bash
-RATOMIZER_LLM_API_KEY=<key> python tools/ab_runner.py \
+PYTHONPATH=. RATOMIZER_CONTEXT_PACK_STRATEGY=clause_family RATOMIZER_LLM_API_KEY=<key> \
+  python tools/ab_runner.py \
   --parsed-dir out/abnt_gate_abnt_nbr_16968 \
   --template "C:/Users/YYHwudi/Desktop/Canna-29/电表软件标准化需求列表-V2.3.12 - 2026-4-14..xlsx" \
-  --route openai_compatible \
+  --route openai_compatible --keep-dirs --warm-a-cache <上次A_atoms目录> \
   --truth golden_sets/ws0_human_v1/truth.jsonl \
   --thresholds golden_sets/ws0_human_v1/thresholds.json \
   --out out/ab-gate-report.json
 ```
+
+- `RATOMIZER_CONTEXT_PACK_STRATEGY=clause_family` 必须显式带上（2026-08-17e 起 §17
+  unit 路由只在 clause_family 下启用；上次门禁 B 腿实测也是该策略运行）——不设则 B 轨
+  走 legacy 文档级大包，守恒预期仍 FAIL。env 全量快照进报告供审计。
+- `--keep-dirs` 留工作目录缓存给下次暖启动；`--warm-a-cache` 复制上次 A_atoms 的
+  `ai_extract_cache.jsonl` 进新 A 工作目录（整链仍真实执行，仅抽取零付费）。
 
 其中 `out/abnt_gate_abnt_nbr_16968` 是解析产物目录（目录名 = document_id）；
 可用 M0 的解析产物复制改名（解析确定性零 LLM，重跑亦可）。

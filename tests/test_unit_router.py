@@ -87,6 +87,69 @@ class UnitRouterRuleTests(unittest.TestCase):
         self.assertIn("obis", kinds)
         self.assertIn("cosem_context", kinds)
 
+    def test_cosem_table_with_modal_routes_a_priority_v2(self) -> None:
+        # v2 标定：COSEM 结构表单元带义务模态（参数叙述列）→ a_track，不再 mixed
+        decision = route_unit(_unit(
+            "U5m", "Event log | 1-1:0.99.98.255 | all events must be registered",
+            kind="table_cell",
+            roles=["requirement_candidate", "cosem_structured"],
+            headers=["Object/attribute name", "CL", "Value"]))
+        self.assertEqual(decision["route"], "a_track")
+        self.assertEqual(decision["rule"], "cosem_table_a_priority")
+        self.assertEqual(decision["router_version"], "unit-router-v3")
+
+    def test_cosem_table_b_modal_only_also_a_priority_v2(self) -> None:
+        # v2：COSEM 表内只有模态（参数叙述列）无 A 信号的格同样归 A 轨
+        decision = route_unit(_unit(
+            "U5b", "all events must be registered in the buffer",
+            kind="table_cell",
+            roles=["requirement_candidate", "cosem_structured"],
+            headers=["Object/attribute name", "CL", "Value"]))
+        self.assertEqual(decision["route"], "a_track")
+        self.assertEqual(decision["rule"], "cosem_table_a_priority")
+
+    def test_composite_disposition_table_routes_a_authority_v3(self) -> None:
+        # v3：处置=composite 的表格内容（如矩阵勾号行）归 claim 组合权威，词法 marker 不认领
+        decision = route_unit(_unit(
+            "U10c", "X", kind="table_cell", roles=["requirement_candidate"],
+            headers=["xDLMS Service"], disposition="composite"))
+        self.assertEqual(decision["route"], "a_track")
+        self.assertEqual(decision["rule"], "table_composition_a_authority")
+
+    def test_context_disposition_table_modal_not_b_v3(self) -> None:
+        # v3：处置=context 的位定义说明（"must be set to 0"）不被词法模态越权改判
+        decision = route_unit(_unit(
+            "U10x", "Not used, must be set to \"0\"", kind="table_row",
+            roles=["requirement_candidate"], headers=["bit", "Security States"],
+            disposition="context"))
+        self.assertEqual(decision["route"], "context")
+        self.assertEqual(decision["rule"], "context_by_disposition")
+
+    def test_target_disposition_table_modal_stays_b_v3(self) -> None:
+        # v3：处置=target（guards-v16 需求形单行）不受影响
+        decision = route_unit(_unit(
+            "U10t", "The meter shall register all events.", kind="table_cell",
+            roles=["requirement_candidate"], headers=["Service", "Description"],
+            disposition="target"))
+        self.assertEqual(decision["route"], "b_track")
+        self.assertEqual(decision["rule"], "hard_b_only")
+
+    def test_non_cosem_table_b_modal_stays_b_track_v2(self) -> None:
+        # 非 COSEM 结构表（如术语/安全状态表）的义务格不越权改判
+        decision = route_unit(_unit(
+            "U5n", "The meter shall register all events.",
+            kind="table_cell", roles=["requirement_candidate"],
+            headers=["Service", "Description"]))
+        self.assertEqual(decision["route"], "b_track")
+
+    def test_prose_mixed_unchanged_in_v2(self) -> None:
+        decision = route_unit(_unit(
+            "U5p", "The meter shall expose event records through "
+            "interface class 7, attribute 2, with read-only access."))
+        self.assertEqual(decision["route"], "mixed")
+        self.assertEqual(decision["primary_route"], "b_track")
+        self.assertEqual(decision["rule"], "hard_ab_mixed")
+
     def test_class_number_without_whitelist_entry_is_not_hard_a(self) -> None:
         # class 999 不在 COSEM 白名单——不得构成硬 A 信号
         decision = route_unit(_unit("U6", "The link shall use interface class 999."))

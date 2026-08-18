@@ -143,8 +143,13 @@ BASELINE_BARE_JOINS: dict[str, dict[str, int]] = {
     "agent_tools.py": {"ai_requirements.jsonl": 1, "blocks.jsonl": 1},
     "ai_extract.py": {"blocks.jsonl": 2, "llm_review_results.jsonl": 1},
     "api_server.py": {
-        "ai_requirements.jsonl": 4, "atomic_requirements.jsonl": 3, "blocks.jsonl": 3,
-        "llm_review_results.jsonl": 3,
+        # M9 第 3 刀（2026-08-17）：_load_ai_requirements/load_review_insights/
+        # build_review_summary 逐字迁往 api_server_support，3 处裸拼随迁。
+        "ai_requirements.jsonl": 3, "atomic_requirements.jsonl": 3, "blocks.jsonl": 3,
+        "llm_review_results.jsonl": 2,
+    },
+    "api_server_support.py": {
+        "ai_requirements.jsonl": 1, "llm_review_results.jsonl": 1,
     },
     "atomize.py": {
         "atomic_requirements.jsonl": 1, "blocks.jsonl": 1, "chunks.jsonl": 1,
@@ -170,8 +175,12 @@ BASELINE_BARE_JOINS: dict[str, dict[str, int]] = {
     "cosem_external_refs.py": {"atomic_requirements.jsonl": 1, "blocks.jsonl": 1, "table_items.jsonl": 1},
     "cosem_object_model.py": {"atomic_requirements.jsonl": 1, "table_items.jsonl": 1},
     "decide_trace.py": {"decide_trace.lock": 1},
+    "desktop_imports.py": {
+        # M9 第 6 刀（2026-08-17）：import_ai_decisions_task 迁入，1 处裸拼随迁。
+        "ai_requirements.jsonl": 1,
+    },
     "desktop_tasks.py": {
-        "ai_requirements.jsonl": 2, "atomic_requirements.jsonl": 1, "llm_review_results.jsonl": 2,
+        "ai_requirements.jsonl": 1, "atomic_requirements.jsonl": 1, "llm_review_results.jsonl": 2,
         "llm_trace.jsonl": 1, "run_manifest.lock": 1,
     },
     "doc_annotation_export.py": {
