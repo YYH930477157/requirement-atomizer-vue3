@@ -1871,6 +1871,8 @@ _ROUTING_KEEP_ROUTES = frozenset({"b_track", "mixed"})
 _FRONT_MATTER_TOP_LEVEL = frozenset({
     "scope", "normative references", "terms and definitions",
     "foreword", "introduction", "abstract", "目的", "规范性引用文件", "术语和定义",
+    # DLMS/COSEM 文档的行规清单章（引用性列表，同 Normative references 类）
+    "communication profiles",
 })
 
 

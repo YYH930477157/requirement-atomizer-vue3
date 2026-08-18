@@ -383,12 +383,16 @@ def functional_targeted_reextract(
         )
     items = [row for row in payload.get("items") or [] if isinstance(row, dict)]
 
-    # 真实重抽（注入 chat 或真实 route；宁多勿漏的完整条款族上下文）
+    # 真实重抽（注入 chat 或真实 route；宁多勿漏的完整条款族上下文）。
+    # 2026-08-18：策略随产物走——clause_family 产物的重抽也用 clause_family 包
+    # （条款整文进包 + prompt v4 保真落数），legacy 切片重抽丢表号会让重试白付。
+    payload_strategy = str(payload.get("context_pack_strategy") or "legacy")
     new_items, executed_route = fe.extract_functional_requirements(
         family,
         chat=chat,
         route=route,
         blocks=fe._load_blocks(root),
+        strategy=payload_strategy,
     )
     status = fe.execution_status(
         route, executed_route,
