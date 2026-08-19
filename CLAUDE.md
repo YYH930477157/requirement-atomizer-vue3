@@ -1,20 +1,29 @@
 # CLAUDE.md — Requirement Atomizer 项目上下文
 
-## 重大更新（2026-08-19）——首批产品默认：直抽跟条款切、GUI 不再默认审碎原子
+## 重大更新（2026-08-19）——碎原子不再是需求产品（代码 `11da57b`，本条为分批说明）
 
-> 用户裁定「拆得很碎的原子是失败的一笔」。本批只改出厂默认，不删 atomize、
-> 不翻 `RATOMIZER_EXECUTION_POLICY`、不默认开分析富化。未提交。
+> 用户裁定「拆得很碎的原子是失败的一笔」。代码一次提交，决策是两批。
+> 不删 atomize、不翻 `RATOMIZER_EXECUTION_POLICY`、不默认开分析富化。
 
-- **打包策略耦合**：`functional_extract.context_pack_strategy()` 在环境变量未设
-  且直抽开启时生效 `clause_family`（单元路由可接线）。登记默认仍是 `legacy`，
-  以便 `=legacy` 与「未设」可区分。显式 `legacy` + 直抽开：桌面阶段指纹带
-  `strategy_warning=functional_extract_with_explicit_legacy_packing` 并打日志。
-- **GUI**：`ratomizer.runStages.v3`，`llmReview` 默认关（旧 v2 自定义阶段会重置
-  一次）。运行总览首格改为「功能需求」，不再用「原子需求」当主指标。
-- **第二批界面**：日常导航只留「功能需求」；「原子诊断」（旧审查工作台）进设置
-  「显示原子诊断」（`ratomizer.showAtomDiagnostics.v1`，默认关）。文档批注标明
-  「对照原文」；Claim 导航改「覆盖审计」。打开已有结果落到功能需求，不进原子页。
-  路由 `review` / testid `nav-审查工作台` 保留。
+- **第一批 · 出厂怎么跑**（`functional_extract.context_pack_strategy` + GUI 运行默认）
+  - 直抽开着且 `RATOMIZER_CONTEXT_PACK_STRATEGY` **未设** → 生效 `clause_family`
+    （单元路由接线）。登记默认字面仍是 `legacy`，以便「未设」和显式 `=legacy`
+    可区分。显式 legacy + 直抽开：桌面阶段指纹带
+    `strategy_warning=functional_extract_with_explicit_legacy_packing` 并打日志。
+  - **缓存**：未设策略的直抽指纹从 legacy 大包换成 clause_family，旧文档级
+    直抽缓存自然 miss，应当如此，不是静默复用失败大包。
+  - GUI `ratomizer.runStages.v3`，`llmReview` 默认关。从 v2 换键：**旧用户
+    自定义过的阶段勾选会重置一次**（再开原子审查请到设置 → 高级）。
+  - 运行总览首格改为「功能需求」，不再用「原子需求」当主指标。
+
+- **第二批 · 界面承认原子不是需求**（导航 / 文案，不改 CAS/WAL）
+  - 日常侧栏评审正门只留「功能需求」。「原子诊断」（旧审查工作台）进设置
+    「显示原子诊断」（`ratomizer.showAtomDiagnostics.v1`，默认关）。
+    路由 `review` / testid `nav-审查工作台` 保留。
+  - 文档批注标明「对照原文，不是第二张需求表」。
+  - Claim 导航改「覆盖审计」（看原文有没有被功能条盖住）。
+  - **打开已有结果 / 恢复会话落到功能需求**，不再自动进原子裁决页。
+
 - **未做**：删除 `atomic_requirements.jsonl`、分析富化默认开、
   WS0 翻执行策略、继续迭代 functional-extract prompt、合并四份评审队列。
 
