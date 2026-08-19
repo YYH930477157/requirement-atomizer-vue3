@@ -2358,14 +2358,27 @@ def _functional_extract_stage_config() -> dict[str, Any]:
     from functional_extract import (
         CONTEXT_PACK_STRATEGY_ENV,
         context_pack_strategy,
+        functional_extract_enabled,
         functional_extract_negative_k,
     )
-    return {
-        "strategy": context_pack_strategy(),
-        "strategy_env_raw": os.environ.get(CONTEXT_PACK_STRATEGY_ENV, ""),
+    resolved = context_pack_strategy()
+    raw = os.environ.get(CONTEXT_PACK_STRATEGY_ENV, "")
+    config = {
+        "strategy": resolved,
+        "strategy_env_raw": raw,
         # §3.6：运行时求值（修掉 import 时常量在同进程不刷新的缺陷）
         "negative_k": functional_extract_negative_k(),
     }
+    if (functional_extract_enabled()
+            and str(raw).strip().lower() == "legacy"):
+        LOGGER.warning(
+            "功能直抽与显式 legacy 文档级打包同时启用——"
+            "这是已证明会守恒失败的组合；请改 "
+            "RATOMIZER_CONTEXT_PACK_STRATEGY=clause_family，"
+            "或 FUNCTIONAL_EXTRACT=0 回滚旧路径"
+        )
+        config["strategy_warning"] = "functional_extract_with_explicit_legacy_packing"
+    return config
 
 
 def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",

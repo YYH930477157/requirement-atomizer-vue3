@@ -8,6 +8,7 @@ meta（``unit_routing`` 块），绝不静默。legacy 策略零变化：不加�
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -242,13 +243,30 @@ class RunIntegrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)
             _seed_out(out)
-            result = fe.run_functional_extract(out, route="stub")
+            result = fe.run_functional_extract(out, route="stub", strategy="legacy")
             payload = json.loads(
                 (out / "functional_requirements.json").read_text(encoding="utf-8"))
             self.assertEqual(payload["clause_count"], 2)
             self.assertNotIn("unit_routing", payload)
             self.assertNotIn("unit_routing", result)
             self.assertEqual(result["execution_status"], "ok")
+
+    def test_unset_strategy_routes_like_clause_family_when_extract_on(self) -> None:
+        """直抽默认开且未指定策略 → 生效 clause_family，表格条款被路由出。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            _seed_out(out)
+            with mock.patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("RATOMIZER_CONTEXT_PACK_STRATEGY", None)
+                os.environ.pop("RATOMIZER_FUNCTIONAL_EXTRACT", None)
+                result = fe.run_functional_extract(out, route="stub")
+            payload = json.loads(
+                (out / "functional_requirements.json").read_text(encoding="utf-8"))
+            routing = payload["unit_routing"]
+            self.assertEqual(result["unit_routing"]["status"], "ok")
+            self.assertEqual(routing["status"], "ok")
+            self.assertEqual(routing["table_dominated_routed_out"], 1)
+            self.assertEqual(routing["routed_out_section_ids"], ["4.2"])
 
     def test_clause_family_routes_out_table_section(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

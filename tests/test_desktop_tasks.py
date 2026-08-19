@@ -2830,5 +2830,31 @@ class StageInputShaCacheBoundTests(unittest.TestCase):
             )
 
 
+class FunctionalExtractStageConfigTests(unittest.TestCase):
+    """直抽开启且未设策略 → clause_family；显式 legacy 进指纹并带警告。"""
+
+    def test_unset_strategy_resolves_clause_family_without_warning(self) -> None:
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("RATOMIZER_CONTEXT_PACK_STRATEGY", None)
+            os.environ.pop("RATOMIZER_FUNCTIONAL_EXTRACT", None)
+            config = desktop_tasks._functional_extract_stage_config()
+        self.assertEqual(config["strategy"], "clause_family")
+        self.assertEqual(config["strategy_env_raw"], "")
+        self.assertNotIn("strategy_warning", config)
+
+    def test_explicit_legacy_warns_when_extract_on(self) -> None:
+        with patch.dict(os.environ, {
+            "RATOMIZER_FUNCTIONAL_EXTRACT": "1",
+            "RATOMIZER_CONTEXT_PACK_STRATEGY": "legacy",
+        }):
+            config = desktop_tasks._functional_extract_stage_config()
+        self.assertEqual(config["strategy"], "legacy")
+        self.assertEqual(config["strategy_env_raw"], "legacy")
+        self.assertEqual(
+            config["strategy_warning"],
+            "functional_extract_with_explicit_legacy_packing",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

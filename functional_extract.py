@@ -99,11 +99,13 @@ LOGGER = logging.getLogger("requirement_atomizer")
 # 入口开关（config.ENV_REGISTRY 登记）：默认 0=旧原子化路径，本模块不运行。
 ENTRY_SWITCH_ENV = "RATOMIZER_FUNCTIONAL_EXTRACT"
 
-# --- V3 WS-A A2 上下文包策略（默认 legacy=遗留切片，行为面不变）---
-# legacy：_build_user_prompt 遗留 4000 字符切片（保留，默认）。
+# --- V3 WS-A A2 上下文包策略 ---
+# legacy：_build_user_prompt 遗留 4000 字符切片（显式回滚 / 直抽关闭时的默认）。
 # clause_family：按条款自然边界组装上下文包——目标条款整文（绝不截断）+ 同族相邻条款
 # （复用 extract_units.clause_key 两级族键）+ doc_map 热区摘要（A1 有地图时）；包大小上限
 # 只约束拼包（邻居可舍弃），单条款自身超限仍整文进包（条款是自然原子，宁超勿截）。
+# 直抽默认开启后：未显式指定策略时生效 clause_family（单元路由只在此策略下接线）。
+# 显式 RATOMIZER_CONTEXT_PACK_STRATEGY=legacy 仍可用，但是已证伪的文档级大包组合。
 CONTEXT_PACK_STRATEGY_ENV = "RATOMIZER_CONTEXT_PACK_STRATEGY"
 CONTEXT_PACK_MAX_CHARS_ENV = "RATOMIZER_CONTEXT_PACK_MAX_CHARS"
 CONTEXT_PACK_DEFAULT_MAX_CHARS = 24000
@@ -644,10 +646,20 @@ def _package_system_prompt(negative_exemplars: str = "") -> str:
 
 
 def context_pack_strategy(value: str | None = None) -> str:
-    """上下文包组装策略（ENV_REGISTRY 登记）：默认 legacy=遗留切片，行为面不变。"""
-    raw = os.environ.get(CONTEXT_PACK_STRATEGY_ENV) if value is None else value
-    token = str(raw or "").strip().lower()
-    return token if token in CONTEXT_PACK_STRATEGIES else "legacy"
+    """上下文包组装策略。
+
+    显式传入或环境变量命中合法值时按该值。
+    未指定时：功能直抽开启 → ``clause_family``（按条款切 + 单元路由可接线）；
+    直抽关闭 → ``legacy``（旧原子化回滚路径保持文档级切片）。
+    未知值回退 ``legacy``，避免误启新行为。
+    """
+    if value is not None:
+        token = str(value).strip().lower()
+        return token if token in CONTEXT_PACK_STRATEGIES else "legacy"
+    if CONTEXT_PACK_STRATEGY_ENV in os.environ:
+        token = str(os.environ.get(CONTEXT_PACK_STRATEGY_ENV) or "").strip().lower()
+        return token if token in CONTEXT_PACK_STRATEGIES else "legacy"
+    return "clause_family" if functional_extract_enabled() else "legacy"
 
 
 def context_pack_max_chars(value: str | None = None) -> int:
@@ -2104,9 +2116,9 @@ def run_functional_extract(
     ``sections`` 缺省时从 ``chunks.jsonl``（extract_units 条款切分产物）惰性加载——
     不改 extract_units / atomize（硬边界：直抽替换下游两阶段，旧路径可显式回滚）。
 
-    A2：``strategy`` 缺省读 ``RATOMIZER_CONTEXT_PACK_STRATEGY``（默认 legacy 不变）；
-    clause_family 下自动只读加载 A1 整篇地图（``doc_map.load_doc_map``，缺席/不可用
-    则不带摘要，退回无地图包——不伪造）。
+    A2：``strategy`` 缺省读 ``context_pack_strategy()``（直抽开启且未显式指定时
+    为 clause_family；显式 legacy 仍可用）。clause_family 下自动只读加载 A1
+    整篇地图（``doc_map.load_doc_map``，缺席/不可用则不带摘要，退回无地图包——不伪造）。
     """
     out_dir = Path(out_dir).expanduser().resolve()
     if sections is None:

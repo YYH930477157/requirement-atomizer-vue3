@@ -40,8 +40,9 @@ PYTHONPATH=. RATOMIZER_CONTEXT_PACK_STRATEGY=clause_family RATOMIZER_LLM_API_KEY
   --thresholds golden_sets/ws0_human_v1/thresholds.json --out out/ab-gate-report.json
 ```
 
-- **策略 env 必须显式带**（§17 路由只在 clause_family 下启用；不设则 B 走 legacy
-  文档级大包，守恒预期仍 FAIL）。gate_verify 实证上次门禁 B 腿即 clause_family 运行。
+- **策略 env 可省略**（2026-08-19：直抽开启且未设 `RATOMIZER_CONTEXT_PACK_STRATEGY`
+  时生效 `clause_family`，§17 单元路由会接线）。显式 `=legacy` 仍是文档级大包
+  （桌面会警告）。命令里保留显式 `clause_family` 只为审计清晰，不是功能前提。
 - B 轨剩余风险（零成本验证覆盖不到的）：prose 条款的义务覆盖（Foreword 样板文等），
   以及 3 张保留非 COSEM 表（Table 1/4/21）——全量 B 一跑便知。
 - **exit 0 → 独立提交翻转 `RATOMIZER_EXECUTION_POLICY` 默认值**（config +

@@ -4,9 +4,22 @@ import App from "../App.vue"
 
 enableAutoUnmount(afterEach)
 
-const ALL_STAGES_OFF = JSON.stringify({ aiExtract: false, assemble: false, analyze: false, compose: false, annotationHtml: false })
+const ALL_STAGES_OFF = JSON.stringify({
+  llmReview: true,
+  aiExtract: false, assemble: false, analyze: false, compose: false, annotationHtml: false,
+})
+
+async function enableAtomDiagnostics(wrapper: ReturnType<typeof mount>) {
+  if (wrapper.find('[data-testid="nav-审查工作台"]').exists()) return
+  await wrapper.find('[data-testid="nav-设置"]').trigger("click")
+  await flushPromises()
+  await wrapper.find('[data-testid="settings-show-atom-diagnostics"]').setValue(true)
+  await wrapper.find('[data-testid="settings-close"]').trigger("click")
+  await flushPromises()
+}
 
 async function openReview(wrapper: ReturnType<typeof mount>) {
+  await enableAtomDiagnostics(wrapper)
   await wrapper.find('[data-testid="nav-审查工作台"]').trigger("click")
   await flushPromises()
 }
@@ -14,7 +27,7 @@ async function openReview(wrapper: ReturnType<typeof mount>) {
 describe("review workspace shell", () => {
   beforeEach(() => {
     // 默认「运行」只跑基础解析+审查，不追加交付物链——各测试按需在 mount 前开启对应阶段
-    localStorage.setItem("ratomizer.runStages.v2", ALL_STAGES_OFF)
+    localStorage.setItem("ratomizer.runStages.v3", ALL_STAGES_OFF)
   })
   afterEach(() => {
     vi.restoreAllMocks()
@@ -68,15 +81,16 @@ describe("review workspace shell", () => {
     expect(navBtn.classes()).toContain("active")
   })
 
-  it("groups nav items into collapsed visual sections without dropping entries (G9-7)", async () => {
+  it("groups daily nav so functional review is the only review front door", async () => {
     const wrapper = mount(App)
     await flushPromises()
     const navText = wrapper.find(".side-nav").text()
-    // 评审相关项视觉收敛为分组标题
     expect(navText).toContain("评审")
-    expect(navText).toContain("文档与账本")
-    // 全部 nav 项 testid 保留——不删项、不改路由
-    for (const label of ["运行", "审查工作台", "功能需求", "文档批注", "Claim 账本", "文档渲染"]) {
+    expect(navText).toContain("原文与审计")
+    expect(navText).not.toContain("审查工作台")
+    expect(navText).not.toContain("原子诊断")
+    expect(wrapper.find('[data-testid="nav-审查工作台"]').exists()).toBe(false)
+    for (const label of ["运行", "功能需求", "文档批注", "覆盖审计", "文档渲染"]) {
       expect(wrapper.find(`[data-testid="nav-${label}"]`).exists()).toBe(true)
     }
   })
@@ -203,10 +217,11 @@ describe("review workspace shell", () => {
 
     await wrapper.find('[data-testid="nav-文档批注"]').trigger("click")
     expect(wrapper.find('[data-testid="doc-review"]').exists()).toBe(true)  // 文档批注视图
+    expect(wrapper.find('[data-testid="doc-role-hint"]').text()).toContain("对照原文")
 
-    await wrapper.find('[data-testid="nav-Claim 账本"]').trigger("click")
+    await wrapper.find('[data-testid="nav-覆盖审计"]').trigger("click")
     expect(wrapper.find('[data-testid="claim-ledger"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="claim-ledger"]').text()).toContain("双写观察期 · 结构待审阻断 Ledger Ready")
+    expect(wrapper.find('[data-testid="claim-ledger"]').text()).toContain("看原文有没有被功能条盖住")
 
     await wrapper.find('[data-testid="nav-设置"]').trigger("click")
     expect(wrapper.find('[data-testid="settings-panel"]').exists()).toBe(true)
@@ -746,7 +761,7 @@ describe("review workspace shell", () => {
     expect(translationCalls).toHaveLength(1)
   })
 
-  it("restores a delayed desktop session through the ready event and opens the review workspace", async () => {
+  it("restores a delayed desktop session through the ready event onto functional review", async () => {
     let readyHandler: ((session: RequirementAtomizerApiSession) => void) | undefined
     Object.defineProperty(window, "ratomizerDesktop", {
       configurable: true,
@@ -791,7 +806,7 @@ describe("review workspace shell", () => {
       if (url.endsWith("/manifest")) {
         return { ok: true, json: async () => ({ input: "C:\\input\\restored.docx" }) } as Response
       }
-      throw new Error(`Unexpected request: ${url}`)
+      return { ok: true, json: async () => ({}) } as Response
     })
 
     const wrapper = mount(App)
@@ -802,10 +817,14 @@ describe("review workspace shell", () => {
       outputDir: "E:\\out\\restored",
     })
     await vi.waitFor(() => {
+      expect(wrapper.find('[data-testid="functional-review"]').exists()).toBe(true)
+    })
+    expect(wrapper.find('[data-testid="nav-功能需求"]').classes()).toContain("active")
+    await openReview(wrapper)
+    await vi.waitFor(() => {
       expect(wrapper.find('[data-testid="row-SREQ-RESTORED"]').exists()).toBe(true)
     })
 
-    expect(wrapper.find('[data-testid="nav-审查工作台"]').classes()).toContain("active")
     await wrapper.find('[data-testid="nav-运行"]').trigger("click")
     expect(wrapper.find('[data-testid="selected-output-dir"]').text()).toContain("E:\\out\\restored")
     expect(wrapper.find('[data-testid="selected-input-path"]').text()).toContain("C:\\input\\restored.docx")
@@ -851,7 +870,7 @@ describe("review workspace shell", () => {
       if (url.endsWith("/manifest")) {
         return { ok: true, json: async () => ({ input: "C:\\input\\previous.docx" }) } as Response
       }
-      throw new Error(`Unexpected request: ${url}`)
+      return { ok: true, json: async () => ({}) } as Response
     })
 
     const wrapper = mount(App)
@@ -860,10 +879,12 @@ describe("review workspace shell", () => {
     await flushPromises()
     await vi.waitFor(() => expect(wrapper.find('[data-testid="recent-open-0"]').exists()).toBe(true))
     await wrapper.find('[data-testid="recent-open-0"]').trigger("click")
+    await vi.waitFor(() => expect(wrapper.find('[data-testid="functional-review"]').exists()).toBe(true))
+    expect(wrapper.find('[data-testid="nav-功能需求"]').classes()).toContain("active")
+    await openReview(wrapper)
     await vi.waitFor(() => expect(wrapper.find('[data-testid="row-SREQ-HISTORY"]').exists()).toBe(true))
 
     expect(startApiSession).toHaveBeenCalledWith("E:\\out\\previous")
-    expect(wrapper.find('[data-testid="nav-审查工作台"]').classes()).toContain("active")
   })
 
   it("clears mock rows when the connected API session has no requirements", async () => {
@@ -929,11 +950,13 @@ describe("review workspace shell", () => {
       if (url.endsWith("/manifest")) {
         return { ok: true, json: async () => ({ input: "C:\\input\\existing.docx" }) } as Response
       }
-      throw new Error(`Unexpected request: ${url}`)
+      return { ok: true, json: async () => ({}) } as Response
     })
 
     const wrapper = mount(App)
     await wrapper.find('[data-testid="action-open-existing-output"]').trigger("click")
+    await vi.waitFor(() => expect(wrapper.find('[data-testid="functional-review"]').exists()).toBe(true))
+    await openReview(wrapper)
     await vi.waitFor(() => expect(wrapper.find('[data-testid="row-SREQ-EXISTING"]').exists()).toBe(true))
 
     expect(openOutput).toHaveBeenCalledOnce()
@@ -1020,6 +1043,7 @@ describe("review workspace shell", () => {
     await vi.waitFor(() => expect(wrapper.find('[data-testid="row-SREQ-OLD"]').exists()).toBe(true))
 
     await wrapper.find('[data-testid="action-select-output-dir"]').trigger("click")
+    await openReview(wrapper)
     await vi.waitFor(() => expect(wrapper.find('[data-testid="row-SREQ-NEW"]').exists()).toBe(true))
 
     expect(startApiSession).toHaveBeenCalledWith("E:\\out\\new")
@@ -1058,6 +1082,7 @@ describe("review workspace shell", () => {
 
     await wrapper.find('[data-testid="action-select-output-dir"]').trigger("click")
     await flushPromises()
+    await openReview(wrapper)
 
     expect(wrapper.find('[data-testid="row-SREQ-OLD"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="empty-requirements"]').exists()).toBe(true)
@@ -1067,8 +1092,8 @@ describe("review workspace shell", () => {
 
   it("runs pipeline then the enabled AI-extract stage as one chain from the Run button", async () => {
     // 开启 AI 抽取阶段：点一次「运行」应先跑 runPipeline 再自动接 aiExtract
-    localStorage.setItem("ratomizer.runStages.v2",
-      JSON.stringify({ aiExtract: true, assemble: false, analyze: false, compose: false, annotationHtml: false }))
+    localStorage.setItem("ratomizer.runStages.v3",
+      JSON.stringify({ llmReview: true, aiExtract: true, assemble: false, analyze: false, compose: false, annotationHtml: false }))
     const startResultPackage = vi.fn().mockResolvedValue({
       kind: "result_package_start",
       package: {
@@ -1177,7 +1202,7 @@ describe("review workspace shell", () => {
   })
 
   it("keeps completed outputs when the API session refresh times out after a run", async () => {
-    localStorage.setItem("ratomizer.runStages.v2",
+    localStorage.setItem("ratomizer.runStages.v3",
       JSON.stringify({ aiExtract: false, assemble: false, analyze: false, compose: false, annotationHtml: false }))
     Object.defineProperty(window, "ratomizerDesktop", {
       configurable: true,
@@ -1217,7 +1242,7 @@ describe("review workspace shell", () => {
   it("reruns a legacy output directory without package tracking (I5)", async () => {
     // legacy 目录重跑：startResultPackage 返回 layout=legacy（主进程分类后不创建
     // marker/.ratomizer）——运行按旧管线完成，不要求 run_id，也不触 complete/fail
-    localStorage.setItem("ratomizer.runStages.v2",
+    localStorage.setItem("ratomizer.runStages.v3",
       JSON.stringify({ aiExtract: false, assemble: false, analyze: false, compose: false, annotationHtml: false }))
     const startResultPackage = vi.fn().mockResolvedValue({
       kind: "result_package_start",
@@ -1269,7 +1294,7 @@ describe("review workspace shell", () => {
   it("shows a partial-completion notice instead of a run failure (I6)", async () => {
     // 部分阶段降级：completeResultPackage 返回稳定错误码 requested_stage_partial——
     // UI 如实显示「分析未完成（部分阶段降级）」，不走「运行失败」也不把尝试记为失败
-    localStorage.setItem("ratomizer.runStages.v2",
+    localStorage.setItem("ratomizer.runStages.v3",
       JSON.stringify({ aiExtract: true, assemble: false, analyze: false, compose: false, annotationHtml: false }))
     const startResultPackage = vi.fn().mockResolvedValue({
       kind: "result_package_start",
@@ -1410,7 +1435,7 @@ describe("review workspace shell", () => {
 
   it("derives the default output directory from the Electron documents root (S16)", async () => {
     // 未选输出目录时默认落到 Electron documents 派生目录——禁止硬编码 E:\Codex（换机即失效）
-    localStorage.setItem("ratomizer.runStages.v2",
+    localStorage.setItem("ratomizer.runStages.v3",
       JSON.stringify({ aiExtract: false, assemble: false, analyze: false, compose: false, annotationHtml: false }))
     const runPipeline = vi.fn().mockResolvedValue({
       kind: "pipeline",
@@ -1518,7 +1543,7 @@ describe("review workspace shell", () => {
   }
 
   it("runs all enabled deliverable stages including annotation HTML as one Run chain", async () => {
-    localStorage.setItem("ratomizer.runStages.v2",
+    localStorage.setItem("ratomizer.runStages.v3",
       JSON.stringify({ aiExtract: true, assemble: true, analyze: true, compose: true, annotationHtml: true }))
     Object.defineProperty(window, "ratomizerDesktop", { configurable: true, value: deliverableBridge() })
     vi.spyOn(globalThis, "fetch").mockResolvedValue({ ok: true, json: async () => [] } as Response)
@@ -1546,7 +1571,7 @@ describe("review workspace shell", () => {
   })
 
   it("disabled stages are skipped in the Run chain", async () => {
-    localStorage.setItem("ratomizer.runStages.v2",
+    localStorage.setItem("ratomizer.runStages.v3",
       JSON.stringify({ aiExtract: true, assemble: false, analyze: false, compose: false, annotationHtml: false }))
     Object.defineProperty(window, "ratomizerDesktop", { configurable: true, value: deliverableBridge() })
     vi.spyOn(globalThis, "fetch").mockResolvedValue({ ok: true, json: async () => [] } as Response)
@@ -1563,7 +1588,7 @@ describe("review workspace shell", () => {
   })
 
   it("chain stages use openai_compatible routes when the LLM toggle is on", async () => {
-    localStorage.setItem("ratomizer.runStages.v2",
+    localStorage.setItem("ratomizer.runStages.v3",
       JSON.stringify({ aiExtract: true, assemble: true, analyze: true, compose: false, annotationHtml: false }))
     Object.defineProperty(window, "ratomizerDesktop", {
       configurable: true,
@@ -1735,7 +1760,7 @@ describe("review workspace shell", () => {
   })
 
   it("disabling the rule-candidate LLM review skips review in both run modes", async () => {
-    localStorage.setItem("ratomizer.runStages.v2",
+    localStorage.setItem("ratomizer.runStages.v3",
       JSON.stringify({ llmReview: false, aiExtract: false, assemble: false, analyze: false, compose: false, annotationHtml: false }))
     Object.defineProperty(window, "ratomizerDesktop", {
       configurable: true,
@@ -1937,7 +1962,7 @@ describe("review workspace shell", () => {
   })
 
   it("passes the LLM enrichment route to the AI-extract stage when LLM mode is on", async () => {
-    localStorage.setItem("ratomizer.runStages.v2",
+    localStorage.setItem("ratomizer.runStages.v3",
       JSON.stringify({ aiExtract: true, assemble: false, analyze: false, compose: false, annotationHtml: false }))
     Object.defineProperty(window, "ratomizerDesktop", {
       configurable: true,
@@ -1978,7 +2003,7 @@ describe("review workspace shell", () => {
   })
 
   it("marks functional synthesis disabled when LLM and analysis are off", async () => {
-    localStorage.setItem("ratomizer.runStages.v2",
+    localStorage.setItem("ratomizer.runStages.v3",
       JSON.stringify({ aiExtract: true, assemble: false, analyze: false, compose: false, annotationHtml: false }))
     Object.defineProperty(window, "ratomizerDesktop", {
       configurable: true,

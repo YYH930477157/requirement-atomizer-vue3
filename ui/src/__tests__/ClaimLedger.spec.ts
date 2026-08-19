@@ -182,7 +182,7 @@ describe("ClaimLedger", () => {
     const wrapper = mount(ClaimLedger, { props: { client, active: true } })
     await flushPromises()
 
-    expect(wrapper.text()).toContain("双写观察期 · 结构待审阻断 Ledger Ready")
+    expect(wrapper.text()).toContain("看原文有没有被功能条盖住 · 不是需求流水线")
     expect(wrapper.get('[data-testid="claim-structural-pending-count"]').text()).toContain("1")
     expect(wrapper.get('[data-testid="claim-structural-confirmed-count"]').text()).toContain("2")
     expect(wrapper.get('[data-testid="claim-metric-coverage"]').text()).toContain("70.0%")

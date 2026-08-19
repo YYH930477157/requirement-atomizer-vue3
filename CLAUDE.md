@@ -1,5 +1,23 @@
 # CLAUDE.md — Requirement Atomizer 项目上下文
 
+## 重大更新（2026-08-19）——首批产品默认：直抽跟条款切、GUI 不再默认审碎原子
+
+> 用户裁定「拆得很碎的原子是失败的一笔」。本批只改出厂默认，不删 atomize、
+> 不翻 `RATOMIZER_EXECUTION_POLICY`、不默认开分析富化。未提交。
+
+- **打包策略耦合**：`functional_extract.context_pack_strategy()` 在环境变量未设
+  且直抽开启时生效 `clause_family`（单元路由可接线）。登记默认仍是 `legacy`，
+  以便 `=legacy` 与「未设」可区分。显式 `legacy` + 直抽开：桌面阶段指纹带
+  `strategy_warning=functional_extract_with_explicit_legacy_packing` 并打日志。
+- **GUI**：`ratomizer.runStages.v3`，`llmReview` 默认关（旧 v2 自定义阶段会重置
+  一次）。运行总览首格改为「功能需求」，不再用「原子需求」当主指标。
+- **第二批界面**：日常导航只留「功能需求」；「原子诊断」（旧审查工作台）进设置
+  「显示原子诊断」（`ratomizer.showAtomDiagnostics.v1`，默认关）。文档批注标明
+  「对照原文」；Claim 导航改「覆盖审计」。打开已有结果落到功能需求，不进原子页。
+  路由 `review` / testid `nav-审查工作台` 保留。
+- **未做**：删除 `atomic_requirements.jsonl`、分析富化默认开、
+  WS0 翻执行策略、继续迭代 functional-extract prompt、合并四份评审队列。
+
 ## 重大更新（2026-08-18）——10% 诊断驱动的路由 v3 收口（用户 key 实付 ~¥12.8）
 
 > 用户质疑全量门禁成本（A 轨冷跑实测 ¥8.07/70 节，外推 ¥45+）后转向 10% 子集诊断

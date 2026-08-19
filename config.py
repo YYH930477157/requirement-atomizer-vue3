@@ -110,9 +110,11 @@ ENV_REGISTRY: tuple[EnvVar, ...] = (
     EnvVar("RATOMIZER_TENDER_REGION_FILTER", "0", "A9-2 tender 区域识别开关（=1 启用 tender_regions.py；默认 0=维持既有 doc_region 标记）", False),
     EnvVar("RATOMIZER_TENDER_FIGURE_PAGE_FILTER", "0", "A9-3 疑似流程图页强制高亮开关（=1 在未抽取登记册中单列整页图页；默认 0=维持既有登记行为）", False),
     # --- V3 WS-A 三遍法核心（A1 整篇地图 / A2 上下文包 / A3 整篇对账）---
-    # 全部默认关闭/legacy：新路径 opt-in，默认行为面与缓存指纹逐字节不变。
+    # DOC_MAP / RECONCILE 仍默认关。CONTEXT_PACK_STRATEGY 登记默认仍是 legacy（显式回滚
+    # 与 get_env 单源字面）；生效策略由 functional_extract.context_pack_strategy() 解析——
+    # 直抽开启且环境变量未设时走 clause_family，不在此改登记默认以免与显式 legacy 无法区分。
     EnvVar("RATOMIZER_DOC_MAP", "0", "A1 整篇地图开关（=1 启用 doc_map.LLM 单遍文档地图并写 doc_map.json；预算走文档预算单 structure_hypothesis 子预算，耗尽/stub 如实 unavailable；默认 0=不生成，调用方走无地图路径）", False),
-    EnvVar("RATOMIZER_CONTEXT_PACK_STRATEGY", "legacy", "A2 功能直抽上下文包策略（legacy=遗留 4000 字符切片默认不变 / clause_family=按条款自然边界组装：目标条款整文不截断+同族相邻条款+doc_map 热区摘要）", False),
+    EnvVar("RATOMIZER_CONTEXT_PACK_STRATEGY", "legacy", "A2 功能直抽上下文包策略（legacy=文档级 4000 字符切片 / clause_family=按条款自然边界组装）。登记默认 legacy 供显式回滚；直抽开启且本变量未设时，context_pack_strategy() 生效 clause_family", False),
     EnvVar("RATOMIZER_CONTEXT_PACK_MAX_CHARS", "24000", "A2 上下文包大小上限字符数（只约束拼包：装不下的邻居整条舍弃；目标条款自身超限仍整文进包，宁超勿截）", False),
     EnvVar("RATOMIZER_RECONCILE", "0", "A3 整篇对账开关（=1 时 chain 链尾自动跑 reconcile：规则筛疑+LLM 裁定两段，硬依据一票否决，LLM 不可用如实 rules_only；默认 0=不跑，亦可用 desktop reconcile 子命令显式执行）", False),
     # --- WS-H 知识沉淀闭环（默认关；成文导出后自动 harvest） ---

@@ -794,12 +794,12 @@ onUnmounted(() => {
     <header class="ledger-head">
       <div>
         <div class="ledger-title-row">
-          <h4>Claim Ledger</h4>
-          <span class="observation-badge">双写观察期 · 结构待审阻断 Ledger Ready</span>
+          <h4>覆盖审计</h4>
+          <span class="observation-badge">看原文有没有被功能条盖住 · 不是需求流水线</span>
         </div>
-        <p>Revision <code>{{ currentRevisionLabel }}</code></p>
+        <p>Revision <code>{{ currentRevisionLabel }}</code> · 覆盖账本</p>
       </div>
-      <button class="icon-command" type="button" aria-label="刷新 Claim Ledger" title="刷新 Claim Ledger"
+      <button class="icon-command" type="button" aria-label="刷新覆盖审计" title="刷新覆盖审计"
               :disabled="loading || !client" data-testid="claim-refresh" @click="loadOverview()">
         <RefreshCw :size="17" :class="{ spin: loading }" aria-hidden="true" />
       </button>

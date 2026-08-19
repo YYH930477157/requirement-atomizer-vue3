@@ -16,7 +16,7 @@
             :key="item.id"
             class="nav-button"
             :class="{ active: activeNav === item.id }"
-            :data-testid="`nav-${item.label}`"
+            :data-testid="`nav-${item.navTestId}`"
             type="button"
             @click="handleNavAction(item.id)"
           >
@@ -43,7 +43,7 @@
             :key="item.id"
             class="nav-button"
             :class="{ active: activeNav === item.id }"
-            :data-testid="`nav-${item.label}`"
+            :data-testid="`nav-${item.navTestId}`"
             type="button"
             @click="handleNavAction(item.id)"
           >
@@ -100,15 +100,16 @@
 
         <section v-if="activeNav === 'run'" class="run-home" data-testid="run-paths-panel">
           <div class="ov-stats">
-            <div class="ov-stat" :class="{ 'is-empty': runOverview.atoms == null }">
-              <div class="k">原子需求</div>
-              <div class="v">{{ runOverview.atoms != null ? runOverview.atoms.toLocaleString("zh-CN") : "待运行" }}</div>
-              <div class="d flat">结构化字段确定性抽取</div>
+            <div class="ov-stat" :class="{ 'is-empty': runOverview.functionalReqs == null }" data-testid="ov-functional">
+              <div class="k">功能需求</div>
+              <div class="v">{{ runOverview.functionalReqs != null ? runOverview.functionalReqs.toLocaleString("zh-CN") : "待运行" }}</div>
+              <div class="d" :class="runOverview.selfCheck != null ? 'up' : 'flat'">{{ runOverview.selfCheck != null ? `↑ ${runOverview.selfCheck} 条来自自检补充` : "条款直抽，不是碎原子" }}</div>
             </div>
-            <div class="ov-stat" :class="{ 'is-empty': runOverview.aiReqs == null }">
-              <div class="k">AI 行为需求</div>
-              <div class="v">{{ runOverview.aiReqs != null ? runOverview.aiReqs : "待运行" }}</div>
-              <div class="d" :class="runOverview.selfCheck != null ? 'up' : 'flat'">{{ runOverview.selfCheck != null ? `↑ ${runOverview.selfCheck} 条来自自检补充` : "含自检收敛补充" }}</div>
+            <div class="ov-stat" :class="{ 'is-empty': !runOverview.verdict }" data-testid="ov-deliverable">
+              <div class="k">交付状态</div>
+              <div class="v">{{ runOverview.verdict || "待运行" }}</div>
+              <div class="d" :class="runOverview.verdict === 'READY' ? 'up' : (runOverview.verdict ? 'warn' : 'flat')">
+                {{ runOverview.deliverableHint || "成文或缺口见运行结束说明" }}</div>
             </div>
             <div class="ov-stat" :class="{ 'is-empty': runOverview.coverage == null }">
               <div class="k">章节覆盖率</div>
@@ -182,27 +183,15 @@
           <div class="run-grid">
             <div class="panel-card">
               <div class="board-head">
-                <h4>需求审查 · 待裁决</h4>
-                <button class="link-button" type="button" @click="handleNavAction('review')">进入工作台 <ChevronRight :size="14" aria-hidden="true" /></button>
+                <h4>功能需求 · 去评审</h4>
+                <button class="link-button" type="button" @click="handleNavAction('functional')">进入功能需求 <ChevronRight :size="14" aria-hidden="true" /></button>
               </div>
               <div class="preview-wrap">
-                <div v-if="!reviewPreviewRows.length" class="preview-empty">
-                  <ClipboardCheck :size="22" aria-hidden="true" />
-                  <p>暂无待裁决需求</p>
-                  <span>运行管线后，高置信需求会出现在这里，点击进入工作台裁决</span>
+                <div class="preview-empty" data-testid="run-review-preview">
+                  <Layers :size="22" aria-hidden="true" />
+                  <p>条款直抽的功能条在「功能需求」里确认</p>
+                  <span>碎原子不再作为评审对象。对照原文用「文档批注」，覆盖缺口看「覆盖审计」。</span>
                 </div>
-                <table v-else class="preview-table">
-                  <thead><tr><th>编号</th><th>需求</th><th>模块</th><th>置信度</th><th>状态</th></tr></thead>
-                  <tbody>
-                    <tr v-for="row in reviewPreviewRows" :key="row.id" @click="handleNavAction('review')">
-                      <td class="rid">{{ row.id }}</td>
-                      <td class="req-cell">{{ row.chineseText }}</td>
-                      <td><span class="pchip plain">{{ row.module || "未分模块" }}</span></td>
-                      <td class="num">{{ row.confidence.toFixed(2) }}</td>
-                      <td><span class="pchip" :class="`st-${row.status}`">{{ statusOptionLabel(row.status) }}</span></td>
-                    </tr>
-                  </tbody>
-                </table>
               </div>
             </div>
             <div class="panel-card">
@@ -584,7 +573,7 @@
               </label>
               <label class="settings-toggle">
                 <input v-model="runStages.compose" type="checkbox" data-testid="stage-compose" />
-                <span><strong>组装工程需求</strong><small>原子需求重组为需求功能 + DLMS 对象两段。</small></span>
+                <span><strong>组装工程需求</strong><small>装配实现规格（对象表事实 / DLMS 对象），不是把碎原子拼成需求。</small></span>
               </label>
               <label class="settings-toggle">
                 <input v-model="runStages.annotationHtml" type="checkbox" data-testid="stage-annotation-html" />
@@ -603,7 +592,7 @@
               <div class="settings-section-title">轨道阶段（A/B 技术选择）</div>
               <label class="settings-toggle">
                 <input v-model="runStages.llmReview" type="checkbox" data-testid="stage-llm-review" />
-                <span><strong>LLM 审查（规则候选复核）</strong><small>逐条复核规则切出的原子候选。DLMS profile 类文档（对象表密集）建议开；散文类标准可关——交付物主要来自 AI 抽取轨，可省大量审查调用。</small></span>
+                <span><strong>LLM 审查（规则候选复核）</strong><small>默认关闭。逐条复核规则切出的碎原子——不再是需求产品。仅在对照旧 DLMS 规则候选时打开。</small></span>
               </label>
               <label class="settings-toggle">
                 <input v-model="runStages.aiExtract" type="checkbox" data-testid="stage-ai-extract" />
@@ -612,6 +601,10 @@
               <label class="settings-toggle">
                 <input v-model="runStages.assemble" type="checkbox" data-testid="stage-assemble" />
                 <span><strong>装配实现规格</strong><small>P1-P3 装配《DLMS/COSEM 实现规格》JSON + Word/MD/Excel。</small></span>
+              </label>
+              <label class="settings-toggle">
+                <input v-model="showAtomDiagnostics" type="checkbox" data-testid="settings-show-atom-diagnostics" />
+                <span><strong>显示原子诊断</strong><small>侧栏出现「原子诊断」（旧审查工作台）。碎原子不是需求产品，仅对照旧结果时打开。</small></span>
               </label>
             </details>
             <section class="settings-section">
@@ -790,39 +783,66 @@ type LlmSettings = {
   selfCheck: boolean
 }
 
-const phaseNavItems: Array<{ id: PhaseNavId; label: string; icon: Component; group: string }> = [
-  { id: "run", label: "运行", icon: Play, group: "运行" },
-  { id: "review", label: "审查工作台", icon: ClipboardCheck, group: "评审" },
-  { id: "functional", label: "功能需求", icon: Layers, group: "评审" },
-  { id: "document", label: "文档批注", icon: FileText, group: "文档与账本" },
-  { id: "claim", label: "Claim 账本", icon: ListChecks, group: "文档与账本" },
-  { id: "renderer", label: "文档渲染", icon: Image, group: "文档与账本" },
-  { id: "settings", label: "设置", icon: Settings, group: "设置" },
+type PhaseNavItem = { id: PhaseNavId; label: string; icon: Component; group: string; navTestId: string }
+const phaseNavItems: PhaseNavItem[] = [
+  { id: "run", label: "运行", icon: Play, group: "运行", navTestId: "运行" },
+  { id: "functional", label: "功能需求", icon: Layers, group: "评审", navTestId: "功能需求" },
+  { id: "review", label: "原子诊断", icon: ClipboardCheck, group: "评审", navTestId: "审查工作台" },
+  { id: "document", label: "文档批注", icon: FileText, group: "原文与审计", navTestId: "文档批注" },
+  { id: "claim", label: "覆盖审计", icon: ListChecks, group: "原文与审计", navTestId: "覆盖审计" },
+  { id: "renderer", label: "文档渲染", icon: Image, group: "原文与审计", navTestId: "文档渲染" },
+  { id: "settings", label: "设置", icon: Settings, group: "设置", navTestId: "设置" },
 ]
 
-// nav 视觉分组收敛（G9-7 最小低风险部分）：7 个扁平 nav 项按域归为
-// 「运行 / 评审 / 文档与账本」分组渲染——不删项、不改 activeNav 路由与 testid，
-// 仅在视觉上收敛。完整合并（评审项收敛为单一 nav + 内页签）见完工汇报，高风险未实施。
-const navGroups: Array<{ title: string; items: typeof phaseNavItems }> = (() => {
-  const order = ["运行", "评审", "文档与账本"]
-  const map = new Map<string, typeof phaseNavItems>()
+const SHOW_ATOM_DIAGNOSTICS_KEY = "ratomizer.showAtomDiagnostics.v1"
+function loadShowAtomDiagnostics(): boolean {
+  try {
+    return (typeof localStorage !== "undefined" ? localStorage.getItem(SHOW_ATOM_DIAGNOSTICS_KEY) : null) === "1"
+  } catch {
+    return false
+  }
+}
+const showAtomDiagnostics = ref(loadShowAtomDiagnostics())
+watch(showAtomDiagnostics, (value) => {
+  try {
+    localStorage?.setItem(SHOW_ATOM_DIAGNOSTICS_KEY, value ? "1" : "0")
+  } catch {
+    /* 持久化失败忽略 */
+  }
+  if (!value && activeNav.value === "review") activeNav.value = "functional"
+})
+
+// 日常侧栏：评审正门只有「功能需求」。原子诊断（旧审查工作台）默认隐藏，
+// 路由 review 与 testid nav-审查工作台保留，打开「显示原子诊断」后才出现。
+const navGroups = computed(() => {
+  const order = ["运行", "评审", "原文与审计"]
+  const map = new Map<string, PhaseNavItem[]>()
   for (const item of phaseNavItems) {
     if (item.id === "settings") continue
+    if (item.id === "review" && !showAtomDiagnostics.value) continue
     const list = map.get(item.group) ?? []
     list.push(item)
     map.set(item.group, list)
   }
   return order.filter((g) => map.has(g)).map((g) => ({ title: g, items: map.get(g)! }))
-})()
+})
 
 // 落地页默认「功能需求」评审视图（G9-4）：运行入口保留在 nav，用户点「运行」即进入。
 // 此前落地为「运行」，但功能需求评审是高频评审面；FunctionalReview 自带 functional 模式，
 // 默认落它不破运行入口（nav 仍可达，且 demoProgress URL 演示显式切回 run）。
 const activeNav = ref<PhaseNavId>("functional")
 // 运行页总览（样机 2026-07-09）：跑完链后填充,未知显示 —
-const runOverview = ref<{ atoms: number | null; aiReqs: number | null; selfCheck: number | null;
-  coverage: number | null; chapters: string; questions: number | null; verdict: string }>({
-  atoms: null, aiReqs: null, selfCheck: null, coverage: null, chapters: "", questions: null, verdict: "",
+const runOverview = ref<{
+  functionalReqs: number | null
+  selfCheck: number | null
+  coverage: number | null
+  chapters: string
+  questions: number | null
+  verdict: string
+  deliverableHint: string
+}>({
+  functionalReqs: null, selfCheck: null, coverage: null, chapters: "",
+  questions: null, verdict: "", deliverableHint: "",
 })
 const lastStageNotes = ref<string[]>([])
 // 裁决复盘建议（E5）：专家改判模式 ≥3 次提炼的规则改进建议——此前产物零消费者
@@ -849,7 +869,6 @@ const tableDispositionOptions: Array<{ value: TableCellDisposition; label: strin
   { value: "target", label: "提升为需求" },
   { value: "excluded", label: "确认排除" },
 ]
-const reviewPreviewRows = computed(() => requirementRows.value.slice(0, 4))
 const DELIVERABLE_FILES = [
   { key: "software", icon: FileSpreadsheet, tone: "xls", name: "软件需求列表-成文.xlsx", hint: "V2.3.x 模板成文（B 轨主交付物）" },
   { key: "annotation", icon: FileText, tone: "htm", name: "document_annotation.html", hint: "批注视图 · 分享给专家离线裁决" },
@@ -938,12 +957,12 @@ type RunStages = {
   compose: boolean
   annotationHtml: boolean
 }
-// v2（2026-07-08 审计 A1）：整对象持久化 + 旧值优先展开意味着默认值演进永远到不了老用户
-// （旧 localStorage 里冻结着 compose:false）。换键 = 所有用户一次性拿到新默认，代价是旧自定义重置。
-const RUN_STAGES_KEY = "ratomizer.runStages.v2"
+// v3（2026-08-19）：碎原子不再是需求产品——llmReview 默认关。换键让旧 v2（llmReview:true）
+// 一次性拿到新默认；用户仍可在高级区打开原子审查。代价是自定义阶段重置一次。
+const RUN_STAGES_KEY = "ratomizer.runStages.v3"
 function loadRunStages(): RunStages {
   const fallback: RunStages = {
-    llmReview: true,
+    llmReview: false,
     aiExtract: true,
     assemble: true,
     analyze: true,
@@ -1505,7 +1524,7 @@ function handleNavAction(item: PhaseNavId) {
 function closeSettingsPanel() {
   showSettingsPanel.value = false
   if (activeNav.value === "settings") {
-    activeNav.value = "review"
+    activeNav.value = "functional"
   }
 }
 
@@ -1513,7 +1532,7 @@ function closeSettingsPanel() {
 // 让其滚动到对应块并高亮（F4：此前 DocumentReview 不接受 focusBlockId，只做视图切换+刷新）。
 function focusBlockFromFunctional(blockId: string) {
   if (!currentOutputDir.value) {
-    apiMessage.value = "尚未选择输出目录，无法跳转文档批注"
+    apiMessage.value = "尚未选择输出目录，无法对照原文"
     return
   }
   // 若已在文档视图，先清空再赋值以触发 watch（同一 id 二次跳转也能重新高亮）
@@ -1521,7 +1540,7 @@ function focusBlockFromFunctional(blockId: string) {
   documentFocusBlockId.value = blockId
   activeNav.value = "document"
   documentRefreshToken.value += 1
-  apiMessage.value = blockId ? `已跳转文档批注（来源块 ${blockId}）` : ""
+  apiMessage.value = blockId ? `已跳转对照原文（来源块 ${blockId}）` : ""
 }
 
 // 渲染器字节源：委托 Electron readFileBytes 桥（主进程校验绝对路径 + 体量上限后返回字节）。
@@ -2094,7 +2113,7 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
     await nextUiTick()
     runProgress.value = 18
     runStage.value = "运行后端解析"
-    runProgressDetail.value = "正在抽取原子化需求"
+    runProgressDetail.value = "正在解析文档"
     // 「LLM 审查（规则候选复核）」可选：散文类标准的交付物主要来自 AI 抽取轨，
     // 关掉可省大量审查调用（DLMS profile 建议开）。测试运行同样尊重该开关。
     const reviewEnabled = runStages.value.llmReview
@@ -2114,8 +2133,8 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
     latestTaskSummary.value = objectValue(payload.summary)
     applyRunManifestSummary(latestTaskSummary.value)
     const summaryCounts = objectValue((latestTaskSummary.value as Record<string, unknown> | null)?.counts) as Record<string, unknown> | null
-    if (summaryCounts?.atomic_requirements != null) {
-      runOverview.value = { ...runOverview.value, atoms: Number(summaryCounts.atomic_requirements) }
+    if (summaryCounts?.functional_requirements != null) {
+      runOverview.value = { ...runOverview.value, functionalReqs: Number(summaryCounts.functional_requirements) }
     }
     const finalOutDir = String(payload.out_dir || payload.outDir || outDir)
     currentOutputDir.value = finalOutDir
@@ -2205,14 +2224,17 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
         lastStageNotes.value = chainNotes
         // 运行页总览瓦片（样机）：从链载荷提取,缺项保持 —
         const q = objectValue(chainPayload?.quality) as Record<string, unknown> | null
+        const verdict = chainReadiness?.verdict || runOverview.value.verdict
         runOverview.value = {
-          atoms: runOverview.value.atoms,
-          aiReqs: chainPayload?.count != null ? Number(chainPayload.count) : runOverview.value.aiReqs,
+          functionalReqs: chainPayload?.count != null ? Number(chainPayload.count) : runOverview.value.functionalReqs,
           selfCheck: q?.self_check_added != null ? Number(q.self_check_added) : runOverview.value.selfCheck,
           coverage: q?.coverage_pct != null ? Number(q.coverage_pct) : runOverview.value.coverage,
           chapters: q?.sections_total != null ? `${q.sections_total} 章 · 失败 ${q.failed_sections ?? 0}` : runOverview.value.chapters,
           questions: chainPayload?.questions != null ? Number(chainPayload.questions) : runOverview.value.questions,
-          verdict: chainReadiness?.verdict || runOverview.value.verdict,
+          verdict,
+          deliverableHint: verdict === "READY"
+            ? "可以写成文"
+            : (verdict ? "尚不能交货，先处理缺口" : runOverview.value.deliverableHint),
         }
         ranStages.push(...stages.map((s) => CHAIN_STEP_LABELS[s] || s))
         apiReconnectWarning ||= await refreshAfterDesktopTask(finalOutDir)
@@ -2565,7 +2587,7 @@ async function restoreOutputContext(client: RequirementApiClient, outDir: string
     const input = String(manifestResult.value.input || "").trim()
     if (input) currentInputPath.value = input
   }
-  if (summaryLoader) activeNav.value = "review"
+  if (summaryLoader) activeNav.value = "functional"
 }
 
 function disconnectReviewSession() {

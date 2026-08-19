@@ -1,9 +1,10 @@
 """V3 WS-A A2：functional_extract 上下文包策略（按条款自然边界）测试。
 
 纪律：单测禁止真实 LLM 调用——LLM 路径经注入 chat 回调。
-验收面：新策略下条款不被截断（旧 4000 字符切片只留在 legacy）；同族相邻条款整文进包；
-包大小上限受控且目标条款永不被丢/截；doc_map 热区摘要注入；默认 legacy 行为逐字节不变
-（含缓存指纹）；部分包 LLM 失败按条款诚实 stub 退化且路由标 mixed。
+验收面：新策略下条款不被截断（旧 4000 字符切片只留在显式 legacy）；同族相邻条款整文进包；
+包大小上限受控且目标条款永不被丢/截；doc_map 热区摘要注入；显式 legacy 指纹仍逐字节不变
+（strategy 维度不进键）；直抽开启且未指定策略时生效 clause_family；部分包 LLM 失败按条款
+诚实 stub 退化且路由标 mixed。
 """
 from __future__ import annotations
 
@@ -30,9 +31,20 @@ LONG_TEXT = "The meter shall record the voltage profile. " * 160  # ~7200 字符
 
 
 class StrategySwitchTests(unittest.TestCase):
-    def test_default_legacy(self) -> None:
+    def test_unset_follows_functional_extract_switch(self) -> None:
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("RATOMIZER_CONTEXT_PACK_STRATEGY", None)
+            os.environ.pop("RATOMIZER_FUNCTIONAL_EXTRACT", None)
+            # 直抽登记默认开 → 未指定策略时按条款切，不再走已证伪的文档级大包
+            self.assertEqual(fe.context_pack_strategy(), "clause_family")
+            os.environ["RATOMIZER_FUNCTIONAL_EXTRACT"] = "0"
+            self.assertEqual(fe.context_pack_strategy(), "legacy")
+
+    def test_explicit_legacy_survives_extract_on(self) -> None:
+        with patch.dict(os.environ, {
+            "RATOMIZER_FUNCTIONAL_EXTRACT": "1",
+            "RATOMIZER_CONTEXT_PACK_STRATEGY": "legacy",
+        }):
             self.assertEqual(fe.context_pack_strategy(), "legacy")
 
     def test_clause_family_opt_in(self) -> None:
@@ -47,7 +59,7 @@ class StrategySwitchTests(unittest.TestCase):
 
 class LegacyUnchangedTests(unittest.TestCase):
     def test_legacy_prompt_still_slices(self) -> None:
-        """默认旧逻辑：长条款仍按遗留 4000 字符切片（行为面不动）。"""
+        """legacy 切片 helper 仍截 4000（产品默认已不再走这条路径）。"""
         sections = [_clause("4 / 4.1", ["B1"], LONG_TEXT)]
         prompt = fe._build_user_prompt(sections)
         payload = json.loads(prompt)

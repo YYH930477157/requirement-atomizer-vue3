@@ -1642,7 +1642,8 @@ onMounted(() => {
   <section ref="rootEl" class="doc-review" data-testid="doc-review">
     <header class="doc-toolbar">
       <div class="doc-stats">
-        <span>需求 <strong data-testid="doc-stat-reqs">{{ stats.reqs }}</strong></span>
+        <span class="doc-role-hint" data-testid="doc-role-hint">对照原文，不是第二张需求表</span>
+        <span>锚定 <strong data-testid="doc-stat-reqs">{{ stats.reqs }}</strong></span>
         <span>已挂载 <strong>{{ stats.anchored }}</strong></span>
         <span v-if="extractionStatus?.run_id && extractionStatus.failed"
               class="partial-status failed" data-testid="partial-status">
@@ -2464,6 +2465,11 @@ td.cell-sel, th.cell-sel { outline: 2px solid #5978f7; outline-offset: -2px; }
 
 .doc-stats {
   gap: 0;
+  color: var(--doc-secondary);
+}
+
+.doc-role-hint {
+  font-size: 12px;
   color: var(--doc-secondary);
 }
 

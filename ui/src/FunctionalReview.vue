@@ -5,7 +5,7 @@
  * 评审对象从原子级条目切换为**功能需求级条目**（objective / behaviors / preconditions 等
  * functional_catalog 字段 + 三级追溯 source_quote / source_section / source_block_ids），
  * 原子级下钻条目（drilled_subatoms）作为功能需求的子级展示。旧原子视图保留为可切换模式
- * （右上「视图」开关 → 原子级），不删除（App.vue 的「审查工作台」nav 仍为完整原子裁决面）。
+ * （右上「视图」开关 → 原子级）。完整原子裁决面在设置「显示原子诊断」后出现，不在日常导航。
  *
  * 四项能力（全部走 api_server HTTP + 一条 governed 产物读取 IPC）：
  *  1. 功能需求级呈现 + 追溯链跳转（block_id → emit focus-block → App 切到文档批注）。
@@ -419,7 +419,7 @@ async function loadAdjudications() {
       }
       adjudicationRecords.value = index
     }
-    if (!(summaryPayload instanceof Error)) {
+    if (!(summaryPayload instanceof Error) && summaryPayload?.counts) {
       adjudicationSummary.value = summaryPayload
     }
   } finally {
@@ -1158,7 +1158,7 @@ function toggleChildren(itemId: string) {
     <header class="fr-header">
       <div class="fr-title-area">
         <h2 class="fr-title">功能需求评审</h2>
-        <p class="fr-subtitle">评审对象以功能需求级条目呈现；原子级下钻为子级，旧原子视图可切换保留</p>
+        <p class="fr-subtitle">一条卡片一条可确认的功能需求。文档批注只对照原文，碎原子不是评审对象。</p>
       </div>
       <div class="fr-actions">
         <div class="mode-toggle" role="tablist" aria-label="评审视图模式">
@@ -1254,9 +1254,9 @@ function toggleChildren(itemId: string) {
     >
       <div v-if="adjudicationSummary" class="adjud-summary" data-testid="adjudication-summary">
         <div class="adjud-counts">
-          <span class="adjud-chip tone-verified" data-testid="adjud-count-accept">自动通过 {{ adjudicationSummary.counts.accept ?? 0 }}</span>
-          <span class="adjud-chip tone-implemented" data-testid="adjud-count-review">待人工审 {{ adjudicationSummary.counts.review ?? 0 }}</span>
-          <span class="adjud-chip tone-draft" data-testid="adjud-count-reject">自动拒绝 {{ adjudicationSummary.counts.reject ?? 0 }}</span>
+          <span class="adjud-chip tone-verified" data-testid="adjud-count-accept">自动通过 {{ adjudicationSummary.counts?.accept ?? 0 }}</span>
+          <span class="adjud-chip tone-implemented" data-testid="adjud-count-review">待人工审 {{ adjudicationSummary.counts?.review ?? 0 }}</span>
+          <span class="adjud-chip tone-draft" data-testid="adjud-count-reject">自动拒绝 {{ adjudicationSummary.counts?.reject ?? 0 }}</span>
           <span class="adjud-chip muted">共 {{ adjudicationSummary.total ?? 0 }}</span>
         </div>
         <div class="adjud-meta">
@@ -1659,7 +1659,7 @@ function toggleChildren(itemId: string) {
     <!-- 原子级视图（旧原子视图保留为可切换模式） -->
     <div v-else class="fr-atomic" data-testid="atomic-view">
       <p class="field-hint">
-        原子级视图（旧评审粒度，只读概览）。完整的原子裁决面仍保留在「审查工作台」入口。
+        原子级视图（旧评审粒度，只读概览）。完整裁决面在设置里打开「显示原子诊断」。
       </p>
       <div v-if="!atomicRequirements.length" class="fr-empty">暂无原子需求</div>
       <table v-else class="atomic-table">

@@ -80,7 +80,7 @@ describe("delivery settings (§20)", () => {
   })
 
   it("translation mode off excludes full-translation from the chain and passes the mode through", async () => {
-    localStorage.setItem("ratomizer.runStages.v2", JSON.stringify(BASE_STAGES))
+    localStorage.setItem("ratomizer.runStages.v3", JSON.stringify(BASE_STAGES))
     localStorage.setItem("ratomizer.translationMode.v1", "off")
     mockBridge()
     const wrapper = mount(App)
@@ -96,7 +96,7 @@ describe("delivery settings (§20)", () => {
   })
 
   it("default translation mode keeps the existing chain shape (full translation, no explicit mode key)", async () => {
-    localStorage.setItem("ratomizer.runStages.v2", JSON.stringify(BASE_STAGES))
+    localStorage.setItem("ratomizer.runStages.v3", JSON.stringify(BASE_STAGES))
     mockBridge()
     const wrapper = mount(App)
     await driveRun(wrapper)
@@ -107,5 +107,48 @@ describe("delivery settings (§20)", () => {
     const call = (window.ratomizerDesktop?.runChain as ReturnType<typeof vi.fn>).mock.calls[0][0]
     expect(call.stages).toContain("full-translation")
     expect(call).not.toHaveProperty("translationMode")
+  })
+
+  it("defaults atom LLM review off so Run does not review shredded atoms", async () => {
+    mockBridge()
+    const wrapper = mount(App)
+    await driveRun(wrapper)
+
+    await vi.waitFor(() => {
+      expect(window.ratomizerDesktop?.runPipeline).toHaveBeenCalled()
+    })
+    expect(window.ratomizerDesktop?.runPipeline).toHaveBeenCalledWith(
+      expect.objectContaining({ skipReview: true, llmRoute: undefined }),
+    )
+  })
+
+  it("hides atom diagnostics from daily nav until the advanced setting is on", async () => {
+    mockBridge()
+    const wrapper = mount(App)
+    await flushPromises()
+    expect(wrapper.find('[data-testid="nav-审查工作台"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="nav-功能需求"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="nav-覆盖审计"]').exists()).toBe(true)
+
+    await wrapper.find('[data-testid="nav-设置"]').trigger("click")
+    await flushPromises()
+    await wrapper.find('[data-testid="settings-show-atom-diagnostics"]').setValue(true)
+    await wrapper.find('[data-testid="settings-close"]').trigger("click")
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="nav-审查工作台"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="nav-审查工作台"]').text()).toContain("原子诊断")
+    expect(localStorage.getItem("ratomizer.showAtomDiagnostics.v1")).toBe("1")
+  })
+
+  it("run overview leads with functional requirements, not atoms", async () => {
+    mockBridge()
+    const wrapper = mount(App)
+    await wrapper.find('[data-testid="nav-运行"]').trigger("click")
+    await flushPromises()
+    const panel = wrapper.find('[data-testid="run-paths-panel"]')
+    expect(panel.find('[data-testid="ov-functional"]').text()).toContain("功能需求")
+    expect(panel.find('[data-testid="ov-deliverable"]').text()).toContain("交付状态")
+    expect(panel.text()).not.toContain("原子需求")
   })
 })

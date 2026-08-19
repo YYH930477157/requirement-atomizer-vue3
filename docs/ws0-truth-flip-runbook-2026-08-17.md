@@ -82,9 +82,9 @@ PYTHONPATH=. RATOMIZER_CONTEXT_PACK_STRATEGY=clause_family RATOMIZER_LLM_API_KEY
   --out out/ab-gate-report.json
 ```
 
-- `RATOMIZER_CONTEXT_PACK_STRATEGY=clause_family` 必须显式带上（2026-08-17e 起 §17
-  unit 路由只在 clause_family 下启用；上次门禁 B 腿实测也是该策略运行）——不设则 B 轨
-  走 legacy 文档级大包，守恒预期仍 FAIL。env 全量快照进报告供审计。
+- `RATOMIZER_CONTEXT_PACK_STRATEGY=clause_family` 建议显式带上便于审计（2026-08-19
+  起：直抽开启且该变量未设时生效策略已是 clause_family，§17 单元路由会接线）。
+  只有显式 `=legacy` 才回退文档级大包。env 全量快照进报告供审计。
 - `--keep-dirs` 留工作目录缓存给下次暖启动；`--warm-a-cache` 复制上次 A_atoms 的
   `ai_extract_cache.jsonl` 进新 A 工作目录（整链仍真实执行，仅抽取零付费）。
 
