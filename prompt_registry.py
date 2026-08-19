@@ -71,7 +71,7 @@ PROMPT_REGISTRY: list[dict[str, str]] = [
     # Claim ledger shadow verifier
     {"id": "claim-ledger-shadow", "version": "claim-ledger-shadow-prompt-v4", "owner_module": "claim_ledger",
      "purpose": "Claim ledger shadow coverage proposer prompt"},
-    {"id": "claim-coverage-validator", "version": "claim-coverage-validator-v6", "owner_module": "claim_ledger",
+    {"id": "claim-coverage-validator", "version": "claim-coverage-validator-v7", "owner_module": "claim_ledger",
      "purpose": "Claim coverage verifier prompt / policy version"},
     {"id": "claim-negative-policy", "version": "claim-negative-policy-v2", "owner_module": "claim_ledger",
      "purpose": "Semantic negative proposal policy version"},

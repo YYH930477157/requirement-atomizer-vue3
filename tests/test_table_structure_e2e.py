@@ -261,7 +261,7 @@ def _simulated_paid_content(payload: dict[str, Any]) -> str:
         ),
         "",
     )
-    if "claim-coverage-verifier-request/v2" in user:
+    if "claim-coverage-verifier-request/v3" in user:
         # 独立覆盖验证器：七维逐项从 claim 上下文与 target evidence 实文推导
         request = json.loads(user)
         evidence = request.get("target_evidence") or []
@@ -367,7 +367,7 @@ def _assert_paid_surface_closed(test_case, recorded_payloads: list[dict[str, Any
         test_case.assertTrue(
             any(
                 "【严格定向需求抽取】" in content
-                or "claim-coverage-verifier-request/v2" in content
+                or "claim-coverage-verifier-request/v3" in content
                 or "claim-negative-proposer-request/v1" in content
                 or "claim-negative-verifier-request/v1" in content
                 for content in users
@@ -750,7 +750,7 @@ class TableStructureEndToEndTests(unittest.TestCase):
                 for payload in recorded_payloads
                 for message in (payload.get("messages") or [])
                 if message.get("role") == "user"
-                and "claim-coverage-verifier-request/v2"
+                and "claim-coverage-verifier-request/v3"
                 in str(message.get("content") or "")
             ]
             self.assertEqual(len(verifier_requests), 1)

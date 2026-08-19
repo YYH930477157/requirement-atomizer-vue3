@@ -78,7 +78,7 @@ verification attempt, positive token usage for both all verifier operations and 
 verifier subset, complete provider usage reporting, and zero verifier operation failures. A successful
 HTTP response with an empty/missing/duplicate decision is an operation failure, not a successful review.
 
-Verifier batching uses `claim-verifier-batch-v3-full-http-body`. Its 48,000-byte limit is measured
+Verifier batching uses `claim-verifier-batch-v4-table-scoped`. Its 48,000-byte limit is measured
 against the complete first-attempt JSON HTTP body produced by `llm_client`, including model options,
 JSON mode, system/user messages, request schema and IDs, and the compact domain payload. Coverage,
 negative proposal, and negative verification use their own actual prompt/envelope shapes. A single
@@ -135,7 +135,7 @@ current-generation pointer, and platform-specific write-through/volume-flush evi
 
 The current acceptance implementation is `claim-shadow-acceptance-v9`; its sanitized report schema is
 `claim-shadow-acceptance-report/v7`. Current claim artifacts use `claim-artifacts-v6`, coverage
-validation uses `claim-coverage-validator-v6`, and verifier attempts use the append-only
+validation uses `claim-coverage-validator-v7`, and verifier attempts use the append-only
 `claim-verifier-attempt/v2` event ledger.
 
 Input manifests are machine-local and have this shape:

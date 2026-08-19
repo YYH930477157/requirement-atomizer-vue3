@@ -52,7 +52,7 @@ DEFAULT_CLAIM_LEDGER_SAMPLING_FLOOR_RATE = 0.30
 # 放行候选；闭合仍由 verifier 按完整 semantic_context 七维严格裁定。
 CLAIM_CANDIDATE_POLICY_VERSION = "claim-coverage-candidate-v5-table-cell-exact-text"
 CLAIM_EDGE_PREFILTER_VERSION = "claim-edge-prefilter-v3"
-CLAIM_COVERAGE_VALIDATOR_VERSION = "claim-coverage-validator-v6"
+CLAIM_COVERAGE_VALIDATOR_VERSION = "claim-coverage-validator-v7"
 CLAIM_NEGATIVE_POLICY_VERSION = "claim-negative-policy-v2"
 CLAIM_NEGATIVE_VALIDATOR_VERSION = "claim-negative-validator-v4"  # v4: 负向上下文补父容器映射（清单/表格容器结构入 validation 输入指纹）
 CLAIM_REVIEW_ADAPTER_VERSION = "ai-review-adapter-v1"
@@ -68,8 +68,8 @@ CLAIM_VALIDATION_REUSE_VERSION = "claim-validation-reuse-v2"
 CLAIM_QUEUE_VERSION = "claim-queue-v4"
 CLAIM_QUEUE_PROPOSAL_SCHEMA = "claim-queue-proposal/v3"
 CLAIM_AUDIT_POLICY_VERSION = "claim-audit-shadow-v4"
-CLAIM_COVERAGE_RUNTIME_VERSION = "claim-coverage-runtime-v11"
-CLAIM_VERIFIER_BATCH_POLICY_VERSION = "claim-verifier-batch-v3-full-http-body"
+CLAIM_COVERAGE_RUNTIME_VERSION = "claim-coverage-runtime-v12"
+CLAIM_VERIFIER_BATCH_POLICY_VERSION = "claim-verifier-batch-v4-table-scoped"
 CLAIM_COST_POLICY_VERSION = "claim-cost-policy-v3-user-approved"
 CLAIM_VERIFIER_CALL_INCREASE_LIMIT = 0.25
 CLAIM_VERIFIER_TOKEN_INCREASE_LIMIT = 0.65
@@ -151,6 +151,17 @@ Do not infer from shared source locations, omitted fields, or likely intent.
 Return exactly one JSON object: {"decisions":[[group_ref,covered,[seven_checks]],...]}.
 covered must be true, false, or null and every check must be boolean. Return exactly one decision for every
 group_ref, with no rationale or additional keys. Use null when the evidence is insufficient."""
+
+_SEMANTIC_VERIFIER_TABLE_ADDENDUM = """
+These groups are rows of one table. Use sibling rows only to recognize structure
+(headerless continuation, variant columns, group headers). Do not treat a sibling
+row's text as this row's obligation. Do not close a row using evidence that is not
+in that row's target_refs. Do not apply one covered or false decision to the whole
+table; use null when the evidence is insufficient."""
+
+_SEMANTIC_VERIFIER_TABLE_SYSTEM = _SEMANTIC_VERIFIER_SYSTEM + _SEMANTIC_VERIFIER_TABLE_ADDENDUM
+
+_TABLE_ITEM_ID_RE = re.compile(r"^(?P<table_id>.+)-R\d+$")
 
 _SEMANTIC_NEGATIVE_PROPOSER_SYSTEM = """You propose, but never validate, semantic non-normative classifications.
 unit_contexts is indexed by each claim's unit_ref. Return only claims that may be non-normative, using one reason from:
@@ -1006,6 +1017,137 @@ def _claim_content(claim: dict[str, Any]) -> tuple[str, int, int]:
     return text[leading:trailing_end], leading, trailing_end
 
 
+
+def _compact_table_row_text(claim: dict[str, Any]) -> str:
+    context = claim.get("table_context") if isinstance(claim.get("table_context"), dict) else {}
+    fields = context.get("fields") if isinstance(context.get("fields"), list) else []
+    parts: list[str] = []
+    for field in fields:
+        if not isinstance(field, dict):
+            continue
+        name = str(field.get("name") or "").strip()
+        value = str(field.get("value") or "").strip()
+        if name or value:
+            parts.append(f"{name}={value}" if name else value)
+    if parts:
+        return " | ".join(parts)
+    content, _, _ = _claim_content(claim)
+    return content
+
+
+def _claim_table_id(claim: dict[str, Any]) -> str:
+    locator = claim.get("locator") if isinstance(claim.get("locator"), dict) else {}
+    match = _TABLE_ITEM_ID_RE.match(str(locator.get("table_item_id") or ""))
+    return match.group("table_id") if match else ""
+
+
+def _claim_table_pack_key(claim: dict[str, Any]) -> tuple[str, str] | None:
+    if str(claim.get("source_kind") or "") != "table_row":
+        return None
+    table_id = _claim_table_id(claim)
+    if table_id:
+        return ("table_id", table_id)
+    block_id = str((claim.get("locator") or {}).get("block_id") or "")
+    if block_id:
+        return ("block_id", block_id)
+    return None
+
+
+def _table_scope_index(catalog: list[dict[str, Any]]) -> dict[tuple[str, str], dict[str, Any]]:
+    buckets: dict[tuple[str, str], dict[str, Any]] = {}
+    for claim in catalog:
+        key = _claim_table_pack_key(claim)
+        if key is None:
+            continue
+        context = claim.get("table_context") if isinstance(claim.get("table_context"), dict) else {}
+        bucket = buckets.setdefault(key, {
+            "kind": "table",
+            "table_id": key[1] if key[0] == "table_id" else "",
+            "block_id": str((claim.get("locator") or {}).get("block_id") or ""),
+            "title": str(context.get("table_title") or ""),
+            "headers": [str(header) for header in (context.get("headers") or [])],
+            "claim_hashes": [],
+        })
+        if not bucket["headers"] and context.get("headers"):
+            bucket["headers"] = [str(header) for header in context["headers"]]
+        if not bucket["title"] and context.get("table_title"):
+            bucket["title"] = str(context.get("table_title") or "")
+        bucket["claim_hashes"].append(str(claim.get("claim_hash") or ""))
+    for bucket in buckets.values():
+        bucket["claim_hashes"] = sorted(hash_value for hash_value in bucket["claim_hashes"] if hash_value)
+        bucket["fingerprint"] = _sha256({
+            "table_id": bucket["table_id"] or bucket["block_id"],
+            "title": bucket["title"],
+            "headers": bucket["headers"],
+            "claim_hashes": bucket["claim_hashes"],
+        })
+    return buckets
+
+
+def _public_table_scope(scope: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(scope, dict) or scope.get("kind") != "table":
+        return {"kind": "independent"}
+    return {
+        "kind": "table",
+        "table_id": str(scope.get("table_id") or ""),
+        "block_id": str(scope.get("block_id") or ""),
+        "title": str(scope.get("title") or ""),
+        "headers": [str(header) for header in (scope.get("headers") or [])],
+    }
+
+
+def _coverage_scope_for_batch(groups: list[dict[str, Any]]) -> dict[str, Any]:
+    scopes = [
+        dict(group.get("table_scope") or {})
+        for group in groups
+        if isinstance(group.get("table_scope"), dict)
+        and group.get("table_scope", {}).get("kind") == "table"
+    ]
+    if not scopes or len(scopes) != len(groups):
+        return {"kind": "independent"}
+    keys = {
+        (str(scope.get("table_id") or ""), str(scope.get("block_id") or ""))
+        for scope in scopes
+    }
+    if len(keys) != 1 or keys == {("", "")}:
+        return {"kind": "independent"}
+    return _public_table_scope(scopes[0])
+
+
+def _coverage_system_prompt(scope: dict[str, Any] | None) -> str:
+    if isinstance(scope, dict) and scope.get("kind") == "table":
+        return _SEMANTIC_VERIFIER_TABLE_SYSTEM
+    return _SEMANTIC_VERIFIER_SYSTEM
+
+
+def _table_pack_partition_key(row: dict[str, Any]) -> tuple[str, ...] | None:
+    scope = row.get("table_scope")
+    if isinstance(scope, dict) and scope.get("kind") == "table":
+        table_id = str(scope.get("table_id") or "")
+        block_id = str(scope.get("block_id") or "")
+        if table_id or block_id:
+            return ("table", table_id, block_id)
+    raw = row.get("table_pack_key")
+    if isinstance(raw, (list, tuple)) and len(raw) >= 2:
+        left = str(raw[0] or "")
+        right = str(raw[1] or "")
+        if left and right:
+            return (left, right)
+    return None
+
+
+def _partition_rows_by_pack_key(rows: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    packs: dict[tuple[str, ...] | None, list[dict[str, Any]]] = {}
+    order: list[tuple[str, ...] | None] = []
+    for row in rows:
+        key = _table_pack_partition_key(row)
+        if key not in packs:
+            order.append(key)
+            packs[key] = []
+        packs[key].append(row)
+    return [packs[key] for key in order]
+
+
 def _candidate_basis(claim: dict[str, Any], target: dict[str, Any]) -> list[str]:
     content, _, _ = _claim_content(claim)
     claim_norm = _normalized(content)
@@ -1091,6 +1233,7 @@ def _group(
     verifier_runtime_fingerprint: str,
     validation_generation_run_id: str,
     controlled_term_aliases: dict[str, list[str]] | None,
+    table_scope: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     content, claim_start, claim_end = _claim_content(claim)
     relation = "merged_into" if len(targets) > 1 else "generated_from"
@@ -1175,7 +1318,12 @@ def _group(
         "invalid_reason": invalid_reason,
         "validation_reused": False,
     }
-    group["validation_input_hash"] = _sha256({
+    if isinstance(table_scope, dict) and table_scope.get("fingerprint"):
+        group["table_scope"] = _public_table_scope(table_scope)
+        group["table_scope"]["fingerprint"] = str(table_scope.get("fingerprint") or "")
+        group["table_scope_fingerprint"] = str(table_scope.get("fingerprint") or "")
+        group["compact_source_text"] = _compact_table_row_text(claim)
+    hash_payload = {
         "claim_hash": group["claim_hash"],
         "source_evidence": group["source_evidence"],
         "edges": [{
@@ -1189,7 +1337,11 @@ def _group(
         "validation_method": validation_method,
         "verifier_runtime_fingerprint": verifier_runtime_fingerprint,
         "validator_version": group["validator_version"],
-    })
+    }
+    if group.get("table_scope_fingerprint"):
+        hash_payload["table_scope_fingerprint"] = group["table_scope_fingerprint"]
+        hash_payload["table_scope"] = _public_table_scope(group.get("table_scope"))
+    group["validation_input_hash"] = _sha256(hash_payload)
     return group
 
 
@@ -1294,7 +1446,7 @@ def coverage_group_record_error(
         return "coverage_group_id_mismatch"
 
     prefilter = group.get("prefilter")
-    expected_input_hash = _sha256({
+    hash_payload = {
         "claim_hash": claim.get("claim_hash"),
         "source_evidence": expected_source,
         "edges": [{
@@ -1308,7 +1460,11 @@ def coverage_group_record_error(
         "validation_method": validation_method,
         "verifier_runtime_fingerprint": verifier_runtime_fingerprint,
         "validator_version": group.get("validator_version"),
-    })
+    }
+    if group.get("table_scope_fingerprint"):
+        hash_payload["table_scope_fingerprint"] = str(group.get("table_scope_fingerprint") or "")
+        hash_payload["table_scope"] = _public_table_scope(group.get("table_scope"))
+    expected_input_hash = _sha256(hash_payload)
     if str(group.get("validation_input_hash") or "") != expected_input_hash:
         return "validation_input_hash_mismatch"
 
@@ -1348,7 +1504,7 @@ def coverage_group_record_error(
 
 def _semantic_verifier_request(group: dict[str, Any]) -> dict[str, Any]:
     """Strip proposer conclusions before the independent validation request."""
-    return {
+    request = {
         "coverage_group_id": str(group.get("coverage_group_id") or ""),
         "claim_id": str(group.get("claim_id") or ""),
         "claim_hash": str(group.get("claim_hash") or ""),
@@ -1359,6 +1515,12 @@ def _semantic_verifier_request(group: dict[str, Any]) -> dict[str, Any]:
             "produced_evidence": [dict(item) for item in (edge.get("produced_evidence") or [])],
         } for edge in (group.get("edges") or [])],
     }
+    if isinstance(group.get("table_scope"), dict):
+        request["table_scope"] = dict(group["table_scope"])
+    compact = str(group.get("compact_source_text") or "")
+    if compact:
+        request["compact_source_text"] = compact
+    return request
 
 
 def _compact_coverage_transport(
@@ -1389,7 +1551,11 @@ def _compact_coverage_transport(
             edge_refs.append(target_refs[key])
         compact_groups.append([
             group_ref,
-            str((group.get("source_evidence") or {}).get("text") or ""),
+            str(
+                group.get("compact_source_text")
+                or (group.get("source_evidence") or {}).get("text")
+                or ""
+            ),
             list(dict.fromkeys(edge_refs)),
         ])
     return target_evidence, compact_groups, group_ids
@@ -1471,14 +1637,16 @@ def _coverage_verifier_request_payload(
     batch_id: str,
     request_id: str,
     round_index: int,
+    scope: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     target_evidence, compact_groups, _group_ids = _compact_coverage_transport(groups)
     return {
-        "schema": "claim-coverage-verifier-request/v2",
+        "schema": "claim-coverage-verifier-request/v3",
         "request_id": f"{request_id}-R{round_index}",
         "batch_request_id": request_id,
         "verification_round": round_index,
         "batch_id": batch_id,
+        "scope": _public_table_scope(scope) if scope is not None else _coverage_scope_for_batch(groups),
         "target_evidence": target_evidence,
         "groups": compact_groups,
     }
@@ -1563,21 +1731,37 @@ def _coverage_batches(
 ) -> tuple[list[list[dict[str, Any]]], list[dict[str, Any]]]:
     index_width = _batch_index_width(len(rows))
     request_id = "CVR-" + "0" * 32
-    return _bounded_batches(
-        rows,
-        max_items=CLAIM_COVERAGE_BATCH_MAX_GROUPS,
-        max_utf8_bytes=CLAIM_COVERAGE_BATCH_MAX_UTF8_BYTES,
-        payload=lambda batch: _verifier_http_payload(
+
+    def payload(batch: list[dict[str, Any]]) -> dict[str, Any]:
+        scope = _coverage_scope_for_batch(batch)
+        return _verifier_http_payload(
             runtime,
-            _SEMANTIC_VERIFIER_SYSTEM,
+            _coverage_system_prompt(scope),
             _coverage_verifier_request_payload(
                 batch,
                 batch_id="COVERAGE-BATCH-" + "0" * index_width,
                 request_id=request_id,
                 round_index=1,
+                scope=scope,
             ),
-        ),
-    )
+        )
+
+    batches: list[list[dict[str, Any]]] = []
+    oversized: list[dict[str, Any]] = []
+    for pack in _partition_rows_by_pack_key(rows):
+        scope = _coverage_scope_for_batch(pack)
+        max_items = (
+            len(pack) if scope.get("kind") == "table" else CLAIM_COVERAGE_BATCH_MAX_GROUPS
+        )
+        pack_batches, pack_oversized = _bounded_batches(
+            pack,
+            max_items=max_items,
+            max_utf8_bytes=CLAIM_COVERAGE_BATCH_MAX_UTF8_BYTES,
+            payload=payload,
+        )
+        batches.extend(pack_batches)
+        oversized.extend(pack_oversized)
+    return batches, oversized
 
 
 def _negative_batches(
@@ -1612,12 +1796,18 @@ def _negative_batches(
         )
     else:
         raise ValueError("unknown negative verifier batch operation")
-    return _bounded_batches(
-        rows,
-        max_items=CLAIM_NEGATIVE_BATCH_MAX_CLAIMS,
-        max_utf8_bytes=CLAIM_NEGATIVE_BATCH_MAX_UTF8_BYTES,
-        payload=payload,
-    )
+    batches: list[list[dict[str, Any]]] = []
+    oversized: list[dict[str, Any]] = []
+    for pack in _partition_rows_by_pack_key(rows):
+        pack_batches, pack_oversized = _bounded_batches(
+            pack,
+            max_items=CLAIM_NEGATIVE_BATCH_MAX_CLAIMS,
+            max_utf8_bytes=CLAIM_NEGATIVE_BATCH_MAX_UTF8_BYTES,
+            payload=payload,
+        )
+        batches.extend(pack_batches)
+        oversized.extend(pack_oversized)
+    return batches, oversized
 
 
 def _logical_call_ceiling(
@@ -1722,15 +1912,17 @@ def make_semantic_coverage_verifier(
         operation_failures = 0
         call_count = 0
         for round_index in range(resolved_rounds):
+            scope = _coverage_scope_for_batch(groups)
             payload = _coverage_verifier_request_payload(
                 groups,
                 batch_id=batch_id,
                 request_id=request_id,
                 round_index=round_index + 1,
+                scope=scope,
             )
             try:
                 response, meta = chat_with_meta(
-                    _SEMANTIC_VERIFIER_SYSTEM,
+                    _coverage_system_prompt(scope),
                     _verifier_user_prompt(payload),
                 )
             except LLMBudgetExceeded:
@@ -2226,7 +2418,7 @@ def _negative_claim_request(
     unit: dict[str, Any],
 ) -> dict[str, Any]:
     content, claim_start, claim_end = _claim_content(claim)
-    return {
+    request = {
         "claim_id": str(claim.get("claim_id") or ""),
         "claim_hash": str(claim.get("claim_hash") or ""),
         "source_evidence": {
@@ -2243,6 +2435,10 @@ def _negative_claim_request(
             "container_mappings": list(unit.get("container_mappings") or []),
         },
     }
+    pack_key = _claim_table_pack_key(claim)
+    if pack_key is not None:
+        request["table_pack_key"] = [pack_key[0], pack_key[1]]
+    return request
 
 
 def _negative_evidence_is_current(
@@ -2679,6 +2875,9 @@ def semantic_validation_fingerprint(group: dict[str, Any]) -> str:
         ),
         "reuse_version": CLAIM_VALIDATION_REUSE_VERSION,
     }
+    fingerprint = str(group.get("table_scope_fingerprint") or "")
+    if fingerprint:
+        payload["table_scope_fingerprint"] = fingerprint
     return hash_json("claim-semantic-validation/v1", payload)
 
 
@@ -3372,9 +3571,12 @@ def build_shadow_ledger(
     if mode_resolved != "full":
         verifier_selection = select_verifier_claim_ids(catalog, mode=mode_resolved)
 
+    table_scopes = _table_scope_index(catalog)
     for claim in catalog:
         if claim.get("eligibility") != "claim":
             continue
+        pack_key = _claim_table_pack_key(claim)
+        claim_table_scope = table_scopes.get(pack_key) if pack_key is not None else None
         content, _, _ = _claim_content(claim)
         candidates: list[tuple[dict[str, Any], list[str], list[dict[str, Any]]]] = []
         exact: list[tuple[dict[str, Any], list[str], list[dict[str, Any]]]] = []
@@ -3436,6 +3638,7 @@ def build_shadow_ledger(
                     verifier_runtime_fingerprint=str(runtime.get("fingerprint") or ""),
                     validation_generation_run_id=validation_generation_run_id,
                     controlled_term_aliases=controlled_term_aliases,
+                    table_scope=claim_table_scope,
                 )
                 for target in active_formal_exact
             )
@@ -3448,6 +3651,7 @@ def build_shadow_ledger(
                 verifier_runtime_fingerprint=str(runtime.get("fingerprint") or ""),
                 validation_generation_run_id=validation_generation_run_id,
                 controlled_term_aliases=controlled_term_aliases,
+                table_scope=claim_table_scope,
             )
             for target in inactive_formal_exact
         )
@@ -3474,6 +3678,7 @@ def build_shadow_ledger(
                         verifier_runtime_fingerprint=str(runtime.get("fingerprint") or ""),
                         validation_generation_run_id=validation_generation_run_id,
                         controlled_term_aliases=controlled_term_aliases,
+                        table_scope=claim_table_scope,
                     ))
                 claim_groups.extend(
                     _group(
@@ -3484,6 +3689,7 @@ def build_shadow_ledger(
                         verifier_runtime_fingerprint=str(runtime.get("fingerprint") or ""),
                         validation_generation_run_id=validation_generation_run_id,
                         controlled_term_aliases=controlled_term_aliases,
+                        table_scope=claim_table_scope,
                     )
                     for target in inactive
                 )

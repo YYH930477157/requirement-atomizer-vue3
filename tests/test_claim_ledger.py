@@ -513,7 +513,7 @@ class SemanticVerifierAdapterTests(unittest.TestCase):
         }])
         self.assertEqual(len(seen), 1)
         self.assertEqual(seen[0][1]["batch_id"], "UNIT-1")
-        self.assertEqual(seen[0][1]["schema"], "claim-coverage-verifier-request/v2")
+        self.assertEqual(seen[0][1]["schema"], "claim-coverage-verifier-request/v3")
         self.assertEqual(result["tokens"], 37)
         self.assertTrue(result["usage_complete"])
         self.assertEqual(result["operation_failure_count"], 0)
@@ -862,15 +862,17 @@ class VerifierBatchPolicyTests(unittest.TestCase):
     def _coverage_http_payload(
         batch: list[dict], runtime: dict, batch_index: int = 1,
     ) -> dict:
+        scope = claim_ledger._coverage_scope_for_batch(batch)
         user_request = claim_ledger._coverage_verifier_request_payload(
             batch,
             batch_id=f"COVERAGE-BATCH-{batch_index:04d}",
             request_id="CVR-" + "a" * 32,
             round_index=1,
+            scope=scope,
         )
         return claim_ledger._verifier_http_payload(
             runtime,
-            claim_ledger._SEMANTIC_VERIFIER_SYSTEM,
+            claim_ledger._coverage_system_prompt(scope),
             user_request,
         )
 
@@ -916,7 +918,7 @@ class VerifierBatchPolicyTests(unittest.TestCase):
         )
         self.assertEqual(
             json.loads(sample_http["messages"][1]["content"])["schema"],
-            "claim-coverage-verifier-request/v2",
+            "claim-coverage-verifier-request/v3",
         )
 
     def test_full_http_envelope_rejects_old_compact_payload_boundary(self) -> None:

@@ -98,7 +98,7 @@
       ],
       "properties": {
         "version": {
-          "const": "claim-coverage-runtime-v11"
+          "const": "claim-coverage-runtime-v12"
         },
         "policy_source": {
           "enum": [
@@ -165,7 +165,7 @@
           "minLength": 1
         },
         "batch_policy_version": {
-          "const": "claim-verifier-batch-v3-full-http-body"
+          "const": "claim-verifier-batch-v4-table-scoped"
         },
         "cost_policy_version": {
           "const": "claim-cost-policy-v3-user-approved"
@@ -324,7 +324,7 @@
           "minLength": 1
         },
         "batch_policy": {
-          "const": "claim-verifier-batch-v3-full-http-body"
+          "const": "claim-verifier-batch-v4-table-scoped"
         },
         "cost_policy": {
           "const": "claim-cost-policy-v3-user-approved"
