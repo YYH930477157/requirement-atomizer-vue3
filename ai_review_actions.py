@@ -61,6 +61,19 @@ _REVIEW_SUBJECT_FIELDS = (
     "dependencies",
 )
 
+# 功能级评审对象的核心叙述字段（审查 2026-08-15 P1）：objective/behaviors 等变了而
+# subject 指纹不变，会让专家在旧叙述上的裁决被静默沿用。行内存在任一功能字段时并入
+# 指纹——原子行不含这些键，指纹不变（存量裁决零失效）。
+_FUNCTIONAL_REVIEW_SUBJECT_FIELDS = (
+    "objective",
+    "behaviors",
+    "preconditions",
+    "data_constraints",
+    "variants",
+    "exceptions",
+    "related_dlms_objects",
+)
+
 
 def normalize_module_override(value: str | None) -> str | None:
     if value is None:
@@ -101,8 +114,17 @@ def review_anchor_fingerprint(req: dict[str, Any]) -> str:
 
 
 def review_subject_fingerprint(req: dict[str, Any]) -> str:
-    """Hash the requirement fields an expert is actually adjudicating."""
-    return _fingerprint_payload({key: req.get(key) for key in _REVIEW_SUBJECT_FIELDS})
+    """Hash the requirement fields an expert is actually adjudicating.
+
+    功能级条目（行内存在功能叙述字段）把 objective/behaviors/… 一并纳入——专家裁决
+    的对象是这些叙述本身；原子行不含这些键，指纹与旧实现逐字节一致。
+    """
+    payload = {key: req.get(key) for key in _REVIEW_SUBJECT_FIELDS}
+    if any(req.get(key) is not None for key in _FUNCTIONAL_REVIEW_SUBJECT_FIELDS):
+        payload.update(
+            {key: req.get(key) for key in _FUNCTIONAL_REVIEW_SUBJECT_FIELDS}
+        )
+    return _fingerprint_payload(payload)
 
 
 def ensure_requirement_identity(
@@ -176,8 +198,14 @@ def source_ai_requirement_id(req: dict[str, Any]) -> str:
 
     唯一权威实现——api_server / ai_extract / requirements_analysis 都用它，三份复制迟早分叉。
     警告：绝不能把位置型编号（make_doc 的 REQ-NNN）写进这些字段，否则复跑后裁决静默失配。
+    显式 id 优先级：原子链 ai_req_id/stable_req_id/req_id 在前；功能级
+    functional_requirement_id（FRE-）/requirement_uid（FR-）随后（§3.3/§3.4：直抽条目
+    以稳定功能主键进评审与 claim，原子行不含这两个键，互不干扰）。
     """
-    for key in ("ai_req_id", "stable_req_id", "req_id"):
+    for key in (
+        "ai_req_id", "stable_req_id", "req_id",
+        "functional_requirement_id", "requirement_uid",
+    ):
         explicit = str(req.get(key) or "").strip()
         if explicit:
             return explicit

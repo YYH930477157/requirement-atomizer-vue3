@@ -6,6 +6,7 @@
     {"$ref": "#/$defs/started"},
     {"$ref": "#/$defs/budget_checkpoint"},
     {"$ref": "#/$defs/supplement_persisted"},
+    {"$ref": "#/$defs/publication_prepared"},
     {"$ref": "#/$defs/requirements_published"},
     {"$ref": "#/$defs/base_rebuild_published"},
     {"$ref": "#/$defs/effective_folded"},
@@ -35,7 +36,8 @@
         "event_kind": {
           "enum": [
             "reextract_started", "budget_checkpoint", "supplement_persisted",
-            "requirements_published", "base_rebuild_published", "effective_folded",
+            "publication_prepared", "requirements_published",
+            "base_rebuild_published", "effective_folded",
             "reextract_succeeded", "reextract_failed", "reextract_interrupted",
             "reextract_aborted_stale"
           ]
@@ -121,6 +123,27 @@
             "event_kind": {"const": "supplement_persisted"},
             "supplement_id": {"type": "string", "pattern": "^SUP-[0-9a-f]{12}$"},
             "supplement_hash": {"$ref": "#/$defs/hash"}
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "publication_prepared": {
+      "allOf": [
+        {"$ref": "#/$defs/common"},
+        {
+          "type": "object",
+          "required": [
+            "target_store", "requirements_sha256", "previous_requirements_sha256"
+          ],
+          "properties": {
+            "event_kind": {"const": "publication_prepared"},
+            "target_store": {"enum": ["functional_requirements.json"]},
+            "requirements_sha256": {"$ref": "#/$defs/hash"},
+            "previous_requirements_sha256": {"$ref": "#/$defs/hash"},
+            "supplement_id": {
+              "type": "string", "pattern": "^SUP-[0-9a-f]{12}$"
+            }
           }
         }
       ],

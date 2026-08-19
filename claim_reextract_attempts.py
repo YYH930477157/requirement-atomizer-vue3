@@ -388,6 +388,7 @@ def _validate_attempt_histories(
                 highest_budget_calls = calls
             if kind in {
                 "supplement_persisted",
+                "publication_prepared",
                 "requirements_published",
                 "base_rebuild_published",
                 "effective_folded",
@@ -397,6 +398,18 @@ def _validate_attempt_histories(
         kinds = [str(row["event_kind"]) for row in attempt_rows]
         if "requirements_published" in kinds and "supplement_persisted" not in kinds:
             raise ClaimReextractAttemptError("requirements publication lacks a supplement checkpoint")
+        if "publication_prepared" in kinds and "supplement_persisted" not in kinds:
+            raise ClaimReextractAttemptError(
+                "publication preparation lacks a supplement checkpoint"
+            )
+        if (
+            "publication_prepared" in kinds
+            and "requirements_published" in kinds
+            and kinds.index("publication_prepared") > kinds.index("requirements_published")
+        ):
+            raise ClaimReextractAttemptError(
+                "publication preparation follows the requirements publication"
+            )
         if "base_rebuild_published" in kinds and "requirements_published" not in kinds:
             raise ClaimReextractAttemptError("base rebuild lacks a requirements checkpoint")
         if "effective_folded" in kinds and "base_rebuild_published" not in kinds:
@@ -728,6 +741,68 @@ def _published_patch(
     )
 
 
+def _functional_publication_revision(
+    store: str,
+    requirements_sha256: str,
+) -> str:
+    """与 ``claim_review_actions._target_publication_revision`` 同公式——恢复侧
+    补记的 requirements_published 必须能通过 rebuild_pending 重放护栏的
+    ``target_publication_revision`` 比对。"""
+    return hash_json(
+        "claim-target-publication-revision/v1",
+        {
+            "source_store": store,
+            "source_present": True,
+            "source_file_sha256": requirements_sha256,
+        },
+    )
+
+
+def _route_publication_prepared(
+    root: Path,
+    prepared: dict[str, Any],
+) -> dict[str, Any]:
+    """复审四轮 P1-1：按 ``publication_prepared`` 事件的新旧产品哈希路由恢复。
+
+    直抽（functional store）路径没有 ai 补丁文件，publication 事实只能从
+    prepared 事件携带的哈希对恢复；哈希口径与队列记账一致
+    （``root / target_store``，见 ``target_published`` 与 rebuild_pending
+    重放护栏）：
+
+    - 当前产品哈希 == 新哈希 → ``published``：publication 事实成立（产品已
+      原子替换），补记 requirements_published 后走确定性 rebuild_pending；
+    - 当前产品哈希 == 旧哈希 → ``unpublished``：产品未动，按未发布处理
+      （interrupted 可重试）；
+    - 均不等 → ``conflict``：产品已他变为未知哈希，按既有 CAS 冲突路径
+      （recovery_target_changed）终态化。
+    """
+    from claim_artifacts import file_sha256
+
+    store = str(prepared.get("target_store") or "")
+    new_sha = str(prepared.get("requirements_sha256") or "")
+    previous_sha = str(prepared.get("previous_requirements_sha256") or "")
+    path = root / store
+    try:
+        current = file_sha256(path) if path.is_file() else ""
+    except OSError as exc:
+        raise ClaimReextractAttemptError(
+            "functional requirements are unavailable during attempt recovery"
+        ) from exc
+    if new_sha and current == new_sha:
+        return {
+            "kind": "published",
+            "target_store": store,
+            "requirements_sha256": current,
+        }
+    if current == previous_sha:
+        return {"kind": "unpublished", "target_store": store}
+    return {
+        "kind": "conflict",
+        "target_store": store,
+        "requirements_sha256": current,
+    }
+
+
 def recover_interrupted_attempts(
     out_dir: Path | str,
     *,
@@ -739,6 +814,12 @@ def recover_interrupted_attempts(
     call. A fully published target is projected as ``rebuild_pending`` so recovery
     can continue without another paid call; every earlier crash window becomes an
     explicit, retryable ``interrupted`` attempt.
+
+    复审四轮 P1-1（functional store）：直抽模式的 publication 事实没有 ai 补丁
+    文件可对账，改按 ``publication_prepared`` 事件携带的新旧产品哈希路由——
+    当前 == 新哈希 → 补记 requirements_published（rebuild_pending，确定性恢复）；
+    当前 == 旧哈希 → 未发布（interrupted 可重试）；均不等 → CAS 冲突
+    （recovery_target_changed 终态）。原子 ai_requirements 分支行为不变。
     """
     from claim_artifacts import (
         CLAIM_BUDGET_CHECKPOINT_OUTBOX,
@@ -784,7 +865,12 @@ def recover_interrupted_attempts(
             if state.get("lifecycle") == "executing"
         }
         if not orphan_ids:
-            return {"recovered": 0, "interrupted": 0, "appended_count": 0}
+            return {
+                "recovered": 0,
+                "interrupted": 0,
+                "conflicted": 0,
+                "appended_count": 0,
+            }
 
         try:
             patches = read_supplement_patches(root) if (root / AI_SUPPLEMENTS).is_file() else []
@@ -816,6 +902,7 @@ def recover_interrupted_attempts(
         drafts: list[dict[str, Any]] = []
         recovered = 0
         interrupted = 0
+        conflicted = 0
         for attempt in sorted(orphan_ids):
             history = histories[attempt]
             started = history[0]
@@ -866,6 +953,62 @@ def recover_interrupted_attempts(
                 publication_recovered = True
                 recovered += 1
 
+            # 复审四轮 P1-1：functional store 分支——直抽模式没有 ai 补丁文件，
+            # publication 事实从 publication_prepared 事件的新旧产品哈希恢复
+            # （原子 ai_requirements 行为不变：原子 attempt 不写 prepared 事件）。
+            if not publication_recovered and "requirements_published" not in kinds:
+                prepared = next(
+                    (
+                        row
+                        for row in reversed(history)
+                        if row.get("event_kind") == "publication_prepared"
+                    ),
+                    None,
+                )
+                if prepared is not None:
+                    route = _route_publication_prepared(root, prepared)
+                    if route["kind"] == "published":
+                        publication_revision = _functional_publication_revision(
+                            str(route["target_store"]),
+                            str(route["requirements_sha256"]),
+                        )
+                        drafts.append({
+                            **_recovery_common(
+                                started,
+                                event_kind="requirements_published",
+                                detail=publication_revision,
+                            ),
+                            "requirements_sha256": route["requirements_sha256"],
+                            "target_publication_revision": publication_revision,
+                        })
+                        publication_recovered = True
+                        recovered += 1
+                    elif route["kind"] == "conflict":
+                        usage = _recovered_usage(history)
+                        drafts.append({
+                            **_recovery_common(
+                                started,
+                                event_kind="reextract_aborted_stale",
+                                detail={
+                                    "code": "recovery_target_changed",
+                                    "usage": usage,
+                                },
+                            ),
+                            "outcome": {
+                                "code": "recovery_target_changed",
+                                "message": (
+                                    "the functional product changed to an unknown "
+                                    "hash between preparation and recovery"
+                                ),
+                                "retryable": True,
+                            },
+                            "usage": usage,
+                        })
+                        conflicted += 1
+                        continue
+                    # "unpublished"（当前 == 旧哈希）→ 按未发布处理，落入下方
+                    # interrupted 终态（可重试）。
+
             if "requirements_published" in kinds or publication_recovered:
                 continue
 
@@ -894,6 +1037,7 @@ def recover_interrupted_attempts(
         return {
             "recovered": recovered,
             "interrupted": interrupted,
+            "conflicted": conflicted,
             "appended_count": int(result.get("appended_count") or 0),
         }
 

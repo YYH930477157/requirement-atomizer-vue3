@@ -36,6 +36,14 @@ parse(parsers/) → blocks.jsonl
 
 AI 抽取后增加 `functional-synthesis` 阶段：读取 `ai_requirements.jsonl` 与 `ai_review_states.jsonl`，过滤 rejected、投影专家 module/ownership 覆盖，并写 `functional_requirements.json`。`requirements-analysis` 优先消费该文件；不存在时兼容旧的逐原子输入。实现建议与规范要求分栏：`developer_guidance` 只放有来源约束，`design_options` 放非规范实现候选。 合成层按文档级功能目录输出 `objective/behaviors/lifecycle_behaviors/preconditions/data_constraints/variants/exceptions/related_dlms_objects/source_modules`，每个来源原子必须且只能分配一次，并保留合并方法、置信度、理由、冲突标记和完整 evidence。确定性目录只在显式功能身份、兼容事件主体、协议 profile 或周期家族上进行跨章节/跨模块保守合并；互斥限定、不同事件主体和未限定参数冲突保持拆分。可选 LLM 目录只允许映射 atom ID，不允许改写内容，校验失败时按模块回退确定性结果，再执行同一安全归并门禁。
 
+**条款直抽旁路（WS2，`RATOMIZER_FUNCTIONAL_EXTRACT=1` 启用，默认关）**：chain 内
+`ai-extract`+`functional-synthesis` 两阶段被整体替换为 `functional-extract`——条款单元
+单次 LLM 直出功能需求级条目写同名 `functional_requirements.json`，不产原子、不再重并
+（无"拆散再拼回"的粒度拉锯）。守恒核对按条款块（exactly-once），未闭合即阻塞成文导出；
+无原子链形态下 `requirements-analysis`/`clarification-report` 以直抽产物为唯一依据
+（资格判定单源 `functional_extract.functional_direct_basis`）。批注/裁决等逐原子面在
+此形态下为空，锚点迁移属后续步骤。
+
 ## 关键机制（动之前先读）
 
 - **防幻觉分级**：受保护编码（OBIS/hex/事件号）漂移=硬拦；普通整数=软标。基线可被

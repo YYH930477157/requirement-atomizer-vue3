@@ -235,6 +235,17 @@ def _raise_if_functional_extract_unconserved(synthesized_payload: dict[str, Any]
     raise_if_unconserved(conservation)
 
 
+def _functional_direct_basis(out_dir: Path) -> list[dict[str, Any]] | None:
+    """直抽产物可否作为唯一需求依据（无原子链形态，RATOMIZER_FUNCTIONAL_EXTRACT=1）。
+
+    判定单源在 ``functional_extract.functional_direct_basis``（analyze/clarification 共用，
+    守恒未闭合在那里响亮失败）；此处薄封装仅为本地调用点留稳定锚。
+    """
+    from functional_extract import functional_direct_basis
+
+    return functional_direct_basis(out_dir)
+
+
 def run_requirements_analysis(
     out_dir: Path,
     *,
@@ -249,32 +260,40 @@ def run_requirements_analysis(
     synthesized_path = out_dir / "functional_requirements.json"
     source_path = out_dir / "ai_requirements.jsonl"
     if not source_path.exists():
-        # 缺输入必须响亮失败：静默产出"0 条 0 问题"的空交付物会掩盖打错目录（仓库纪律）
-        raise FileNotFoundError(
-            f"ai_requirements.jsonl not found in {out_dir} — 请先运行「AI 抽取」再做需求分析")
-    raw_requirements = read_jsonl(source_path)
-    if synthesized_path.exists():
-        try:
-            synthesized_payload = json.loads(synthesized_path.read_text(encoding="utf-8"))
-            requirements = synthesized_payload.get("items") if isinstance(synthesized_payload, dict) else None
-        except (OSError, json.JSONDecodeError):
-            requirements = None
-        # C4（0710 评审）：消费端血统校验（§43）——陈旧/异源 functional_requirements.json
-        # 会被静默采信（链内指纹只管要不要重跑，不做产物互一致校验）。producer 家族不符
-        # 即告警并回退逐原子输入；只校验家族名不校验版本号（版本演进由指纹层负责失效）。
-        # S1-3：白名单接纳 functional-extract 直抽家族（与 functional-synthesis 同为合法来源）。
-        # S1-2：functional-extract 产物携带 conservation 守恒报告——未闭合即 raise 阻断成文上游。
-        if isinstance(requirements, list) and isinstance(synthesized_payload, dict):
-            producer = str(synthesized_payload.get("producer") or "")
-            if not any(producer.startswith(family) for family in _FUNCTIONAL_PRODUCER_FAMILIES):
-                LOGGER.warning("functional_requirements.json producer 异常（%s），回退逐原子输入", producer or "缺失")
-                requirements = None
-            elif producer.startswith("functional-extract"):
-                _raise_if_functional_extract_unconserved(synthesized_payload)
-        if not isinstance(requirements, list):
-            requirements = raw_requirements
+        # WS2 直抽链形态（无原子）：functional_requirements.json 出自 functional-extract 且
+        # 守恒闭合时，直抽产物即唯一需求依据。其余情况维持响亮失败——静默产出
+        # "0 条 0 问题"的空交付物会掩盖打错目录（仓库纪律）。
+        direct_basis = _functional_direct_basis(out_dir)
+        if direct_basis is None:
+            raise FileNotFoundError(
+                f"ai_requirements.jsonl not found in {out_dir} — 请先运行「AI 抽取」，"
+                "或走功能直抽链（RATOMIZER_FUNCTIONAL_EXTRACT=1 的 chain）后再做需求分析")
+        raw_requirements: list[dict[str, Any]] = []
+        requirements = direct_basis
     else:
-        requirements = raw_requirements
+        raw_requirements = read_jsonl(source_path)
+        if synthesized_path.exists():
+            try:
+                synthesized_payload = json.loads(synthesized_path.read_text(encoding="utf-8"))
+                requirements = synthesized_payload.get("items") if isinstance(synthesized_payload, dict) else None
+            except (OSError, json.JSONDecodeError):
+                requirements = None
+            # C4（0710 评审）：消费端血统校验（§43）——陈旧/异源 functional_requirements.json
+            # 会被静默采信（链内指纹只管要不要重跑，不做产物互一致校验）。producer 家族不符
+            # 即告警并回退逐原子输入；只校验家族名不校验版本号（版本演进由指纹层负责失效）。
+            # S1-3：白名单接纳 functional-extract 直抽家族（与 functional-synthesis 同为合法来源）。
+            # S1-2：functional-extract 产物携带 conservation 守恒报告——未闭合即 raise 阻断成文上游。
+            if isinstance(requirements, list) and isinstance(synthesized_payload, dict):
+                producer = str(synthesized_payload.get("producer") or "")
+                if not any(producer.startswith(family) for family in _FUNCTIONAL_PRODUCER_FAMILIES):
+                    LOGGER.warning("functional_requirements.json producer 异常（%s），回退逐原子输入", producer or "缺失")
+                    requirements = None
+                elif producer.startswith("functional-extract"):
+                    _raise_if_functional_extract_unconserved(synthesized_payload)
+            if not isinstance(requirements, list):
+                requirements = raw_requirements
+        else:
+            requirements = raw_requirements
     # 容错读（坏行跳过）+ 最新覆盖，与裁决回流同一读取器——单条撕裂写不弄死整跑
     states = read_ai_review_states(out_dir)
     compliance_source: list[dict[str, Any]] = []

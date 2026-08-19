@@ -1104,6 +1104,14 @@ class ClarificationWorkbookImportTests(unittest.TestCase):
 class ChainAndManifestTests(unittest.TestCase):
     """F1+F7：后端链编排 + run_manifest 显式状态账本。"""
 
+    def setUp(self) -> None:
+        # 本组验证旧 ai-extract 编排合同；默认翻转后必须显式进入回滚模式。
+        env = mock.patch.dict(
+            os.environ, {"RATOMIZER_FUNCTIONAL_EXTRACT": "0"}
+        )
+        env.start()
+        self.addCleanup(env.stop)
+
     def test_ai_extract_manifest_records_committed_claim_components(self) -> None:
         import claim_review_actions
         from tests.test_claim_artifacts import _catalog, _publish
@@ -2008,6 +2016,51 @@ class ChainAndManifestTests(unittest.TestCase):
             self.assertEqual(manifest["stages"]["ai-extract"]["producer"],
                              desktop_tasks.stage_producer("ai-extract"))
 
+    def test_chain_translation_mode_off_drops_full_translation_and_forwards(self) -> None:
+        """§12.1/§20：off/markers 拿掉 full-translation 阶段并落账；export 透传模式。"""
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            with mock.patch.object(
+                desktop_tasks, "export_annotation_html_task",
+                return_value={"kind": "annotation_html", "path": str(out / "document_annotation.html"), "written": []},
+            ) as export_task, mock.patch.object(
+                desktop_tasks, "full_translation_task",
+                return_value={"kind": "full_translation"},
+            ) as full_task:
+                payload = desktop_tasks.chain_task(
+                    out, stages=["export-annotation-html", "full-translation"],
+                    route="stub", translation_mode="off")
+
+            self.assertEqual(payload["stages"], ["export-annotation-html"])
+            self.assertEqual(payload["translation_mode"], "off")
+            self.assertEqual(payload["translation_mode_dropped_stages"], ["full-translation"])
+            full_task.assert_not_called()
+            export_task.assert_called_once_with(
+                out.resolve(), route="stub", layout_mode="pdf_original",
+                translation_mode="off")
+
+    def test_chain_translation_mode_unset_keeps_full_translation(self) -> None:
+        """默认（未传）不改变既有行为：full-translation 照跑，export 不带显式模式。"""
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            with mock.patch.object(
+                desktop_tasks, "full_translation_task",
+                return_value={"kind": "full_translation"},
+            ) as full_task, mock.patch.object(
+                desktop_tasks, "export_annotation_html_task",
+                return_value={"kind": "annotation_html", "path": str(out / "document_annotation.html"), "written": []},
+            ) as export_task:
+                payload = desktop_tasks.chain_task(
+                    out, stages=["full-translation", "export-annotation-html"], route="stub")
+
+            self.assertEqual(payload["stages"],
+                             ["full-translation", "export-annotation-html"])
+            self.assertNotIn("translation_mode", payload)
+            full_task.assert_called_once()
+            export_task.assert_called_once_with(
+                out.resolve(), route="stub", layout_mode="pdf_original",
+                translation_mode=None)
+
     def test_chain_forwards_annotation_layout_mode(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             out = Path(td)
@@ -2028,7 +2081,7 @@ class ChainAndManifestTests(unittest.TestCase):
                 )
 
         export_task.assert_called_once_with(
-            out.resolve(), route="stub", layout_mode="optimized")
+            out.resolve(), route="stub", layout_mode="optimized", translation_mode=None)
 
     def test_chain_defaults_annotation_export_to_original_pdf_layout(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -2041,7 +2094,7 @@ class ChainAndManifestTests(unittest.TestCase):
                 desktop_tasks.chain_task(out, stages=["export-annotation-html"], route="stub")
 
         export_task.assert_called_once_with(
-            out.resolve(), route="stub", layout_mode="pdf_original")
+            out.resolve(), route="stub", layout_mode="pdf_original", translation_mode=None)
 
     def test_chain_retries_partial_translation_export_until_clean_run(self) -> None:
         summaries = [

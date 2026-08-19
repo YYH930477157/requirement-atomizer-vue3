@@ -43,7 +43,17 @@ _row_render_line = _shared_row_render_line
 
 def full_translation_enabled(value: str | None = None) -> bool:
     raw = os.environ.get(FULL_TRANSLATION_ENV, "1") if value is None else value
-    return str(raw or "").strip().lower() not in {"0", "false", "no", "off"}
+    enabled = str(raw or "").strip().lower() not in {"0", "false", "no", "off"}
+    if not enabled:
+        return False
+    # 翻译交付模式（方案 §12.1，M6）：off/markers 明确不需要全文双语——全文翻译
+    # 阶段不跑（chain 的 stage config 已含 enabled 布尔，指纹随配置变化）。
+    # 默认 full = 既有行为。
+    from config import get_env
+
+    if str(get_env("RATOMIZER_TRANSLATION_MODE")).strip().lower() in {"off", "markers"}:
+        return False
+    return True
 
 
 def _block_text(block: dict[str, Any]) -> str:

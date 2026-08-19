@@ -269,6 +269,41 @@ class DeterministicParamRowTests(unittest.TestCase):
 
 
 class LlmSpotPathTests(unittest.TestCase):
+    def test_llm_path_writes_attempt_ledger_via_job_runner(self) -> None:
+        """M8 迁移：spot 的每轮 LLM 调用经 LLMJobRunner——账本在案且归属正确。"""
+        from llm_job_runner import LLM_JOB_ATTEMPTS_FILENAME
+
+        def critique(section, existing, chat, doc_context, context_ints,
+                     focus_lines=None):
+            payload = chat("system-marker", "user-marker")   # 经 runner 的闭包
+            self.assertEqual(payload, {"touched": True})
+            return ([_fake_llm_row(str(section["block_ids"][0]))], [])
+
+        config = mock.Mock()
+        config.model = "fake-model"
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            block = _paragraph_block()
+            _seed_out(out, [block])
+            with mock.patch.object(ai_extract, "config_for_route",
+                                   return_value=config),                     mock.patch.object(ai_extract, "critique_section",
+                                      side_effect=critique),                     mock.patch("llm_client.apply_min_tokens",
+                               side_effect=lambda cfg, _kind: cfg),                     mock.patch("llm_client.chat_json_with_meta",
+                               return_value=({"touched": True},
+                                             {"usage": {"total_tokens": 7},
+                                              "call_count": 1})):
+                result = spot_extract(out, block_id="BLK-000200")
+            self.assertEqual(result["strategy"], "llm")
+            ledger = out / LLM_JOB_ATTEMPTS_FILENAME
+            self.assertTrue(ledger.is_file())
+            rows = [json.loads(line) for line in
+                    ledger.read_text(encoding="utf-8").splitlines() if line.strip()]
+            self.assertEqual(rows[0]["stage"], "spot-extract")
+            self.assertEqual(rows[0]["processor"], "critique_section")
+            self.assertEqual(rows[0]["unit_id"], "spot:BLK-000200")
+            self.assertEqual(rows[0]["outcome"], "initial")
+            self.assertEqual(rows[0]["execution_status"], "ok")
+
     def test_paragraph_block_llm_path_appends_draft(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)

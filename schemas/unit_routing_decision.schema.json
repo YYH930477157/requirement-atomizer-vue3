@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ratomizer.local/schemas/unit_routing_decision.schema.json",
+  "title": "Unit routing decision v1",
+  "type": "object",
+  "required": [
+    "schema", "unit_id", "unit_kind", "route", "primary_route", "a_score",
+    "b_score", "confidence", "rule", "evidence", "source_text_hash",
+    "router_version", "planner_version", "decision_basis"
+  ],
+  "properties": {
+    "schema": {"const": "unit-routing-decision/v1"},
+    "unit_id": {"type": "string", "minLength": 1},
+    "unit_kind": {
+      "enum": [
+        "clause_segment", "narrative", "heading", "table_row", "table_cell",
+        "definition", "reference"
+      ]
+    },
+    "route": {"enum": ["a_track", "b_track", "mixed", "context", "review"]},
+    "primary_route": {
+      "oneOf": [
+        {"enum": ["a_track", "b_track"]},
+        {"type": "null"}
+      ]
+    },
+    "a_score": {"type": "number", "minimum": 0, "maximum": 1},
+    "b_score": {"type": "number", "minimum": 0, "maximum": 1},
+    "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+    "rule": {"type": "string", "minLength": 1},
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["kind", "value"],
+        "properties": {
+          "kind": {
+            "enum": [
+              "obis", "class_id", "cosem_attribute", "access_mode",
+              "cosem_context", "dlms_profile", "modal", "normative_pattern",
+              "weak_signal"
+            ]
+          },
+          "value": {"type": "string"}
+        },
+        "additionalProperties": false
+      }
+    },
+    "source_text_hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "router_version": {"type": "string", "minLength": 1},
+    "planner_version": {"type": "string", "minLength": 1},
+    "decision_basis": {"const": "deterministic"}
+  },
+  "additionalProperties": true
+}

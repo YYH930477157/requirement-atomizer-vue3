@@ -434,6 +434,21 @@ export type TranslationPayload = {
   model?: string
 }
 
+export type UnitRoutingPayload = {
+  available: boolean
+  detail?: string
+  routing?: {
+    schema: string
+    router_version: string
+    shadow_mode: boolean
+    unit_count: number
+    counts_by_route: Record<string, number>
+    counts_by_rule?: Record<string, number>
+    review_rate?: number
+    context_rate?: number
+  }
+}
+
 export type HealthPayload = {
   ok: boolean
   service: string
@@ -1261,6 +1276,11 @@ export class RequirementApiClient {
     return this.request<HealthPayload>("/health")
   }
 
+  async loadUnitRouting(): Promise<UnitRoutingPayload> {
+    // §20.3 单元路由进度（shadow 只读）：无单元产物时 available=false
+    return this.request<UnitRoutingPayload>("/unit-routing")
+  }
+
   async loadResultPackage(options: { verify?: boolean } = {}): Promise<ResultPackagePayload> {
     // S5：verify=1 触发后端显式完整校验（重算交付物/完成证据 SHA）——
     // 「打开已有结果」时由调用方传入；校验失败返回 503 result_package_modified
@@ -1583,6 +1603,31 @@ export class RequirementApiClient {
                 input.expectedTargetAuthorityWriteRevision,
             }
           : {}),
+        ...(input.moduleOverride !== undefined ? { module_override: input.moduleOverride } : {}),
+        clear_module_override: input.clearModuleOverride === true,
+        ownership_override: input.ownershipOverride || "",
+        reason: input.reason || "",
+        actor: input.actor || "",
+      }),
+    })
+  }
+
+  // §3.3 功能级专家裁决：唯一写权威仍是 ai_review_states（level=functional）。
+  // CAS 材料（指纹三元组 + authority revision）从 GET /functional-requirements 投影带回。
+  async applyFunctionalReviewAction(
+    input: AiReviewActionInput & { expectedTargetFingerprint?: string },
+  ): Promise<AiReviewStatePayload> {
+    return this.request<AiReviewStatePayload>("/functional-review-actions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ai_req_id: input.aiReqId,
+        status: input.status,
+        source_fingerprint: input.sourceFingerprint || "",
+        review_subject_fingerprint: input.reviewSubjectFingerprint || "",
+        expected_target_fingerprint: input.expectedTargetFingerprint || "",
+        expected_target_authority_write_revision:
+          input.expectedTargetAuthorityWriteRevision || "",
         ...(input.moduleOverride !== undefined ? { module_override: input.moduleOverride } : {}),
         clear_module_override: input.clearModuleOverride === true,
         ownership_override: input.ownershipOverride || "",

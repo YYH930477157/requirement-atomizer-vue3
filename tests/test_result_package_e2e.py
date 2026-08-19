@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from unittest import mock
 
 from docx import Document
 
@@ -17,6 +19,14 @@ from review_state import apply_expert_decision
 
 
 class ResultPackageEndToEndTests(unittest.TestCase):
+    def setUp(self) -> None:
+        # 本 E2E 固定验证原子产物及其评审持久化，显式走 =0 回滚路径。
+        env = mock.patch.dict(
+            os.environ, {"RATOMIZER_FUNCTIONAL_EXTRACT": "0"}
+        )
+        env.start()
+        self.addCleanup(env.stop)
+
     def test_analysis_completion_and_review_survive_clean_package_reload(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)

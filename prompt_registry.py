@@ -58,10 +58,17 @@ PROMPT_REGISTRY: list[dict[str, str]] = [
      "purpose": "Enrichment anti-drift guard version"},
 
     # Functional-extract direct path
-    {"id": "functional-extract", "version": "functional-extract-prompt-v2", "owner_module": "functional_extract",
+    # v4（2026-08-18 10% 诊断）：硬约束⑥保真落数——引用号（Table N/图号/条款号/标准号）
+    # 与数值必须原样进叙述字段（flash 意译丢表号 → preservation 假 blocking）。
+    {"id": "functional-extract", "version": "functional-extract-prompt-v4", "owner_module": "functional_extract",
      "purpose": "Functional requirement direct extraction prompt"},
-    {"id": "functional-extract-guards", "version": "functional-extract-guards-v2", "owner_module": "functional_extract",
+    {"id": "functional-extract-guards", "version": "functional-extract-guards-v6", "owner_module": "functional_extract",
      "purpose": "Functional extract anti-drift guard version"},
+    # 四轮复审 P2：守恒模型版本显式登记——守恒载荷语义演进（如 cross_script_review
+    # 携带文本身份）随 registry/指纹/producer stamp/claim lineage 四处同步失效。
+    {"id": "functional-extract-conservation", "version": "functional-conservation-obligation-evidence-v3",
+     "owner_module": "functional_extract",
+     "purpose": "Functional extract obligation/evidence conservation model version"},
 
     # Table understanding
     {"id": "llm-table-understanding", "version": "llm-table-understanding-prompt-v1",

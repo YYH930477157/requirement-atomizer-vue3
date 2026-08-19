@@ -29,6 +29,17 @@ from llm_pipeline import DEFAULT_DOMAIN_PACK_PATH, DEFAULT_PIPELINE_PATH, read_j
 from requirement_kb.cli import default_kb_paths, package_root
 from requirements_analysis import requirements_analysis_enrichment_enabled, run_requirements_analysis
 from requirements_analysis_schema import normalize_ownership
+# M9 第 6 刀：线下导入/回灌任务族逐字搬到 desktop_imports，原名重导出——CLI 分发与
+# 测试调用面零变化；32 个 patch 目标全部留守本模块。
+from desktop_imports import (  # noqa: E402,F401
+    _WS4_TRACE_ID_RE,
+    _backfill_description_drifted,
+    default_verification_for_check,
+    import_ai_decisions_task,
+    import_clarification_workbook_task,
+    import_verification_workbook_task,
+    set_verification_task,
+)
 from result_package import (
     ResultPackageCorrupt,
     ResultPackageError,
@@ -216,6 +227,7 @@ def _detach_dual_track_proposer() -> None:
 # 链内阶段名 → 预算单环节（仅 LLM 承载环节映射，确定性环节不进账本分摊）
 _CHAIN_BUDGET_STAGES = {
     "ai-extract": "functional_extract",
+    "functional-extract": "functional_extract",
     "assemble": "spec_enrich",
     "requirements-analysis": "analyze_enrich",
     "full-translation": "full_translation",
@@ -419,6 +431,107 @@ def functional_synthesis_task(out_dir: Path, *, route: str = "stub") -> dict[str
     return run_functional_synthesis(out_dir, route=route)
 
 
+@_leased_pipeline_stage("functional-extract")
+def functional_extract_task(out_dir: Path, *, route: str | None = "openai_compatible") -> dict[str, Any]:
+    """WS2 条款直抽阶段入口：不产原子，单次 LLM 直出功能需求级条目。
+
+    预检纪律（2026-07-08 审计 A4 同款）：显式请求非 stub 路由但 key/端点不可用时
+    响亮失败，优于静默 stub 产占位功能需求且 manifest 全 ok。显式 route="stub" 是
+    合法 opt-in（测试/烟测），照常运行。
+    """
+    from functional_extract import (
+        FUNCTIONAL_REQUIREMENTS_FILENAME,
+        _route_config,
+        run_functional_extract,
+    )
+    if route and route != "stub" and _route_config(route) is None:
+        raise RuntimeError(
+            f"functional-extract 请求 LLM 路由 {route} 但无可用 key/端点配置——"
+            "拒绝静默 stub 占位产物；请配置 RATOMIZER_LLM_* 或显式使用 --llm-route stub")
+    out_dir = out_dir.expanduser().resolve()
+    result = dict(run_functional_extract(out_dir, route=route))
+    if result.get("written"):
+        result["written"] = [str(out_dir / FUNCTIONAL_REQUIREMENTS_FILENAME)]
+    if str(result.get("route") or "") == "stub" and route != "stub":
+        result["note"] = "功能直抽全部包降级 stub 路由（占位条目，非真 LLM 产物）——请检查 key/网络"
+    # §3.5：执行结果类别如实上提（manifest 由 _stage_completion_status 记 partial/failed；
+    # note 让 GUI 在「运行完成」之外看到降级事实）
+    if str(result.get("execution_status") or "") in {"partial", "failed"}:
+        result.setdefault(
+            "note",
+            f"功能直抽执行不完整（execution_status={result.get('execution_status')}），"
+            "下游分析与成文将被阻断",
+        )
+    # §3.4（2026-08-15）：直抽模式 claim 发布——执行完整且守恒闭合才发布 B 轨 shadow
+    # （target store=functional_requirements.json，FRE- 主键）；失败/不守恒产物不进绑定。
+    # §3.5（复审 P1）：stub 草稿（draft 水印）同样不绑定 claim——占位条目不形成可发布
+    # 成功产物。发布失败响亮 raise（claim 是发布门的一部分，与 ai-extract 的 ledger 纪律同族）。
+    conservation = result.get("conservation") if isinstance(result.get("conservation"), dict) else {}
+    if result.get("draft"):
+        result["claim_shadow"] = {
+            "skipped": "draft_stub_product",
+            "reason": "stub 占位条目不绑定 claim（§3.5 草稿水印）",
+        }
+    elif str(result.get("execution_status") or "ok") == "ok" and conservation.get("ok", True):
+        claim_shadow = _publish_functional_claim_shadow(out_dir, route=route)
+        result["claim_shadow"] = claim_shadow
+        result.setdefault("written", []).extend(claim_shadow.get("written") or [])
+    return result
+
+
+def _publish_functional_claim_shadow(out_dir: Path, *, route: str | None) -> dict[str, Any]:
+    """直抽模式 B 轨 claim shadow 发布（确定性、零 verifier 调用）。
+
+    与 ai-extract 的 refresh_claim_shadow 同族但 target store 换成
+    functional_requirements.json：目录来自解析产物（blocks/table），coverage target =
+    FRE 条目（source_ai_requirement_id 主键，§3.3/§3.4 打通）。发布后折叠 effective。
+    """
+    import uuid
+
+    from claim_catalog import build_catalog_from_directory
+    from claim_ledger import publish_b_track_shadow
+    from claim_artifacts import FUNCTIONAL_REQUIREMENTS_STORE
+    from requirements_analysis_rules import _read_functional_requirements_payload
+
+    root = out_dir.expanduser().resolve()
+    payload = _read_functional_requirements_payload(root) or {}
+    items = payload.get("items") if isinstance(payload.get("items"), list) else []
+    published = publish_b_track_shadow(
+        root,
+        run_id=uuid.uuid4().hex,
+        route_mode="stub" if route == "stub" else "llm",
+        extraction_status="success",
+        catalog_build=build_catalog_from_directory(root, scope="full"),
+        requirements=[row for row in items if isinstance(row, dict)],
+        requirements_store=FUNCTIONAL_REQUIREMENTS_STORE,
+    )
+    generation = dict(published.get("generation_meta") or {})
+    shadow_meta = dict((published.get("shadow") or {}).get("meta") or {})
+    # package_v1 下 claim 产物在 .ratomizer/state/——经 governed 解析，不硬拼根路径
+    from result_package import governed_artifact_path
+
+    written = []
+    for name in (
+        "claim_catalog.jsonl", "claim_catalog.meta.json", "claim_ledger.jsonl",
+        "claim_coverage_groups.jsonl", "claim_shadow_metrics.json",
+        "claim_generation.meta.json", "claim_effective_ledger.jsonl",
+        "claim_effective.meta.json",
+    ):
+        try:
+            if governed_artifact_path(root, name, category="state", for_write=False).is_file():
+                written.append(str(root / name))
+        except Exception:  # noqa: BLE001 — 列表仅摘要用途
+            continue
+    return {
+        "store": FUNCTIONAL_REQUIREMENTS_STORE,
+        "catalog_count": generation.get("catalog_count"),
+        "target_kind": shadow_meta.get("target_kind"),
+        "document_ready": shadow_meta.get("document_ready"),
+        "generation_run_id": generation.get("run_id"),
+        "written": [str(root / name) for name in written],
+    }
+
+
 @_leased_pipeline_stage("compose")
 def compose_task(out_dir: Path) -> dict[str, Any]:
     out_dir = out_dir.expanduser().resolve()
@@ -491,229 +604,6 @@ def clarification_report_task(out_dir: Path) -> dict[str, Any]:
     }
 
 
-def import_clarification_workbook_task(
-    out_dir: Path,
-    workbook_path: Path,
-    *,
-    actor: str = "desktop-import",
-) -> dict[str, Any]:
-    """Import customer answers and internal acknowledgements from one report workbook."""
-    from openpyxl import load_workbook
-    from clarification_report import import_answers, import_internal_checks, run_report
-
-    out_dir = out_dir.expanduser().resolve()
-    workbook_path = workbook_path.expanduser().resolve()
-    workbook = load_workbook(workbook_path, read_only=True, data_only=True)
-    try:
-        has_internal_sheet = "必答-内部核对" in workbook.sheetnames
-        internal_headers = (
-            [str(cell.value or "").strip() for cell in workbook["必答-内部核对"][1]]
-            if has_internal_sheet else []
-        )
-    finally:
-        workbook.close()
-    if not has_internal_sheet:
-        raise ValueError("工作簿缺少「必答-内部核对」sheet，请重新生成澄清清单")
-    required = {"澄清ID", "证据指纹", "阻塞级", "模块", "信号", "来源需求", "核对人", "备注"}
-    missing = sorted(required.difference(internal_headers))
-    if not any(value.startswith("新处置") for value in internal_headers):
-        missing.append("新处置(确认无误/确认有问题/暂缓)")
-    if missing:
-        raise ValueError(f"「必答-内部核对」sheet 缺少列：{', '.join(missing)}")
-    answers = import_answers(out_dir, workbook_path)
-    checks = import_internal_checks(out_dir, workbook_path, actor=actor)
-    report = run_report(out_dir)
-    return {
-        "kind": "clarification_answers",
-        "out_dir": str(out_dir),
-        "imported": int(answers.get("imported") or 0),
-        "internal_imported": int(checks.get("imported") or 0),
-        "readiness": report.get("readiness") or {},
-        "questions": int(report.get("questions") or 0),
-        "written": list(dict.fromkeys([
-            *(str(value) for value in (answers.get("written") or [])),
-            *(str(value) for value in (checks.get("written") or [])),
-            *(str(value) for value in (report.get("written") or [])),
-        ])),
-    }
-
-
-# ---------------------------------------------------------------------------
-# WS4 能力补齐：verification 回写-回灌、手工入口、状态机回退、需求库、依赖推荐
-# 全程零 LLM 调用；共享状态文件写走锁 + 原子替换（review_state）。
-# ---------------------------------------------------------------------------
-_WS4_TRACE_ID_RE = re.compile(r"需求追溯ID[：:]\s*([^\n\r]+)")
-
-
-def import_verification_workbook_task(
-    out_dir: Path,
-    workbook_path: Path,
-    *,
-    actor: str = "desktop-verification",
-) -> dict[str, Any]:
-    """回灌线下改过的 software_requirements.xlsx 六列 → verification_states.jsonl。
-
-    复用 import-clarification-answers 的解析模式：按需求追溯ID（notes 列）定位行，
-    读六列单元格 → verification 子对象，CAS 指纹失配（结构字段漂移）拒绝自动合入转人工。
-
-    T3-2 CAS 分桶：回灌闸只比对**结构列**（子模块 + 客户需求章节）——``description``（叙述）
-    不再进闸，叙述措辞变化不再误拒回灌。结构漂移行进 ``rejected``；叙述漂移（结构匹配、
-    描述变化）进 ``narrative_review`` 清单——状态仍回灌（不吊销），仅提示专家复核措辞。
-    S1-10b：``rejected`` 每条含 requirement_id + xlsx 物理行号 + sheet + 原因。
-    """
-    from openpyxl import load_workbook
-    from requirement_schema import parse_verification_columns, structural_fingerprint_from_cells
-    from requirements_analysis_rules import apply_verification_override, load_requirement_index
-
-    root = out_dir.expanduser().resolve()
-    index = load_requirement_index(root)
-    workbook_path = workbook_path.expanduser().resolve()
-    wb = load_workbook(workbook_path, read_only=True, data_only=True)
-    # (rid, six, structural_cells, description_cell, row_number, sheet_title)
-    harvested: list[tuple[str, list[Any], tuple[Any, ...], Any, int, str]] = []
-    try:
-        for sheet in wb.worksheets:
-            header = [str(cell.value or "").strip() for cell in next(
-                sheet.iter_rows(min_row=1, max_row=1), [])]
-            if "项目负责人确认" not in header:
-                continue
-            col = {name: idx for idx, name in enumerate(header)}
-            # row_number = xlsx 物理行号（min_row=2 → 首条数据行是第 2 行）
-            for row_number, row in enumerate(sheet.iter_rows(min_row=2, values_only=True), start=2):
-                if not row:
-                    continue
-                notes_idx = col.get("说明、示例、注意事项", 6)
-                notes = str(row[notes_idx] if len(row) > notes_idx else "")
-                match = _WS4_TRACE_ID_RE.search(notes)
-                if not match:
-                    continue
-                rid = match.group(1).strip()
-                six = [
-                    row[col.get(name, idx)] if len(row) > col.get(name, idx) else ""
-                    for name, idx in (
-                        ("项目负责人确认", 10), ("测试负责人确认", 11), ("研发测试确认", 12),
-                        ("功能是否实现", 13), ("测试用例号", 14), ("测试是否完成", 15),
-                    )
-                ]
-                # T3-2：结构闸只用子模块 + 客户需求章节（描述=叙述，降级为复核提示）
-                structural_cells = (
-                    row[col.get("子模块", 2)] if len(row) > col.get("子模块", 2) else "",
-                    row[col.get("客户需求章节", 8)] if len(row) > col.get("客户需求章节", 8) else "",
-                )
-                description_cell = row[col.get("描述", 3)] if len(row) > col.get("描述", 3) else ""
-                harvested.append((rid, six, structural_cells, description_cell, row_number, sheet.title))
-    finally:
-        wb.close()
-
-    imported = stale = missing = 0
-    rejected: list[dict[str, Any]] = []
-    narrative_review: list[dict[str, Any]] = []
-    for rid, six, structural_cells, description_cell, row_number, sheet_title in harvested:
-        entry = index.get(rid)
-        if not entry:
-            missing += 1
-            rejected.append({
-                "requirement_id": rid, "row": row_number, "sheet": sheet_title,
-                "reason": "需求追溯ID不在当前索引（需求可能已删除或尚未生成）",
-            })
-            continue
-        # CAS 结构闸：子模块 + 客户需求章节 指纹必须与当前需求一致（结构漂移=转人工）
-        if structural_fingerprint_from_cells(*structural_cells) != entry["cell_fingerprint"]:
-            stale += 1
-            rejected.append({
-                "requirement_id": rid, "row": row_number, "sheet": sheet_title,
-                "reason": "结构字段失配（子模块/客户需求章节已变化，请人工核对后再回灌）",
-            })
-            continue
-        # 叙述复核提示：结构匹配但描述变化 → 不吊销，进 narrative_review 提示专家复核
-        item_description = str((entry.get("item") or {}).get("description") or "")
-        if str(description_cell or "").strip() and item_description and \
-                _backfill_description_drifted(description_cell, item_description):
-            narrative_review.append({
-                "requirement_id": rid, "row": row_number, "sheet": sheet_title,
-                "reason": "描述（叙述）变化——状态已回灌，请复核措辞是否仍准确",
-            })
-        verification = parse_verification_columns(six, actor_fallback=actor)
-        # 仅当六列至少有一项非默认值才写（避免空行覆盖既有状态）
-        if verification == default_verification_for_check():
-            continue
-        apply_verification_override(root, rid, verification, actor=actor,
-                                    evidence_fingerprint=entry["fingerprint"])
-        imported += 1
-    return {
-        "kind": "verification_import",
-        "out_dir": str(root),
-        "imported": imported,
-        "stale": stale,
-        "missing": missing,
-        # S1-10b：拒绝清单精确到 requirement_id + xlsx 行号 + sheet + 原因
-        "rejected": rejected,
-        # T3-2：叙述复核清单（状态已回灌不吊销，仅提示）
-        "narrative_review": narrative_review,
-        "written": ["verification_states.jsonl"] if imported else [],
-    }
-
-
-def _backfill_description_drifted(cell_description: Any, item_description: str) -> bool:
-    """回灌描述（叙述）漂移判定：折叠空白 + 去控制字符后逐字不等即视为叙述变化。
-
-    仅用于 ``narrative_review`` 复核提示，不参与 CAS 吊销；宽松归一避免无害空白差异误报。
-    """
-    import re as _re
-    norm_cell = _re.sub(r"\s+", " ", str(cell_description or "")).strip()
-    norm_item = _re.sub(r"\s+", " ", str(item_description or "")).strip()
-    return bool(norm_cell) and bool(norm_item) and norm_cell != norm_item
-
-
-def default_verification_for_check() -> Any:
-    """空 verification（用于回灌跳过全空行）。延迟导入避免顶层依赖。"""
-    from requirement_schema import default_verification
-    return default_verification()
-
-
-def set_verification_task(
-    out_dir: Path,
-    requirement_id: str,
-    *,
-    implemented: str | None = None,
-    test_completed: bool | None = None,
-    test_case_ids: str | None = None,
-    confirm_pm: bool | None = None,
-    confirm_tl: bool | None = None,
-    confirm_dt: bool | None = None,
-    actor: str = "desktop-verification",
-) -> dict[str, Any]:
-    """直接写入一条 verification 覆盖（CLI 数据入口；六列字段分散为 flag）。"""
-    from requirement_schema import IMPLEMENTED_VALUES, default_verification, normalize_verification
-    from requirements_analysis_rules import apply_verification_override
-
-    root = out_dir.expanduser().resolve()
-    patch = default_verification()
-    if implemented is not None:
-        if implemented not in IMPLEMENTED_VALUES:
-            raise ValueError(f"非法 implemented 值：{implemented}（可选 {IMPLEMENTED_VALUES}）")
-        patch["implemented"] = implemented
-    if test_completed is not None:
-        patch["test_completed"] = bool(test_completed)
-    if test_case_ids is not None:
-        patch["test_case_ids"] = [item.strip() for item in re.split(r"[;\n,、 ]+", test_case_ids) if item.strip()]
-    if confirm_pm is not None:
-        patch["project_manager_confirm"] = {"confirmed": bool(confirm_pm), "by": actor, "at": ""}
-    if confirm_tl is not None:
-        patch["test_lead_confirm"] = {"confirmed": bool(confirm_tl), "by": actor, "at": ""}
-    if confirm_dt is not None:
-        patch["dev_test_confirm"] = {"confirmed": bool(confirm_dt), "by": actor, "at": ""}
-    record = apply_verification_override(root, requirement_id, normalize_verification(patch), actor=actor)
-    return {
-        "kind": "verification_set",
-        "out_dir": str(root),
-        "requirement_id": requirement_id,
-        "verification": record.get("verification"),
-        "lifecycle_state": record.get("lifecycle_state"),
-        "written": ["verification_states.jsonl"],
-    }
-
-
 def rollback_requirement_task(
     out_dir: Path,
     requirement_id: str,
@@ -770,82 +660,6 @@ def add_manual_requirement_task(
     }
 
 
-def build_requirement_library_task(
-    project_dirs: list[Path],
-    output_path: Path,
-    *,
-    include_unconfirmed: bool = False,
-) -> dict[str, Any]:
-    """汇总各项目 functional_requirements 为带项目元数据的 JSONL 检索库（不引入数据库）。
-
-    S1-10d 需求库入库质量门：默认仅收录 lifecycle>=confirmed 的条目（draft 视为未确认，不入库）；
-    ``include_unconfirmed=True`` 显式收录 draft 条目。每条 entry 携带 ``lifecycle_state``，供
-    采纳 UI 默认隐藏未确认条目。functional_requirements 经 governed 双路径探测读取
-    （package_v1 下在 .ratomizer/pipeline/，裸根拼会落空——B1 类寻址失守）。
-    """
-    import json as _json
-    from requirement_schema import (
-        LIFECYCLE_CONFIRMED, library_entry_from_requirement, lifecycle_rank, requirement_identity,
-    )
-    from requirements_analysis_rules import _read_functional_requirements_payload
-    from review_state import read_verification_states
-
-    output_path = output_path.expanduser().resolve()
-    entries: list[dict[str, Any]] = []
-    sources: list[dict[str, Any]] = []
-    total_skipped_unconfirmed = 0
-    confirmed_floor = lifecycle_rank(LIFECYCLE_CONFIRMED)
-    for project_dir in project_dirs:
-        root = Path(project_dir).expanduser().resolve()
-        payload = _read_functional_requirements_payload(root)
-        items = payload.get("items") if isinstance(payload, dict) else None
-        if not isinstance(items, list) or not items:
-            sources.append({"project_dir": str(root), "imported": 0,
-                            "reason": "functional_requirements.json 缺失"})
-            continue
-        # 生命周期来自 verification_states.jsonl（governed state 路径，for_write=False 不建目录）
-        lifecycle_by_rid = {
-            str(row.get("requirement_id") or "").strip(): str(row.get("lifecycle_state") or "draft")
-            for row in read_verification_states(root).values()
-        }
-        project_name = str(payload.get("source") or root.name) if isinstance(payload, dict) else root.name
-        created_at = ""
-        prov = payload.get("provenance") if isinstance(payload, dict) else None
-        if isinstance(prov, dict):
-            created_at = str(prov.get("generated_at") or "")
-        count = 0
-        skipped_unconfirmed = 0
-        for item in items or []:
-            if not isinstance(item, dict):
-                continue
-            rid = requirement_identity(item)
-            lifecycle_state = lifecycle_by_rid.get(rid) or "draft"
-            # 质量门：默认仅收录 lifecycle>=confirmed；draft 不入库（视为未确认）
-            if not include_unconfirmed and lifecycle_rank(lifecycle_state) < confirmed_floor:
-                skipped_unconfirmed += 1
-                continue
-            entry = library_entry_from_requirement(
-                item, project=project_name, doc_source=str(root), created_at=created_at)
-            entry["lifecycle_state"] = lifecycle_state
-            entries.append(entry)
-            count += 1
-        total_skipped_unconfirmed += skipped_unconfirmed
-        sources.append({"project_dir": str(root), "project": project_name, "imported": count,
-                        "skipped_unconfirmed": skipped_unconfirmed})
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = output_path.with_suffix(output_path.suffix + ".tmp")
-    with tmp.open("w", encoding="utf-8", newline="\n") as handle:
-        for entry in entries:
-            handle.write(_json.dumps(entry, ensure_ascii=False) + "\n")
-    os.replace(tmp, output_path)
-    return {
-        "kind": "requirement_library",
-        "library": str(output_path),
-        "entries": len(entries),
-        "skipped_unconfirmed": total_skipped_unconfirmed,
-        "include_unconfirmed": bool(include_unconfirmed),
-        "sources": sources,
-    }
 
 
 def search_requirements_task(
@@ -1094,7 +908,9 @@ _REPLACE_ATTEMPTS = 8
 _REPLACE_RETRY_DELAY_S = 0.02
 
 # 阶段名 == 子命令名（manifest 键与 CLI 一致，GUI 单步按钮与 chain 写同一本账）
-CHAIN_ORDER = ["ai-extract", "functional-synthesis", "assemble", "requirements-analysis", "template-write",
+# functional-extract 是 WS2 条款直抽阶段（RATOMIZER_FUNCTIONAL_EXTRACT=1 时由 chain_task
+# 整体替换 ai-extract + functional-synthesis 两阶段——不产原子、不再重并）。
+CHAIN_ORDER = ["ai-extract", "functional-extract", "functional-synthesis", "assemble", "requirements-analysis", "template-write",
                "clarification-report", "full-translation", "compose", "export-annotation-html"]
 
 # 结果包发布纪律（2026-08-03 审查 I1/I3，spec §8.2/§15）：
@@ -1123,6 +939,7 @@ STAGE_INPUTS: dict[str, list[str]] = {
                  "ai_supplements.jsonl"],
     "functional-synthesis": ["ai_requirements.jsonl", "ai_requirements.meta.json", "blocks.jsonl",
                              "ai_review_states.jsonl", "ai_supplements.jsonl"],
+    "functional-extract": ["blocks.jsonl", "chunks.jsonl", "doc_map.json"],
     "requirements-analysis": [FUNCTIONAL_REQUIREMENTS, "ai_requirements.jsonl", "ai_review_states.jsonl",
                               "clarification_answers.jsonl", "blocks.jsonl", "term_map.json",
                               "ai_requirements.meta.json", "ai_supplements.jsonl"],
@@ -1182,6 +999,7 @@ STAGE_REQUIRED_OUTPUTS: dict[str, list[str]] = {
         "claim_generation.meta.json",
     ],
     "functional-synthesis": [FUNCTIONAL_REQUIREMENTS],
+    "functional-extract": [FUNCTIONAL_REQUIREMENTS],
     "assemble": [ASSEMBLED_JSON],
     "requirements-analysis": REQUIREMENTS_ANALYSIS_OUTPUTS,
     "template-write": ["软件需求列表-成文.xlsx", "template_writer_report.json"],
@@ -1222,6 +1040,9 @@ STAGE_IMPLEMENTATION_REVISIONS = {
     "assemble": "v2",
     # v4: consumes is_compliance_requirement; compliance-rules v2 invalidates old caches.
     "functional-synthesis": "v4",
+    # v1：chain 正式接入 WS2 条款直抽（RATOMIZER_FUNCTIONAL_EXTRACT=1 时整体替换
+    # ai-extract + functional-synthesis，不产原子）——新阶段初始版本戳。
+    "functional-extract": "v1",
     # v6：hardware_dependency 落交付物渲染（xlsx 说明列/co_design_items.md）——
     # 纯渲染变更不动 analyze 缓存版本，靠 impl 戳让阶段重跑重渲染（审计 P1-b）
     "requirements-analysis": "v6",
@@ -1240,6 +1061,9 @@ _STAGE_BASE_PRODUCERS = {
     "clarification-report": "clarification/v8-param-row-aggregate",
     "full-translation": "full-translation/v2-row-structured",
     "compose": "engineering_composer/v1",
+    # 基础戳只钉家族名；功能/prompt/护栏三版本在 stage_producer 动态拼入
+    # （任一 bump 旧 functional-extract 缓存自然失效，与 ai-extract lineage 同纪律）。
+    "functional-extract": "functional_extract/v1",
     # v18-row-source-zones：静态导出改读保留 pdf_regions 的原始 blocks，几何 cache v7
     # 绑定原始区域；避免清洗 blocks 缺页尺寸时把文本估算行区写成可复用的“精确”缓存。
     # + v19-structured-claim-source：Claim 记录下发表格字段上下文，右栏按行结构展示；
@@ -1288,6 +1112,22 @@ def stage_producer(stage: str, *, out_dir: Path | None = None,
             producer = "+".join((
                 AI_REQUIREMENTS_PRODUCER_LINEAGE_VERSION,
                 *producer_lineage_versions().values(),
+            ))
+        elif stage == "functional-extract":
+            # 版本戳覆盖影响产物的全部代码层：功能/prompt/护栏/守恒模型四版本任一 bump，
+            # 旧 functional-extract 阶段缓存即失效（同 ai-extract lineage 纪律）。
+            from functional_extract import (
+                FUNCTIONAL_CONSERVATION_MODEL_VERSION,
+                FUNCTIONAL_EXTRACT_GUARDS_VERSION,
+                FUNCTIONAL_EXTRACT_PROMPT_VERSION,
+                FUNCTIONAL_EXTRACT_VERSION,
+            )
+            producer = "+".join((
+                producer,
+                FUNCTIONAL_EXTRACT_VERSION,
+                FUNCTIONAL_EXTRACT_PROMPT_VERSION,
+                FUNCTIONAL_EXTRACT_GUARDS_VERSION,
+                FUNCTIONAL_CONSERVATION_MODEL_VERSION,
             ))
         elif stage == "atomize":
             # PDF text repair changes blocks consumed by every downstream stage. Include both
@@ -1654,6 +1494,9 @@ def stage_input_fingerprint(out_dir: Path, stage: str, *, route: str | None = No
             "RATOMIZER_TRANSLATE_BATCH", "RATOMIZER_TRANSLATE_BATCH_MAX_CHARS",
             # 复核批处理：启用/批大小改变审查产物与缓存指纹（m2-review-v4-batch）→ 阶段必须重跑
             "RATOMIZER_REVIEW_BATCH",
+            # WS2 直抽开关切换改变链形态（ai-extract/functional-synthesis ↔ functional-extract）
+            # 与 requirements-analysis/clarification-report 的输入依据 → 开关状态必须进指纹
+            "RATOMIZER_FUNCTIONAL_EXTRACT",
         )},
         "requirements_analysis_enrich": (
             requirements_analysis_enrichment_enabled()
@@ -2139,6 +1982,30 @@ def evaluate_full_closure(out_dir: Path) -> dict[str, Any]:
         from requirements_analysis_rules import _read_functional_requirements_payload
 
         fr_payload = _read_functional_requirements_payload(root) or {}
+        # §3.5（复审 P1）：stub 草稿水印 → 显式缺口，draft 不可能通过 full closure。
+        if fr_payload.get("draft"):
+            gaps.append({
+                "kind": "functional_extract_draft",
+                "route": fr_payload.get("route"),
+                "message": (
+                    "功能直抽产物是 stub 草稿（route=stub 占位条目）——"
+                    "不可发布，需以真实 LLM 路由重跑"
+                ),
+            })
+        # §3.5：执行结果类别与 manifest/结果包同一失败语义——直抽产物不完整时
+        # full closure 显式缺口，不静默放行（空账本 ≠ 已完成的同族纪律）。
+        exec_status = str(fr_payload.get("execution_status") or "").strip()
+        if exec_status in {"partial", "failed"}:
+            gaps.append({
+                "kind": "functional_extract_incomplete",
+                "execution_status": exec_status,
+                "route": fr_payload.get("route"),
+                "route_requested": fr_payload.get("route_requested"),
+                "message": (
+                    f"功能直抽执行不完整（execution_status={exec_status}），"
+                    "下游交付物不可发布"
+                ),
+            })
         conservation = fr_payload.get("conservation")
         if isinstance(conservation, dict) and not conservation.get("ok", True):
             missing = [str(b) for b in (conservation.get("missing_block_ids") or []) if str(b)]
@@ -2148,6 +2015,9 @@ def evaluate_full_closure(out_dir: Path) -> dict[str, Any]:
             mismatch_count = len(mismatches) if isinstance(mismatches, list) else 0
             gaps.append({
                 "kind": "conservation_open",
+                "failure_categories": [
+                    str(c) for c in (conservation.get("failure_categories") or [])
+                ],
                 "missing_block_ids": missing,
                 "extra_block_ids": extra,
                 "duplicate_assignments": duplicate,
@@ -2463,6 +2333,12 @@ def _stage_completion_status(stage: str, payload: Any) -> str:
         failed_sections = int(payload.get("failed_sections") or quality.get("failed_sections") or 0)
         if failed_sections > 0:
             return "partial"
+    # §3.5（2026-08-15）：直抽执行结果类别与 manifest 同语义——stub 降级=failed、
+    # mixed=partial，不记 ok（run_manifest / readiness / 结果包完成证据三处口径一致）。
+    if stage == "functional-extract" and isinstance(payload, dict):
+        status = str(payload.get("execution_status") or "").strip()
+        if status in {"partial", "failed"}:
+            return status
     if stage == "export-annotation-html" and isinstance(payload, dict):
         translations = payload.get("translations")
         if isinstance(translations, dict):
@@ -2473,11 +2349,31 @@ def _stage_completion_status(stage: str, payload: Any) -> str:
     return "ok"
 
 
+def _functional_extract_stage_config() -> dict[str, Any]:
+    """functional-extract 阶段指纹配置：策略/负例条数改变产物 → 阶段必须重跑。
+
+    与 full-translation 的 {"enabled": ...} 同款纪律——环境开关必须进 config 进指纹，
+    否则切换 RATOMIZER_CONTEXT_PACK_STRATEGY 后 chain 续跑会静默跳过直抽阶段。
+    """
+    from functional_extract import (
+        CONTEXT_PACK_STRATEGY_ENV,
+        context_pack_strategy,
+        functional_extract_negative_k,
+    )
+    return {
+        "strategy": context_pack_strategy(),
+        "strategy_env_raw": os.environ.get(CONTEXT_PACK_STRATEGY_ENV, ""),
+        # §3.6：运行时求值（修掉 import 时常量在同进程不刷新的缺陷）
+        "negative_k": functional_extract_negative_k(),
+    }
+
+
 def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
                template_path: Path | None = None,
                sample_ratio: float | None = None,
                limit_sections: int | None = None,
-               annotation_layout_mode: str = "pdf_original") -> dict[str, Any]:
+               annotation_layout_mode: str = "pdf_original",
+               translation_mode: str | None = None) -> dict[str, Any]:
     """交付物链的后端单命令编排（F1：编排从 App.vue 搬回后端——headless/批量/CI 的地基）。
 
     阶段按 CHAIN_ORDER 归一排序去重；template-write 无模板路径时前置报错（不跑一半才死）；
@@ -2490,8 +2386,31 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
     ordered = [s for s in CHAIN_ORDER if s in set(stages)]
     if not ordered:
         raise ValueError("阶段清单为空")
+    # WS2 条款直抽（默认开）：RATOMIZER_FUNCTIONAL_EXTRACT=1 时 ai-extract（拆原子）+
+    # functional-synthesis（重并）整体替换为 functional-extract——UI/CLI 仍传旧阶段名，
+    # 替换在此单点完成并落账；显式 =0 时保留旧原子化回滚路径。
+    functional_extract_replaced: list[str] = []
+    from functional_extract import functional_extract_enabled
+    if functional_extract_enabled():
+        legacy_pair = [s for s in ("ai-extract", "functional-synthesis") if s in ordered]
+        if legacy_pair:
+            functional_extract_replaced = legacy_pair
+            ordered = [s for s in CHAIN_ORDER
+                       if s in (set(ordered) - set(legacy_pair)) | {"functional-extract"}]
     if "template-write" in ordered and template_path is None:
         raise ValueError("template-write 阶段需要 --template（公司需求列表模板路径）")
+    # 翻译交付模式（§12.1，M6/§20）：off/markers 明确不需要全文双语——full-translation
+    # 阶段从链中拿掉并落账；export 阶段按模式强制（off=零 marker 调用）。默认（未传且
+    # env 未设）= full → 既有行为面零变化
+    from pipeline_plan import resolve_translation_mode
+
+    resolved_translation_mode = resolve_translation_mode(override=translation_mode)
+    translation_dropped: list[str] = []
+    if resolved_translation_mode in ("off", "markers") and "full-translation" in ordered:
+        translation_dropped = ["full-translation"]
+        ordered = [stage for stage in ordered if stage != "full-translation"]
+        if not ordered:
+            raise ValueError("阶段清单为空（翻译模式 off/markers 移除了 full-translation）")
 
     # 归一化与单命令落账一致（R8，0710 评审）：显式 0/0.0 与 None 指纹必须同形
     sample_ratio = sample_ratio or None
@@ -2499,7 +2418,16 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
     ai_config = {"sample_ratio": sample_ratio, "limit_sections": limit_sections}
     ai_dependent = {"functional-synthesis", "requirements-analysis", "template-write",
                     "clarification-report"}
-    if route == "stub" and ai_dependent.intersection(ordered) and not stage_is_reusable(
+    if functional_extract_replaced:
+        # 直抽模式下 ai-extract 永不运行：AI 依赖阶段的前置检查换成直抽阶段自身
+        if route == "stub" and ai_dependent.intersection(ordered) and not stage_is_reusable(
+                out_dir, "functional-extract", route="stub",
+                config=_functional_extract_stage_config()):
+            raise ValueError(
+                "当前链包含需求分析等 AI 依赖阶段，但没有可复用的功能直抽产物；"
+                "请使用 openai_compatible 完成功能直抽后再继续。"
+            )
+    elif route == "stub" and ai_dependent.intersection(ordered) and not stage_is_reusable(
             out_dir, "ai-extract", route="stub", config=ai_config):
         raise ValueError(
             "当前链包含功能重组/需求分析等 AI 依赖阶段，但没有可复用的 AI 抽取产物；"
@@ -2510,6 +2438,7 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
         "ai-extract": lambda: ai_extract_task(out_dir, route=route,
                                               limit_sections=limit_sections,
                                               sample_ratio=sample_ratio),
+        "functional-extract": lambda: functional_extract_task(out_dir, route=route),
         "functional-synthesis": lambda: functional_synthesis_task(out_dir, route=route),
         "assemble": lambda: assemble_task(out_dir, enrich_route=route if route != "stub" else None),
         "requirements-analysis": lambda: requirements_analysis_task(
@@ -2519,18 +2448,28 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
         "full-translation": lambda: full_translation_task(out_dir, route=route),
         "compose": lambda: compose_task(out_dir),
         "export-annotation-html": lambda: export_annotation_html_task(
-            out_dir, route=route, layout_mode=annotation_layout_mode),
+            out_dir, route=route, layout_mode=annotation_layout_mode,
+            translation_mode=translation_mode),
     }
 
     results: dict[str, Any] = {}
     skipped_stages: list[str] = []
     payload: dict[str, Any] = {"kind": "chain", "out_dir": str(out_dir), "stages": ordered}
+    if translation_mode is not None or translation_dropped:
+        payload["translation_mode"] = resolved_translation_mode
+    if translation_dropped:
+        payload["translation_mode_dropped_stages"] = translation_dropped
+    if functional_extract_replaced:
+        payload["functional_extract_mode"] = {
+            "replaced_stages": functional_extract_replaced,
+            "entry_switch": "RATOMIZER_FUNCTIONAL_EXTRACT",
+        }
     global _CHAIN_ACTIVE
     _CHAIN_ACTIVE = True   # 链内各阶段跳过 summary;finally 复位,失败路径不污染后续任务
     chain_budget = _attach_budget_ledger_for_run(out_dir)  # S1-1：开启预算单时挂账本
     try:
-        llm_stages = {"ai-extract", "functional-synthesis", "assemble", "requirements-analysis",
-                      "full-translation", "export-annotation-html"}
+        llm_stages = {"ai-extract", "functional-extract", "functional-synthesis", "assemble",
+                      "requirements-analysis", "full-translation", "export-annotation-html"}
         for index, stage in enumerate(ordered, start=1):
             emit_progress({"stage": "chain", "step": stage, "completed": index - 1,
                            "total": len(ordered), "percent": int((index - 1) * 100 / len(ordered))})
@@ -2538,6 +2477,8 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
             stage_template = template_path if stage in {"requirements-analysis", "template-write"} else None
             if stage == "ai-extract":
                 stage_config = {"sample_ratio": sample_ratio, "limit_sections": limit_sections}
+            elif stage == "functional-extract":
+                stage_config = _functional_extract_stage_config()
             elif stage == "export-annotation-html":
                 stage_config = {"layout_mode": annotation_layout_mode}
             elif stage == "full-translation":
@@ -2650,6 +2591,25 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
                 for key in ("consistency", "sampled", "quality", "count", "claim_shadow"):
                     if stage_payload.get(key) is not None:
                         payload[key] = stage_payload[key]
+            elif stage == "functional-extract":
+                # 统计取自产物文件（单一真相源）：skipped 路径的 stage payload 不带计数键
+                summary: dict[str, Any] = {
+                    "count": None, "route": None, "execution_status": None,
+                    "conservation": None,
+                }
+                try:
+                    from requirements_analysis_rules import _read_functional_requirements_payload
+                    fr = _read_functional_requirements_payload(out_dir)
+                    if isinstance(fr, dict):
+                        summary = {
+                            "count": fr.get("functional_requirements"),
+                            "route": fr.get("route"),
+                            "execution_status": fr.get("execution_status"),
+                            "conservation": fr.get("conservation"),
+                        }
+                except Exception:  # noqa: BLE001 — 聚合失败不影响链结果
+                    pass
+                payload["functional_extract"] = summary
             elif stage == "requirements-analysis":
                 payload["analysis"] = stage_payload.get("analysis")
             elif stage == "template-write":
@@ -2704,7 +2664,8 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
 
 @_leased_pipeline_stage("export-annotation-html")
 def export_annotation_html_task(out_dir: Path, route: str | None = None,
-                                layout_mode: str = "pdf_original") -> dict[str, Any]:
+                                layout_mode: str = "pdf_original",
+                                translation_mode: str | None = None) -> dict[str, Any]:
     """生成可分享的文档批注 HTML bundle（内含 localStorage 裁决 + 导出 JSON）。
 
     route=openai_compatible 时补齐块级"说明"标记的原文中文翻译（内容哈希缓存
@@ -2712,7 +2673,8 @@ def export_annotation_html_task(out_dir: Path, route: str | None = None,
     import doc_annotation_export
     out_dir = out_dir.expanduser().resolve()
     path, translations = doc_annotation_export.export_annotation_bundle(
-        out_dir, route=route, layout_mode=layout_mode)
+        out_dir, route=route, layout_mode=layout_mode,
+        translation_mode=translation_mode)
     written = [str(path)]
     if translations.get("source_pdf"):
         written.append(str(translations["source_pdf"]))
@@ -2750,124 +2712,6 @@ def full_translation_task(out_dir: Path, route: str | None = None) -> dict[str, 
     return run_full_translation(out_dir.expanduser().resolve(), route=route)
 
 
-def import_ai_decisions_task(out_dir: Path, decisions_file: Path) -> dict[str, Any]:
-    """把 HTML 导出的裁决 JSON 回灌到 ai_review_states.jsonl（合进交付物）。"""
-    import ai_review_actions
-    out_dir = out_dir.expanduser().resolve()
-    data = json.loads(Path(decisions_file).expanduser().read_text(encoding="utf-8"))
-    decisions = data.get("decisions") if isinstance(data, dict) else data
-    applied = 0
-    skipped = 0
-    needs_reconfirmation = 0
-    conflicts = 0
-    ownership_skipped = 0
-    for d in (decisions or []):
-        rid = str((d or {}).get("ai_req_id") or "").strip()
-        status = str((d or {}).get("status") or "").strip()
-        if not rid or not status:
-            skipped += 1
-            continue
-        submitted_source = str(d.get("source_fingerprint") or "").strip()
-        submitted_subject = str(d.get("review_subject_fingerprint") or "").strip()
-        expected_target_fingerprint = str(
-            d.get("expected_target_fingerprint") or ""
-        ).strip()
-        expected_target_publication_revision = str(
-            d.get("expected_target_publication_revision") or ""
-        ).strip()
-        expected_target_authority_write_revision = str(
-            d.get("expected_target_authority_write_revision") or ""
-        ).strip()
-        if not all((
-            submitted_source,
-            submitted_subject,
-            expected_target_fingerprint,
-            expected_target_publication_revision,
-            expected_target_authority_write_revision,
-        )):
-            skipped += 1
-            needs_reconfirmation += 1
-            continue
-        # 归属值单独校验：仅归属非法时丢归属、保留整行裁决（status/模块/意见不陪葬）
-        ownership = str(d.get("ownership_override") or "").strip() or None
-        if ownership:
-            try:
-                normalize_ownership(ownership)
-            except ValueError:
-                ownership = None
-                ownership_skipped += 1
-        try:
-            from api_server import find_current_ai_requirement
-            from omission_actions import extraction_operation_lock
-
-            with extraction_operation_lock(out_dir, operation="import-ai-decision"):
-                current = find_current_ai_requirement(out_dir, rid)
-                if current is None:
-                    raise ai_review_actions.AIReviewAuthorityConflict(
-                        "AI requirement is not present in the current run",
-                        current_revision="",
-                    )
-                current_cas = (
-                    str(current.get("source_fingerprint") or ""),
-                    str(current.get("review_subject_fingerprint") or ""),
-                    str(current.get("target_fingerprint") or ""),
-                    str(current.get("target_publication_revision") or ""),
-                    str(current.get("target_authority_write_revision") or ""),
-                )
-                submitted_cas = (
-                    submitted_source,
-                    submitted_subject,
-                    expected_target_fingerprint,
-                    expected_target_publication_revision,
-                    expected_target_authority_write_revision,
-                )
-                if submitted_cas != current_cas:
-                    raise ai_review_actions.AIReviewAuthorityConflict(
-                        "AI requirement or review authority changed",
-                        current_revision=current_cas[-1],
-                    )
-                ai_review_actions.apply_ai_review_action(
-                    out_dir,
-                    rid,
-                    status,
-                    module_override=(d.get("module_override") or None),
-                    ownership_override=ownership,
-                    reason=(d.get("reason") or ""),
-                    actor="html-import",
-                    source_fingerprint_value=current_cas[0],
-                    review_subject_fingerprint_value=current_cas[1],
-                    review_anchor_fingerprint_value=(
-                        ai_review_actions.review_anchor_fingerprint(current)
-                    ),
-                    expected_target_authority_write_revision=current_cas[-1],
-                )
-            applied += 1
-        except ai_review_actions.AIReviewAuthorityConflict:
-            skipped += 1
-            conflicts += 1
-        except ValueError:
-            skipped += 1
-    payload: dict[str, Any] = {"kind": "ai_decisions_import", "out_dir": str(out_dir),
-                               "applied": applied, "skipped": skipped}
-    if needs_reconfirmation:
-        payload["needs_reconfirmation"] = needs_reconfirmation
-    if conflicts:
-        payload["conflicts"] = conflicts
-    if ownership_skipped:
-        payload["ownership_skipped"] = ownership_skipped
-    # 裁决回流交付物：导入后立即重建 merged_spec（免 LLM）
-    if applied and (out_dir / "ai_requirements.jsonl").exists():
-        rebuilt = ai_extract.rebuild_merged_spec(out_dir)
-        payload["rebuilt"] = rebuilt
-        try:
-            from adjudication_bank import resolve_bank_path, update_bank
-
-            bank_path = resolve_bank_path()
-            if bank_path is not None:
-                payload["adjudication_bank"] = update_bank(bank_path, out_dir)
-        except Exception as exc:  # 导入/重建已成功；学习资产失败只留告警
-            LOGGER.warning("HTML 裁决导入后样本库收割失败（忽略）：%s", exc)
-    return payload
 
 
 def build_output_summary(out_dir: Path) -> dict[str, Any]:
@@ -2956,256 +2800,22 @@ def reconcile_task(out_dir: Path, *, route: str = "stub") -> dict[str, Any]:
     return run_reconcile(root, route=route)
 
 
-def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run Requirement Atomizer desktop tasks.")
-    subparsers = parser.add_subparsers(dest="command", required=True)
+# M9 第 2 刀（2026-08-17d）：CLI 参数解析移至 desktop_task_args；原名重导出
+from desktop_task_args import (  # noqa: F401
+    build_requirement_library_task,
+    parse_args,
+)
 
-    run_parser = subparsers.add_parser("run")
-    run_parser.add_argument("--input", type=Path, required=True)
-    run_parser.add_argument("--out", type=Path, required=True)
-    run_parser.add_argument("--skip-review", action="store_true")
-    run_parser.add_argument("--llm-route", choices=["stub", "openai_compatible"], default=None)
-    run_parser.add_argument("--review-scope", choices=["targeted", "all"], default=None)
-    run_parser.add_argument("--llm-review-limit", type=int, default=0)
-    run_parser.add_argument("--chunk-chars", type=int, default=3500)
-    run_parser.add_argument("--kb", type=Path, action="append", default=[])
-    run_parser.add_argument("--domain-pack", type=Path, default=None)
 
-    export_parser = subparsers.add_parser("export")
-    export_parser.add_argument("--out", type=Path, required=True)
-    export_parser.add_argument("--formats", default="csv,md")
-
-    assemble_parser = subparsers.add_parser("assemble")
-    assemble_parser.add_argument("--out", type=Path, required=True)
-    assemble_parser.add_argument("--formats", default="xlsx,docx,md")
-    assemble_parser.add_argument("--enrich-route", default="")
-    assemble_parser.add_argument("--blue-book-index", type=Path, default=None)
-
-    synthesis_parser = subparsers.add_parser("functional-synthesis")
-    synthesis_parser.add_argument("--out", type=Path, required=True)
-    synthesis_parser.add_argument("--llm-route", choices=["stub", "openai_compatible"], default="stub")
-
-    compose_parser = subparsers.add_parser("compose")
-    compose_parser.add_argument("--out", type=Path, required=True)
-
-    bank_parser = subparsers.add_parser("adjudication-bank")
-    bank_parser.add_argument("--out", type=Path, required=True)
-    bank_parser.add_argument("--bank", type=Path, required=True)
-
-    answers_parser = subparsers.add_parser("import-clarification-answers")
-    answers_parser.add_argument("--out", type=Path, required=True)
-    answers_parser.add_argument("--file", type=Path, required=True)
-
-    chain_parser = subparsers.add_parser("chain")
-    chain_parser.add_argument("--out", type=Path, required=True)
-    chain_parser.add_argument("--stages", required=True, help="逗号分隔的阶段清单（按依赖自动排序）")
-    # 默认与独立子命令一致（openai_compatible）：headless 忘带路由时"没配 key 响亮失败"
-    # 优于"静默 stub 产空行为需求且 manifest 全 ok"（2026-07-08 审计 A4）
-    chain_parser.add_argument("--llm-route", default="openai_compatible", choices=["stub", "openai_compatible"])
-    chain_parser.add_argument("--template", type=Path, default=None)
-    chain_parser.add_argument("--sample-ratio", type=float, default=None)
-    chain_parser.add_argument("--limit-sections", type=int, default=None)
-    chain_parser.add_argument("--annotation-layout-mode", choices=["optimized", "pdf_original"],
-                              default="pdf_original")
-
-    clarification_parser = subparsers.add_parser("clarification-report")
-    clarification_parser.add_argument("--out", type=Path, required=True)
-
-    template_write_parser = subparsers.add_parser("template-write")
-    template_write_parser.add_argument("--out", type=Path, required=True)
-    template_write_parser.add_argument("--template", type=Path, required=True)
-
-    requirements_analysis_parser = subparsers.add_parser("requirements-analysis")
-    requirements_analysis_parser.add_argument("--out", type=Path, required=True)
-    requirements_analysis_parser.add_argument("--template", type=Path, default=None)
-    requirements_analysis_parser.add_argument("--llm-route", choices=["stub", "openai_compatible"], default="stub")
-
-    ai_extract_parser = subparsers.add_parser("ai-extract")
-    ai_extract_parser.add_argument("--out", type=Path, required=True)
-    ai_extract_parser.add_argument("--llm-route", choices=["stub", "openai_compatible"], default="openai_compatible")
-    ai_extract_parser.add_argument("--limit-sections", type=int, default=0)
-    ai_extract_parser.add_argument("--sample-ratio", type=float, default=0.0)
-
-    summary_parser = subparsers.add_parser("summary")
-    summary_parser.add_argument("--out", type=Path, required=True)
-
-    anno_parser = subparsers.add_parser("export-annotation-html")
-    anno_parser.add_argument("--out", type=Path, required=True)
-    anno_parser.add_argument("--route", choices=["stub", "openai_compatible"], default=None,
-                             help="openai_compatible 时补齐块级说明标记的中文翻译（缓存复用）")
-    anno_parser.add_argument("--layout-mode", choices=["optimized", "pdf_original"],
-                             default="pdf_original")
-
-    full_translation_parser = subparsers.add_parser("full-translation")
-    full_translation_parser.add_argument("--out", type=Path, required=True)
-    full_translation_parser.add_argument(
-        "--route", choices=["stub", "openai_compatible"], default="openai_compatible"
-    )
-
-    import_parser = subparsers.add_parser("import-ai-decisions")
-    import_parser.add_argument("--out", type=Path, required=True)
-    import_parser.add_argument("--file", type=Path, required=True, help="HTML 导出的裁决 JSON")
-
-    # --- WS4 能力补齐子命令（全程零 LLM 调用）---
-    verify_import_parser = subparsers.add_parser(
-        "import-verification",
-        help="回灌线下改过的 software_requirements.xlsx 六列 → verification_states.jsonl")
-    verify_import_parser.add_argument("--out", type=Path, required=True)
-    verify_import_parser.add_argument("--file", type=Path, required=True)
-    verify_import_parser.add_argument("--actor", default="desktop-verification")
-
-    verify_set_parser = subparsers.add_parser(
-        "set-verification", help="直接写入一条需求 verification 覆盖（状态机前进迁移）")
-    verify_set_parser.add_argument("--out", type=Path, required=True)
-    verify_set_parser.add_argument("--requirement-id", required=True)
-    verify_set_parser.add_argument("--implemented", default=None,
-                                   choices=["not_started", "in_progress", "done"])
-    verify_set_parser.add_argument("--test-completed", default=None, choices=["true", "false"])
-    verify_set_parser.add_argument("--test-case-ids", default=None, help="分号/逗号分隔的测试用例号")
-    verify_set_parser.add_argument("--confirm-pm", default=None, choices=["true", "false"])
-    verify_set_parser.add_argument("--confirm-tl", default=None, choices=["true", "false"])
-    verify_set_parser.add_argument("--confirm-dt", default=None, choices=["true", "false"])
-    verify_set_parser.add_argument("--actor", default="desktop-verification")
-
-    rollback_parser = subparsers.add_parser(
-        "rollback-requirement", help="人工回退需求生命周期（回退事件 append-only 留痕）")
-    rollback_parser.add_argument("--out", type=Path, required=True)
-    rollback_parser.add_argument("--requirement-id", required=True)
-    rollback_parser.add_argument("--target", required=True,
-                                 choices=["draft", "confirmed", "implemented", "verified"])
-    rollback_parser.add_argument("--actor", required=True)
-    rollback_parser.add_argument("--reason", required=True)
-
-    manual_parser = subparsers.add_parser(
-        "add-manual-requirement", help="手工建需求（provenance=manual，追溯列留空不伪引）")
-    manual_parser.add_argument("--out", type=Path, required=True)
-    manual_parser.add_argument("--objective", required=True)
-    manual_parser.add_argument("--behaviors", default=None, help="逗号分隔的行为列表")
-    manual_parser.add_argument("--module", default="")
-    manual_parser.add_argument("--ownership", default="", choices=["", "software", "hardware", "co_design"])
-    manual_parser.add_argument("--priority", default="P1")
-    manual_parser.add_argument("--notes", default="")
-    manual_parser.add_argument("--actor", default="desktop-manual")
-
-    lib_build_parser = subparsers.add_parser(
-        "build-requirement-library", help="汇总各项目 functional_requirements 为 JSONL 检索库")
-    lib_build_parser.add_argument("--projects", type=Path, nargs="+", required=True)
-    lib_build_parser.add_argument("--library", type=Path, required=True, help="输出的检索库 JSONL 路径")
-    lib_build_parser.add_argument(
-        "--include-unconfirmed", action="store_true",
-        help="默认仅收录 lifecycle>=confirmed 的条目；此开关显式收录 draft（未确认）条目")
-
-    lib_search_parser = subparsers.add_parser(
-        "search-requirements", help="词面集合重叠度召回历史相似需求")
-    lib_search_parser.add_argument("--library", type=Path, required=True)
-    lib_search_parser.add_argument("--query", required=True)
-    lib_search_parser.add_argument("--limit", type=int, default=20)
-
-    dep_rec_parser = subparsers.add_parser(
-        "recommend-dependencies", help="确定性依赖/父子候选推荐（只生产值，不动 schema）")
-    dep_rec_parser.add_argument("--out", type=Path, required=True)
-
-    dep_dec_parser = subparsers.add_parser(
-        "decide-dependency", help="依赖候选裁决（接受才写库，拒绝不落库）")
-    dep_dec_parser.add_argument("--out", type=Path, required=True)
-    dep_dec_parser.add_argument("--from", dest="from_id", required=True)
-    dep_dec_parser.add_argument("--to", required=True)
-    dep_dec_parser.add_argument("--kind", required=True, choices=["depend", "exclude", "refine"])
-    dep_dec_parser.add_argument("--accept", choices=["true", "false"], default="true")
-    dep_dec_parser.add_argument("--actor", default="desktop-dependency")
-    dep_dec_parser.add_argument("--reason", default="")
-
-    claim_acceptance_parser = subparsers.add_parser("claim-shadow-acceptance")
-    claim_acceptance_parser.add_argument("--input", type=Path, required=True)
-    claim_acceptance_parser.add_argument("--output", type=Path)
-
-    claim_packet_parser = subparsers.add_parser("claim-shadow-review-packet")
-    claim_packet_parser.add_argument("--input", type=Path, required=True)
-    claim_packet_parser.add_argument("--output-dir", type=Path, required=True)
-
-    claim_import_parser = subparsers.add_parser("claim-shadow-review-import")
-    claim_import_parser.add_argument("--input", type=Path, required=True)
-    claim_import_parser.add_argument("--decisions", type=Path, required=True)
-    claim_import_parser.add_argument("--output", type=Path, required=True)
-    claim_import_parser.add_argument("--golden-manifest", type=Path, required=True)
-
-    claim_fold_parser = subparsers.add_parser("claim-ledger-fold")
-    claim_fold_parser.add_argument(
-        "--out-dir",
-        "--out",
-        dest="out",
-        type=Path,
-        required=True,
-    )
-
-    # T2 编排环（agent_loop 升格）：缺口驱动的再规划，裁决仍在专家面板。
-    orchestrate_parser = subparsers.add_parser(
-        "orchestrate",
-        help="编排环：读缺口→授权补抽→写 trace，直到收敛或达上限（NEEDS WORK 交人）")
-    orchestrate_parser.add_argument("--out-dir", "--out", dest="out", type=Path, required=True)
-    orchestrate_parser.add_argument(
-        "--max-rounds", type=int, default=None,
-        help=f"每文档最大编排轮次（默认 8，上限 50；env RATOMIZER_ORCHESTRATION_MAX_ROUNDS）")
-    orchestrate_parser.add_argument(
-        "--allow-llm", action="store_true",
-        help="授权编排环发起 spot_extract/targeted_reextract（默认关闭=只读缺口转人工；"
-             "env RATOMIZER_ORCHESTRATION_ALLOW_LLM=1 等效）")
-    orchestrate_parser.add_argument("--actor", default="orchestration-loop")
-
-    # V3 WS-A A3：整篇对账 sidecar（CHAIN_ORDER 之外，同 orchestrate 纪律）。
-    reconcile_parser = subparsers.add_parser(
-        "reconcile",
-        help="整篇对账：规则筛疑+LLM 裁定两段，写 reconcile_report.json 并并入 quality_report")
-    reconcile_parser.add_argument("--out-dir", "--out", dest="out", type=Path, required=True)
-    reconcile_parser.add_argument(
-        "--llm-route", choices=["stub", "openai_compatible"], default="stub",
-        help="裁定投票路由（默认 stub=仅规则筛疑 rules_only）")
-
-    # WS-H：知识沉淀闭环（成文导出后自动/手动 harvest）
-    harvest_parser = subparsers.add_parser(
-        "harvest",
-        help="执行 WS-H 知识沉淀闭环：收割裁决样本、confirmed 需求、方案、领域知识、语言资产、校准资产",
-    )
-    harvest_parser.add_argument("--out", type=Path, required=True)
-    harvest_parser.add_argument("--actor", default="desktop-harvest")
-
-    cost_report_parser = subparsers.add_parser("cost-report")
-    cost_report_parser.add_argument(
-        "--out-dir", "--out", dest="out", type=Path, required=True,
-        help="结果目录（读 governed state/llm_budget.json）",
-    )
-
-    package_start_parser = subparsers.add_parser("result-package-start")
-    package_start_parser.add_argument("--out", type=Path, required=True)
-    package_start_parser.add_argument("--input", type=Path, required=True)
-    package_start_parser.add_argument("--stages", required=True)
-
-    package_complete_parser = subparsers.add_parser("result-package-complete")
-    package_complete_parser.add_argument("--out", type=Path, required=True)
-    package_complete_parser.add_argument("--run-id", required=True)
-    package_complete_parser.add_argument("--completed-stages", required=True)
-
-    package_fail_parser = subparsers.add_parser("result-package-fail")
-    package_fail_parser.add_argument("--out", type=Path, required=True)
-    package_fail_parser.add_argument("--run-id", required=True)
-    package_fail_parser.add_argument("--error", required=True)
-
-    package_status_parser = subparsers.add_parser("result-package-status")
-    package_status_parser.add_argument("--out", type=Path, required=True)
-    package_status_parser.add_argument(
-        "--verify",
-        action="store_true",
-        # S5：显式完整校验（「打开已有结果」）——重算交付物/完成证据 SHA
-        help="recompute deliverable and completion-evidence hashes (fail on mismatch)",
-    )
-    return parser.parse_args(argv)
 
 
 def _manifest_context_from_args(args: argparse.Namespace) -> dict[str, Any]:
     command = str(getattr(args, "command", "") or "")
     context: dict[str, Any] = {}
-    if command in {"llm-review", "ai-extract", "requirements-analysis"}:
+    if command in {"llm-review", "ai-extract", "requirements-analysis", "functional-extract"}:
         context["route"] = getattr(args, "llm_route", None)
+        if command == "functional-extract":
+            context["config"] = _functional_extract_stage_config()
     elif command == "assemble":
         context["route"] = getattr(args, "enrich_route", None) or None
     elif command in {"export-annotation-html", "full-translation"}:
@@ -3498,7 +3108,8 @@ def main(argv: list[str] | None = None) -> int:
                                  route=args.llm_route, template_path=args.template,
                                  sample_ratio=args.sample_ratio or None,
                                  limit_sections=args.limit_sections or None,
-                                 annotation_layout_mode=args.annotation_layout_mode)
+                                 annotation_layout_mode=args.annotation_layout_mode,
+                                 translation_mode=args.translation_mode)
         elif args.command == "clarification-report":
             payload = clarification_report_task(args.out)
         elif args.command == "template-write":
@@ -3509,6 +3120,8 @@ def main(argv: list[str] | None = None) -> int:
             payload = ai_extract_task(args.out, route=args.llm_route,
                                       limit_sections=args.limit_sections or None,
                                       sample_ratio=args.sample_ratio or None)
+        elif args.command == "functional-extract":
+            payload = functional_extract_task(args.out, route=args.llm_route)
         elif args.command == "export-annotation-html":
             payload = export_annotation_html_task(
                 args.out,

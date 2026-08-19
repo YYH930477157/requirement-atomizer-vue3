@@ -26,3 +26,4 @@ ui/.pkg-backup/
 ui/dist-open-existing/
 ui/ui-dev-server.log
 session-archive/
+.qoder/

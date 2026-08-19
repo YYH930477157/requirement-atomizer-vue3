@@ -118,6 +118,72 @@ class ResultPackageTests(unittest.TestCase):
             self.assertEqual((root / "summary.md").read_text(encoding="utf-8"), "# Analysis complete\n")
             self.assertEqual(load_result_package(root, verify=True), completed)
 
+    def test_completion_evidence_includes_quality_gate_snapshot(self) -> None:
+        """§22：完成证据附质量门禁快照（quality_gate_snapshot）。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            package = self._initialize(root)
+            self._write_completion_evidence(root)
+            completed = commit_analysis_completion(
+                root,
+                run_id=package["active_attempt"]["run_id"],
+                completed_stages=["atomize", "requirements-analysis"],
+            )
+            evidence_ids = [item["artifact_id"] for item
+                            in completed["analysis"]["completion_evidence"]]
+            self.assertIn("run_manifest_snapshot", evidence_ids)
+            self.assertIn("quality_gate_snapshot", evidence_ids)
+            # 快照内容在案且哈希可验（load verify=True 已覆盖）
+            gate_entry = next(item for item in completed["analysis"]["completion_evidence"]
+                              if item["artifact_id"] == "quality_gate_snapshot")
+            gate_path = root / gate_entry["path"]
+            report = json.loads(gate_path.read_text(encoding="utf-8"))
+            self.assertEqual(report["overall"], "pass")
+            # 本次运行不含功能直抽：守恒 gate 记“不适用”而不是伪造失败
+            self.assertEqual(report["gates"]["obligation_conservation"]["status"], "pass")
+            self.assertIn("不适用", report["gates"]["obligation_conservation"]["detail"])
+
+    def test_completion_refused_when_functional_conservation_failed(self) -> None:
+        """§22：直抽在作用域内且守恒失败 → needs_work 拒绝完成（质量证据决定完成）。"""
+        from result_package import ResultPackagePartialError
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            package = initialize_result_package(
+                root,
+                input_path=self._source(root),
+                requested_stages=["atomize", "functional-extract", "requirements-analysis"],
+            )
+            run_id = package["active_attempt"]["run_id"]
+            manifest = package_artifact_path(root, "run_manifest", for_write=True)
+            manifest.write_text(json.dumps({
+                "manifest_version": 2,
+                "stages": {
+                    "atomize": {"status": "ok", "attempt_run_id": run_id},
+                    "functional-extract": {"status": "ok", "attempt_run_id": run_id},
+                    "requirements-analysis": {"status": "ok", "attempt_run_id": run_id},
+                },
+            }), encoding="utf-8")
+            product = package_artifact_path(root, "functional_requirements", for_write=True)
+            product.write_text(json.dumps({
+                "execution_status": "ok",
+                "conservation": {"ok": False, "checks": {
+                    "obligation_coverage": {"ok": False, "uncovered_obligations": [
+                        {"sentence": "shall do X"}]}}},
+                "items": [],
+            }, ensure_ascii=False), encoding="utf-8")
+
+            with self.assertRaises(ResultPackagePartialError) as ctx:
+                commit_analysis_completion(
+                    root, run_id=run_id,
+                    completed_stages=["atomize", "functional-extract",
+                                      "requirements-analysis"])
+            self.assertIn("quality gates are not passable", str(ctx.exception))
+            # 拒绝后不冒充完成：attempt 保持，状态仍 running
+            reloaded = load_result_package(root)
+            self.assertEqual(reloaded["analysis_status"], "running")
+            self.assertIsNotNone(reloaded["active_attempt"])
+
     def test_review_state_changes_do_not_change_analysis_status(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -232,9 +232,32 @@ def enrich_one(
     req: dict[str, Any],
     config: LLMClientConfig,
     blue_book_entry: dict[str, Any] | None = None,
+    runner: Any = None,
 ) -> tuple[str, str]:
-    """调 LLM 改写并过漂移护栏。返回 (description, note)。可能抛 LLMError（由批处理捕获降级）。"""
-    payload = chat_json(config, SYSTEM_PROMPT, build_user_prompt(req, blue_book_entry))
+    """调 LLM 改写并过漂移护栏。返回 (description, note)。可能抛 LLMError（由批处理捕获降级）。
+
+    ``runner``（M8 迁移）：LLMJobRunner——调用经统一机械（attempt 账本 +
+    llm_trace 归属 stage=assemble/processor=spec_enrich）；失败时重抛原始异常，
+    LLMConnectionError 驱动的熔断计数语义不变。None = 既有直调路径（测试直调零变化）。
+    """
+    if runner is not None:
+        from llm_job_runner import LLMJob
+
+        job = LLMJob(
+            stage="assemble", processor="spec_enrich",
+            unit_id=str(req.get("source_ai_requirement_id")
+                        or req.get("requirement_id") or ""),
+            system_prompt=SYSTEM_PROMPT,
+            user_prompt=build_user_prompt(req, blue_book_entry),
+            route="openai_compatible",
+            fingerprint=fingerprint(req, config.model, blue_book_entry),
+        )
+        result = runner.run(job)
+        if not result.ok:
+            raise result.exception or RuntimeError(result.error)
+        payload = result.data or {}
+    else:
+        payload = chat_json(config, SYSTEM_PROMPT, build_user_prompt(req, blue_book_entry))
     new_desc = str(payload.get("description") or "").strip()
     return _finalize_description(req, new_desc, blue_book_entry)
 
@@ -295,6 +318,7 @@ def _build_batch_user_prompt(reqs: list[dict[str, Any]]) -> str:
 def _enrich_batch_unit(
     unit: list[tuple[dict[str, Any], str, dict[str, Any] | None]],
     config: LLMClientConfig,
+    runner: Any = None,
 ) -> tuple[list[tuple[str, str] | None], list[int]]:
     """无蓝皮书条目的合批改写。返回 (outcomes, missing_slots)：outcomes 与 unit 对齐,
     缺槽位记 None 占位并连同槽号一并返回——由调用方以独立单条任务重发到同一线程池
@@ -302,7 +326,26 @@ def _enrich_batch_unit(
     由调用方按单条语义计 failed 并驱动熔断,不进缓存）。
     整批调用失败直接抛 LLMError——由调用方按单元降级并驱动熔断（语义同单条路径）。"""
     reqs = [req for req, _fp, _bb in unit]
-    payload = chat_json(config, SYSTEM_PROMPT_BATCH, _build_batch_user_prompt(reqs))
+    if runner is not None:
+        from llm_job_runner import LLMJob
+
+        job = LLMJob(
+            stage="assemble", processor="spec_enrich",
+            unit_id="batch:" + ",".join(
+                str(req.get("source_ai_requirement_id")
+                    or req.get("requirement_id") or "") for req in reqs[:4]),
+            system_prompt=SYSTEM_PROMPT_BATCH,
+            user_prompt=_build_batch_user_prompt(reqs),
+            route="openai_compatible",
+            fingerprint="spec-enrich-batch:" + hashlib.sha1(
+                _build_batch_user_prompt(reqs).encode("utf-8")).hexdigest(),
+        )
+        result = runner.run(job)
+        if not result.ok:
+            raise result.exception or RuntimeError(result.error)
+        payload = result.data or {}
+    else:
+        payload = chat_json(config, SYSTEM_PROMPT_BATCH, _build_batch_user_prompt(reqs))
     from requirements_analysis import _map_batch_items   # 槽位映射与软需合批同一实现
     mapped = _map_batch_items(payload, len(unit))
     outcomes: list[tuple[str, str] | None] = []
@@ -321,20 +364,36 @@ def _enrich_batch_unit(
 # --- 批处理（镜像 llm_pipeline 的缓存/并发/快速失败/熔断/降级）------------------
 
 def read_cache(path: Path) -> dict[str, dict[str, Any]]:
-    cache: dict[str, dict[str, Any]] = {}
-    for row in read_jsonl_recover_torn_tail(path):
-        key = str(row.get("fingerprint") or "")
-        if key:
-            cache[key] = row
-    return cache
+    """读缓存：兼容两种行形态（M7 迁移，§16.1）。
+
+    - 旧顶层行（fingerprint/description/... 直接平铺）——历史产物零失效；
+    - PaidCacheStore 行（schema=paid-cache-store/v1，payload 嵌套）——解包成
+      旧形态供命中消费，下游 hit 语义不变。
+    """
+    from paid_cache_store import read_dual_format
+
+    return read_dual_format(path)
 
 
 def append_cache(path: Path, rows: list[dict[str, Any]]) -> None:
+    """写缓存：经 PaidCacheStore（锁 + fsync + 原子替换 + Windows 退避）。
+
+    迁移前是裸 append（无锁无 fsync）——2026-08-17 M7 第一批迁移；同指纹
+    last-wins 语义与旧读侧一致。
+    """
     if not rows:
         return
-    with path.open("a", encoding="utf-8", newline="\n") as f:
-        for row in rows:
-            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    from paid_cache_store import PaidCacheStore
+
+    store = PaidCacheStore.from_file(path)
+    store.record_many([
+        (str(row.get("fingerprint") or ""),
+         {key: value for key, value in row.items() if key != "fingerprint"},
+         {"model": str(row.get("model") or ""),
+          "prompt_version": str(row.get("prompt_version") or ""),
+          "guards_version": str(row.get("guards_version") or "")})
+        for row in rows if row.get("fingerprint")
+    ])
 
 
 def enrich_descriptions(
@@ -345,6 +404,7 @@ def enrich_descriptions(
     concurrency: int = 1,
     connection_failure_abort: int = 10,
     blue_book_index_path: Path | None = None,
+    runner: Any = None,
 ) -> tuple[int, int, int]:
     """原地富化 description；返回 (enriched, rejected, failed)。最佳努力：服务不可达不抛出、保留模板。"""
     cache = read_cache(cache_path)
@@ -393,7 +453,7 @@ def enrich_descriptions(
     sample_conn_fail = 0
     for req, fp, blue_book_entry in sample:
         try:
-            desc, note = enrich_one(req, config, blue_book_entry)
+            desc, note = enrich_one(req, config, blue_book_entry, runner=runner)
         except LLMConnectionError as exc:
             sample_conn_fail += 1
             failed += 1
@@ -429,8 +489,8 @@ def enrich_descriptions(
                      ) -> tuple[list[tuple[str, str] | None], list[int]]:
             if len(unit) == 1:
                 req, _fp, blue_book_entry = unit[0]
-                return [enrich_one(req, config, blue_book_entry)], []
-            return _enrich_batch_unit(unit, config)
+                return [enrich_one(req, config, blue_book_entry, runner=runner)], []
+            return _enrich_batch_unit(unit, config, runner=runner)
 
         consecutive_conn_fail = 0
         with ThreadPoolExecutor(max_workers=max(1, concurrency)) as executor:
@@ -513,6 +573,11 @@ def enrich_requirement_lists(
     cache_path = governed_artifact_path(out_dir, ENRICH_CACHE, category="cache")
     flat = [req for lst in requirement_lists for req in lst]
     LOGGER.info("描述富化：%s 条候选（模型 %s）", len(flat), config.model)
+    # M8 迁移：单条/合批调用经 LLMJobRunner（attempt 账本 + trace 归属）；
+    # 失败重抛原始异常，熔断/降级语义与直调路径一致
+    from llm_job_runner import LLMJobRunner
+
+    job_runner = LLMJobRunner(out_dir, route_config=config)
     enriched, rejected, failed = enrich_descriptions(
         flat,
         config=config,
@@ -520,6 +585,7 @@ def enrich_requirement_lists(
         concurrency=concurrency,
         connection_failure_abort=abort,
         blue_book_index_path=blue_book_index_path,
+        runner=job_runner,
     )
     return {"enriched": enriched, "rejected": rejected, "failed": failed, "route": "openai_compatible"}
 

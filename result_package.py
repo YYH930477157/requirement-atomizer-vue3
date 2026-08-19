@@ -29,6 +29,8 @@ OUTPUT_LAYOUT_VERSION = "result-layout-v1"
 RESULT_PACKAGE_FILE = "result-package.json"
 INTERNAL_ROOT = ".ratomizer"
 RUN_MANIFEST_SNAPSHOT = "run_manifest.json"
+# §22：完成证据附质量门禁快照（quality_gates 只读投影；旧 marker 无此条仍有效）
+QUALITY_GATE_SNAPSHOT = "quality_gates.json"
 
 _REPLACE_ATTEMPTS = 8
 _REPLACE_RETRY_DELAY_S = 0.025
@@ -133,6 +135,38 @@ _ARTIFACTS = {
             "table_cell_dispositions",
             "pipeline/table_cell_dispositions.jsonl",
             legacy_path="table_cell_dispositions.jsonl",
+        ),
+        # quality-first 单元路由（M1/M2 shadow）：A/B 共用内容单元与确定性路由决策，
+        # 只读诊断/规划产物——不改变既有执行链
+        _artifact(
+            "extraction_units",
+            "pipeline/extraction_units.jsonl",
+            legacy_path="extraction_units.jsonl",
+        ),
+        _artifact(
+            "unit_routing_decisions",
+            "pipeline/unit_routing_decisions.jsonl",
+            legacy_path="unit_routing_decisions.jsonl",
+        ),
+        _artifact(
+            "routing_gaps",
+            "pipeline/routing_gaps.jsonl",
+            legacy_path="routing_gaps.jsonl",
+        ),
+        _artifact(
+            "routing_escalations",
+            "pipeline/routing_escalations.jsonl",
+            legacy_path="routing_escalations.jsonl",
+        ),
+        _artifact(
+            "pipeline_plan",
+            "pipeline/pipeline_plan.json",
+            legacy_path="pipeline_plan.json",
+        ),
+        _artifact(
+            "llm_job_attempts",
+            "logs/llm_job_attempts.jsonl",
+            legacy_path="llm_job_attempts.jsonl",
         ),
         _artifact("atomic_requirements", "pipeline/atomic_requirements.jsonl", legacy_path="atomic_requirements.jsonl"),
         _artifact("ai_requirements", "pipeline/ai_requirements.jsonl", legacy_path="ai_requirements.jsonl"),
@@ -542,23 +576,36 @@ def _validate_package(package: Any) -> dict[str, Any]:
         if not isinstance(completed, list) or any(stage not in completed for stage in requested):
             raise ResultPackageCorrupt("invalid analysis completed stages")
         evidence = analysis.get("completion_evidence")
-        if not isinstance(evidence, list):
+        if not isinstance(evidence, list) or not evidence:
             raise ResultPackageCorrupt("invalid completion evidence")
+        allowed = {
+            "run_manifest_snapshot": RUN_MANIFEST_SNAPSHOT,
+            "quality_gate_snapshot": QUALITY_GATE_SNAPSHOT,
+        }
+        seen: dict[str, int] = {}
         for item in evidence:
             if not isinstance(item, dict):
                 raise ResultPackageCorrupt("invalid completion evidence entry")
-            if item.get("artifact_id") != "run_manifest_snapshot":
+            artifact_id = str(item.get("artifact_id") or "")
+            if artifact_id not in allowed:
                 raise ResultPackageCorrupt("invalid completion evidence artifact")
+            seen[artifact_id] = seen.get(artifact_id, 0) + 1
             evidence_path = _safe_relative_path(
                 item.get("path"), label="completion evidence path"
             )
             expected_path = (
-                f"{INTERNAL_ROOT}/stages/completions/{run_id}/{RUN_MANIFEST_SNAPSHOT}"
+                f"{INTERNAL_ROOT}/stages/completions/{run_id}/{allowed[artifact_id]}"
             )
             if evidence_path != expected_path:
                 raise ResultPackageCorrupt("invalid completion evidence location")
             if not _is_sha256(item.get("sha256")):
                 raise ResultPackageCorrupt("invalid completion evidence digest")
+        if seen.get("run_manifest_snapshot") != 1:
+            raise ResultPackageCorrupt(
+                "completion evidence must contain exactly one run_manifest_snapshot")
+        if seen.get("quality_gate_snapshot", 0) > 1:
+            raise ResultPackageCorrupt(
+                "invalid completion evidence: duplicate quality_gate_snapshot")
     return package
 
 
@@ -1031,6 +1078,17 @@ def _publish_registered_deliverables_unlocked(
     return list(_publish_package_unlocked(result_root, package)["deliverables"])
 
 
+def _functional_product_is_draft(root: Path) -> bool:
+    """直抽产物是否带 stub 草稿水印（缺产物/不可读按非草稿处理——由 stage 完成性负责）。"""
+    try:
+        from requirements_analysis_rules import _read_functional_requirements_payload
+
+        payload = _read_functional_requirements_payload(root)
+    except Exception:  # noqa: BLE001 — 产物缺席不是草稿问题
+        return False
+    return bool(isinstance(payload, dict) and payload.get("draft"))
+
+
 def _completion_evidence(
     root: Path,
     requested_stages: Iterable[str],
@@ -1060,15 +1118,67 @@ def _completion_evidence(
             raise ResultPackageError(
                 f"requested stage does not belong to the active attempt: {stage}"
             )
+    # §3.5（审查 2026-08-15 P1）：直抽 stub 产物（draft 水印）不得形成可发布成功产物
+    # ——完成证据显式拒绝。stage 可能记 ok（显式 stub 是测试/烟测 opt-in），但水印在
+    # 产物里；证据层只认非草稿产物。
+    if "functional-extract" in requested_stages and _functional_product_is_draft(root):
+        raise ResultPackagePartialError(
+            "functional-extract product is a stub draft (route=stub) — "
+            "not publishable; rerun with a real LLM route"
+        )
+    # §22（quality-first 方案）：完成以质量门禁为准——needs_work（守恒/执行状态/
+    # closure 缺失）拒绝完成；needs_review（专家待审项）如实记入完成证据但不阻塞
+    # （既有 blocking 语义仍在各自权威处把关，这里不新设门槛）。gate 报告整体落
+    # completion 证据（analysis.quality_gates）。
+    gate_report = _quality_gate_evidence(root, requested_stages)
+    if gate_report.get("overall") == "needs_work":
+        failed = {name: gate.get("detail") for name, gate in gate_report.get("gates", {}).items()
+                  if isinstance(gate, dict) and gate.get("status") == "needs_work"}
+        raise ResultPackagePartialError(
+            "quality gates are not passable (needs_work): "
+            f"{failed or gate_report.get('overall')}"
+        )
     snapshot_path = (
         root / INTERNAL_ROOT / "stages" / "completions" / run_id / RUN_MANIFEST_SNAPSHOT
     )
     _atomic_write_json(snapshot_path, manifest)
+    gate_snapshot_path = (
+        root / INTERNAL_ROOT / "stages" / "completions" / run_id / QUALITY_GATE_SNAPSHOT
+    )
+    _atomic_write_json(gate_snapshot_path, gate_report)
     return [{
         "artifact_id": "run_manifest_snapshot",
         "path": snapshot_path.relative_to(root).as_posix(),
         "sha256": _sha256_file(snapshot_path),
+    }, {
+        "artifact_id": "quality_gate_snapshot",
+        "path": gate_snapshot_path.relative_to(root).as_posix(),
+        "sha256": _sha256_file(gate_snapshot_path),
     }]
+
+
+def _quality_gate_evidence(root: Path, requested_stages: Iterable[str]) -> dict[str, Any]:
+    """只读评估质量门禁（quality_gates 权威投影，按本次运行阶段收作用域）；
+    评估失败如实降级为 needs_work。"""
+    try:
+        from quality_gates import evaluate_document_gates
+
+        report = evaluate_document_gates(
+            root, completion_scope_stages=[str(stage) for stage in requested_stages])
+        return report if isinstance(report, dict) else {
+            "schema": "quality-gate-report/v1", "overall": "needs_work",
+            "gates": {"gate_evaluation": {"status": "needs_work",
+                                          "detail": "gate report malformed"}},
+        }
+    except Exception as exc:  # noqa: BLE001 — 证据层 fail-closed：评估坏了不能装通过
+        return {
+            "schema": "quality-gate-report/v1",
+            "overall": "needs_work",
+            "gates": {"gate_evaluation": {
+                "status": "needs_work",
+                "detail": f"quality gate evaluation failed: {type(exc).__name__}: {exc}"[:300],
+            }},
+        }
 
 
 def _commit_analysis_completion_unlocked(

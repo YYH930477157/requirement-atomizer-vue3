@@ -33,6 +33,7 @@ const STATUS_LABELS: Record<string, string> = {
 // 结构化子集（避免 class 私有成员 + ref 解包导致的名义类型不匹配）
 type DocClient = Pick<RequirementApiClient,
   "loadDocument" | "loadAiRequirements" | "applyAiReviewAction" | "loadPdfAnnotation" | "loadPdfPageBlob">
+  & Partial<Pick<RequirementApiClient, "applyFunctionalReviewAction">>
   & Partial<Pick<RequirementApiClient,
     "loadHealth" | "loadAiExtractionStatus" | "loadOmissionActions" | "applyOmissionAction" | "reextractOmission" |
     "loadClarificationInternalChecks" | "applyClarificationCheckBatch" | "spotExtract">>
@@ -1475,7 +1476,24 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion", adva
   stashRequirementDraft(req.ai_req_id)
   isSaving.value = true
   try {
-    const state = await client.applyAiReviewAction({
+    // §3.3：功能级条目（直抽/合成投影 level=functional）走功能级权威端点——
+    // ai_review_states 同库但 level=functional，CAS 材料来自功能投影（无 publication revision）。
+    const functionalClient = client as DocClient & {
+      applyFunctionalReviewAction?: RequirementApiClient["applyFunctionalReviewAction"]
+    }
+    const state = req.level === "functional" && functionalClient.applyFunctionalReviewAction
+      ? await functionalClient.applyFunctionalReviewAction({
+          aiReqId: req.ai_req_id, status,
+          sourceFingerprint: req.source_fingerprint,
+          reviewSubjectFingerprint: req.review_subject_fingerprint,
+          expectedTargetFingerprint: req.target_fingerprint,
+          expectedTargetAuthorityWriteRevision: req.target_authority_write_revision,
+          moduleOverride: moduleName !== originalModuleOf(req) ? moduleName : undefined,
+          clearModuleOverride: moduleName === originalModuleOf(req) && Boolean(req.review_state?.module_override),
+          ownershipOverride: ownershipEdit.value !== (req.ownership || "") ? ownershipEdit.value : "",
+          reason: comment.value, actor: "reviewer",
+        })
+      : await client.applyAiReviewAction({
       aiReqId: req.ai_req_id, status,
       sourceFingerprint: req.source_fingerprint,
       reviewSubjectFingerprint: req.review_subject_fingerprint,

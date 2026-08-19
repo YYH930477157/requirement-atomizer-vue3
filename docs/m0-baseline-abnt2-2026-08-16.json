@@ -1,0 +1,656 @@
+{
+  "schema": "m0-baseline-report/v1",
+  "label": "abnt2",
+  "input": "C:\\Users\\YYHwudi\\Desktop\\Canna-29\\Appendix 9-ABNT NBR 16968-2022 EN.docx",
+  "route": "openai_compatible",
+  "kb": "default (compiled_from_obsidian.json)",
+  "template": "C:\\Users\\YYHwudi\\Desktop\\Canna-29\\电表软件标准化需求列表-V2.3.12 - 2026-4-14..xlsx",
+  "stages": [
+    "ai-extract",
+    "assemble",
+    "requirements-analysis",
+    "template-write",
+    "clarification-report",
+    "full-translation",
+    "compose",
+    "export-annotation-html"
+  ],
+  "runs": [
+    {
+      "label": "cold",
+      "stages": [
+        {
+          "stage": "ai-extract",
+          "error": null,
+          "skipped": [],
+          "duration_s": 109.7,
+          "trace_delta": {
+            "lines": 2,
+            "ok": 2,
+            "failed": 0,
+            "prompt_tokens": 223510,
+            "completion_tokens": 12288,
+            "total_tokens": 235798
+          },
+          "budget_delta": {
+            "functional_extract.calls": 2,
+            "functional_extract.tokens": 235798
+          }
+        },
+        {
+          "stage": "assemble",
+          "error": null,
+          "skipped": [],
+          "duration_s": 2.6,
+          "trace_delta": {
+            "lines": 0,
+            "ok": 0,
+            "failed": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0
+          },
+          "budget_delta": {
+            "functional_extract.calls": -2,
+            "functional_extract.tokens": -235798
+          }
+        },
+        {
+          "stage": "requirements-analysis",
+          "error": "RuntimeError: requirements-analysis 阶段失败：功能需求守恒核对未闭合（duplicates=6；evidence_presence=0），阻塞成文导出（强制人工）",
+          "skipped": [],
+          "duration_s": 0.1,
+          "trace_delta": {
+            "lines": 0,
+            "ok": 0,
+            "failed": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0
+          },
+          "budget_delta": {}
+        },
+        {
+          "stage": "template-write",
+          "error": "RuntimeError: template-write 阶段失败：engineering_analysis.json not found in E:\\Codex\\requirement-atomizer-vue3\\out\\m0-abnt2-2026-08-16\\cold — 先跑「软件需求分析」（分析在前，成文在后）",
+          "skipped": [],
+          "duration_s": 0.0,
+          "trace_delta": {
+            "lines": 0,
+            "ok": 0,
+            "failed": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0
+          },
+          "budget_delta": {}
+        },
+        {
+          "stage": "clarification-report",
+          "error": "RuntimeError: clarification-report 阶段失败：功能需求守恒核对未闭合（duplicates=6；evidence_presence=0），阻塞成文导出（强制人工）",
+          "skipped": [],
+          "duration_s": 0.1,
+          "trace_delta": {
+            "lines": 0,
+            "ok": 0,
+            "failed": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0
+          },
+          "budget_delta": {}
+        },
+        {
+          "stage": "full-translation",
+          "error": null,
+          "skipped": [],
+          "duration_s": 1226.0,
+          "trace_delta": {
+            "lines": 344,
+            "ok": 344,
+            "failed": 0,
+            "prompt_tokens": 259995,
+            "completion_tokens": 915505,
+            "total_tokens": 1175500
+          },
+          "budget_delta": {
+            "full_translation.calls": 344,
+            "full_translation.tokens": 1175500
+          }
+        },
+        {
+          "stage": "compose",
+          "error": null,
+          "skipped": [],
+          "duration_s": 2.3,
+          "trace_delta": {
+            "lines": 0,
+            "ok": 0,
+            "failed": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0
+          },
+          "budget_delta": {
+            "full_translation.calls": -344,
+            "full_translation.tokens": -1175500
+          }
+        },
+        {
+          "stage": "export-annotation-html",
+          "error": null,
+          "skipped": [],
+          "duration_s": 94.9,
+          "trace_delta": {
+            "lines": 4,
+            "ok": 4,
+            "failed": 0,
+            "prompt_tokens": 2643,
+            "completion_tokens": 8305,
+            "total_tokens": 10948
+          },
+          "budget_delta": {
+            "default.calls": 4,
+            "default.tokens": 10948
+          }
+        }
+      ],
+      "trace_total": {
+        "lines": 350,
+        "ok": 350,
+        "failed": 0,
+        "prompt_tokens": 486148,
+        "completion_tokens": 936098,
+        "total_tokens": 1422246
+      },
+      "budget": {
+        "schema": "llm-budget/v1",
+        "version": "llm-budget-v1",
+        "document_id": "cold",
+        "created_at": "2026-08-16T17:34:05.061706Z",
+        "updated_at": "2026-08-16T17:35:28.767759Z",
+        "warn_threshold": 0.8,
+        "stage_routes": {
+          "structure_hypothesis": "small",
+          "functional_extract": "small",
+          "clarification": "small",
+          "drilldown_adjudication": "large",
+          "llm_review": "large",
+          "analyze_enrich": "large",
+          "spec_enrich": "large",
+          "full_translation": "small",
+          "default": "small"
+        },
+        "sub_budgets": {
+          "structure_hypothesis": {
+            "max_calls": 24,
+            "max_tokens": 360000
+          },
+          "functional_extract": {
+            "max_calls": 36,
+            "max_tokens": 720000
+          },
+          "drilldown_adjudication": {
+            "max_calls": 600,
+            "max_tokens": 9000000
+          },
+          "clarification": {
+            "max_calls": 60,
+            "max_tokens": 600000
+          },
+          "llm_review": {
+            "max_calls": 600,
+            "max_tokens": 9000000
+          },
+          "analyze_enrich": {
+            "max_calls": 360,
+            "max_tokens": 3600000
+          },
+          "spec_enrich": {
+            "max_calls": 360,
+            "max_tokens": 3600000
+          },
+          "full_translation": {
+            "max_calls": 360,
+            "max_tokens": 2000000
+          },
+          "default": {
+            "max_calls": 120,
+            "max_tokens": 1200000
+          }
+        },
+        "consumed": {
+          "structure_hypothesis": {
+            "calls": 0,
+            "tokens": 0,
+            "reserved_tokens": 0,
+            "failed_calls": 0,
+            "cache_hits": 0,
+            "usage_complete": true,
+            "max_calls": 24,
+            "max_tokens": 360000
+          },
+          "functional_extract": {
+            "calls": 0,
+            "tokens": 0,
+            "reserved_tokens": 0,
+            "failed_calls": 0,
+            "cache_hits": 0,
+            "usage_complete": true,
+            "max_calls": 36,
+            "max_tokens": 720000
+          },
+          "drilldown_adjudication": {
+            "calls": 0,
+            "tokens": 0,
+            "reserved_tokens": 0,
+            "failed_calls": 0,
+            "cache_hits": 0,
+            "usage_complete": true,
+            "max_calls": 600,
+            "max_tokens": 9000000
+          },
+          "clarification": {
+            "calls": 0,
+            "tokens": 0,
+            "reserved_tokens": 0,
+            "failed_calls": 0,
+            "cache_hits": 0,
+            "usage_complete": true,
+            "max_calls": 60,
+            "max_tokens": 600000
+          },
+          "llm_review": {
+            "calls": 0,
+            "tokens": 0,
+            "reserved_tokens": 0,
+            "failed_calls": 0,
+            "cache_hits": 0,
+            "usage_complete": true,
+            "max_calls": 600,
+            "max_tokens": 9000000
+          },
+          "analyze_enrich": {
+            "calls": 0,
+            "tokens": 0,
+            "reserved_tokens": 0,
+            "failed_calls": 0,
+            "cache_hits": 0,
+            "usage_complete": true,
+            "max_calls": 360,
+            "max_tokens": 3600000
+          },
+          "spec_enrich": {
+            "calls": 0,
+            "tokens": 0,
+            "reserved_tokens": 0,
+            "failed_calls": 0,
+            "cache_hits": 0,
+            "usage_complete": true,
+            "max_calls": 360,
+            "max_tokens": 3600000
+          },
+          "full_translation": {
+            "calls": 0,
+            "tokens": 0,
+            "reserved_tokens": 0,
+            "failed_calls": 0,
+            "cache_hits": 0,
+            "usage_complete": true,
+            "max_calls": 360,
+            "max_tokens": 2000000
+          },
+          "default": {
+            "calls": 4,
+            "tokens": 10948,
+            "reserved_tokens": 0,
+            "failed_calls": 0,
+            "cache_hits": 0,
+            "usage_complete": true,
+            "max_calls": 120,
+            "max_tokens": 1200000
+          }
+        },
+        "route_distribution": {},
+        "warnings": [],
+        "exhausted_stages": {},
+        "degraded_stages": {},
+        "document_needs_work": false,
+        "last_event_seq": 8,
+        "idempotency_key": "sha256:7a25d9a91c59476c4782ca3d69b03ff2261d0d1a4fc041f888308889a4406477"
+      }
+    },
+    {
+      "label": "warm",
+      "stages": [
+        {
+          "stage": "ai-extract",
+          "error": null,
+          "skipped": [],
+          "duration_s": 99.1,
+          "trace_delta": {
+            "lines": 2,
+            "ok": 2,
+            "failed": 0,
+            "prompt_tokens": 223510,
+            "completion_tokens": 12288,
+            "total_tokens": 235798
+          },
+          "budget_delta": {
+            "default.calls": -4,
+            "default.tokens": -10948,
+            "functional_extract.calls": 2,
+            "functional_extract.tokens": 235798
+          }
+        },
+        {
+          "stage": "assemble",
+          "error": null,
+          "skipped": [],
+          "duration_s": 0.0,
+          "trace_delta": {
+            "lines": 0,
+            "ok": 0,
+            "failed": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0
+          },
+          "budget_delta": {
+            "functional_extract.calls": -2,
+            "functional_extract.tokens": -235798
+          }
+        },
+        {
+          "stage": "requirements-analysis",
+          "error": "RuntimeError: requirements-analysis 阶段失败：功能需求守恒核对未闭合（duplicates=6；evidence_presence=0），阻塞成文导出（强制人工）",
+          "skipped": [],
+          "duration_s": 0.1,
+          "trace_delta": {
+            "lines": 0,
+            "ok": 0,
+            "failed": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0
+          },
+          "budget_delta": {}
+        },
+        {
+          "stage": "template-write",
+          "error": "RuntimeError: template-write 阶段失败：engineering_analysis.json not found in E:\\Codex\\requirement-atomizer-vue3\\out\\m0-abnt2-2026-08-16\\cold — 先跑「软件需求分析」（分析在前，成文在后）",
+          "skipped": [],
+          "duration_s": 0.0,
+          "trace_delta": {
+            "lines": 0,
+            "ok": 0,
+            "failed": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0
+          },
+          "budget_delta": {}
+        },
+        {
+          "stage": "clarification-report",
+          "error": "RuntimeError: clarification-report 阶段失败：功能需求守恒核对未闭合（duplicates=6；evidence_presence=0），阻塞成文导出（强制人工）",
+          "skipped": [],
+          "duration_s": 0.1,
+          "trace_delta": {
+            "lines": 0,
+            "ok": 0,
+            "failed": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0
+          },
+          "budget_delta": {}
+        },
+        {
+          "stage": "full-translation",
+          "error": null,
+          "skipped": [],
+          "duration_s": 0.4,
+          "trace_delta": {
+            "lines": 0,
+            "ok": 0,
+            "failed": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0
+          },
+          "budget_delta": {}
+        },
+        {
+          "stage": "compose",
+          "error": null,
+          "skipped": [],
+          "duration_s": 0.0,
+          "trace_delta": {
+            "lines": 0,
+            "ok": 0,
+            "failed": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0
+          },
+          "budget_delta": {}
+        },
+        {
+          "stage": "export-annotation-html",
+          "error": null,
+          "skipped": [],
+          "duration_s": 0.0,
+          "trace_delta": {
+            "lines": 0,
+            "ok": 0,
+            "failed": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0
+          },
+          "budget_delta": {}
+        }
+      ],
+      "trace_total": {
+        "lines": 352,
+        "ok": 352,
+        "failed": 0,
+        "prompt_tokens": 709658,
+        "completion_tokens": 948386,
+        "total_tokens": 1658044
+      },
+      "budget": {
+        "schema": "llm-budget/v1",
+        "version": "llm-budget-v1",
+        "document_id": "cold",
+        "created_at": "2026-08-16T17:37:19.780966Z",
+        "updated_at": "2026-08-16T17:37:19.780966Z",
+        "warn_threshold": 0.8,
+        "stage_routes": {
+          "structure_hypothesis": "small",
+          "functional_extract": "small",
+          "clarification": "small",
+          "drilldown_adjudication": "large",
+          "llm_review": "large",
+          "analyze_enrich": "large",
+          "spec_enrich": "large",
+          "full_translation": "small",
+          "default": "small"
+        },
+        "sub_budgets": {
+          "structure_hypothesis": {
+            "max_calls": 24,
+            "max_tokens": 360000
+          },
+          "functional_extract": {
+            "max_calls": 36,
+            "max_tokens": 720000
+          },
+          "drilldown_adjudication": {
+            "max_calls": 600,
+            "max_tokens": 9000000
+          },
+          "clarification": {
+            "max_calls": 60,
+            "max_tokens": 600000
+          },
+          "llm_review": {
+            "max_calls": 600,
+            "max_tokens": 9000000
+          },
+          "analyze_enrich": {
+            "max_calls": 360,
+            "max_tokens": 3600000
+          },
+          "spec_enrich": {
+            "max_calls": 360,
+            "max_tokens": 3600000
+          },
+          "full_translation": {
+            "max_calls": 360,
+            "max_tokens": 2000000
+          },
+          "default": {
+            "max_calls": 120,
+            "max_tokens": 1200000
+          }
+        },
+        "consumed": {
+          "structure_hypothesis": {
+            "calls": 0,
+            "tokens": 0,
+            "reserved_tokens": 0,
+            "failed_calls": 0,
+            "cache_hits": 0,
+            "usage_complete": true,
+            "max_calls": 24,
+            "max_tokens": 360000
+          },
+          "functional_extract": {
+            "calls": 0,
+            "tokens": 0,
+            "reserved_tokens": 0,
+            "failed_calls": 0,
+            "cache_hits": 0,
+            "usage_complete": true,
+            "max_calls": 36,
+            "max_tokens": 720000
+          },
+          "drilldown_adjudication": {
+            "calls": 0,
+            "tokens": 0,
+            "reserved_tokens": 0,
+            "failed_calls": 0,
+            "cache_hits": 0,
+            "usage_complete": true,
+            "max_calls": 600,
+            "max_tokens": 9000000
+          },
+          "clarification": {
+            "calls": 0,
+            "tokens": 0,
+            "reserved_tokens": 0,
+            "failed_calls": 0,
+            "cache_hits": 0,
+            "usage_complete": true,
+            "max_calls": 60,
+            "max_tokens": 600000
+          },
+          "llm_review": {
+            "calls": 0,
+            "tokens": 0,
+            "reserved_tokens": 0,
+            "failed_calls": 0,
+            "cache_hits": 0,
+            "usage_complete": true,
+            "max_calls": 600,
+            "max_tokens": 9000000
+          },
+          "analyze_enrich": {
+            "calls": 0,
+            "tokens": 0,
+            "reserved_tokens": 0,
+            "failed_calls": 0,
+            "cache_hits": 0,
+            "usage_complete": true,
+            "max_calls": 360,
+            "max_tokens": 3600000
+          },
+          "spec_enrich": {
+            "calls": 0,
+            "tokens": 0,
+            "reserved_tokens": 0,
+            "failed_calls": 0,
+            "cache_hits": 0,
+            "usage_complete": true,
+            "max_calls": 360,
+            "max_tokens": 3600000
+          },
+          "full_translation": {
+            "calls": 0,
+            "tokens": 0,
+            "reserved_tokens": 0,
+            "failed_calls": 0,
+            "cache_hits": 0,
+            "usage_complete": true,
+            "max_calls": 360,
+            "max_tokens": 2000000
+          },
+          "default": {
+            "calls": 0,
+            "tokens": 0,
+            "reserved_tokens": 0,
+            "failed_calls": 0,
+            "cache_hits": 0,
+            "usage_complete": true,
+            "max_calls": 120,
+            "max_tokens": 1200000
+          }
+        },
+        "route_distribution": {},
+        "warnings": [],
+        "exhausted_stages": {},
+        "degraded_stages": {},
+        "document_needs_work": false,
+        "last_event_seq": 0,
+        "idempotency_key": "sha256:72a0da6c89ee181ec36f1d6acf8ade154366be66466af727a8476fa6562f6572"
+      }
+    }
+  ],
+  "llm_review_note": "llm-review 是 UI 可选项且不在 CHAIN_ORDER，本基线未包含（§3.1 口径决定，如实记录）",
+  "effect": {
+    "functional": {
+      "execution_status": "failed",
+      "item_count": 358,
+      "conservation_ok": false,
+      "guards_version": "functional-extract-guards-v5",
+      "prompt_version": "functional-extract-prompt-v3"
+    },
+    "final_xlsx_exists": false,
+    "root_files": [
+      "ai_review_states.lock",
+      "annotation_translations.json",
+      "blocks.jsonl",
+      "chunks.jsonl",
+      "clarification_questions_bilingual.html",
+      "dlms_cosem_spec_requirements.json",
+      "document_annotation.html",
+      "document_translation.html",
+      "document_translations.jsonl",
+      "full_translation.lock",
+      "functional_requirements.json",
+      "llm_budget.json",
+      "llm_budget.lock",
+      "llm_trace.jsonl",
+      "quality_report.json",
+      "run.log",
+      "run_manifest.json",
+      "table_cell_items.jsonl",
+      "table_items.jsonl",
+      "unextracted_registry.json"
+    ]
+  },
+  "work_root": "E:\\Codex\\requirement-atomizer-vue3\\out\\m0-abnt2-2026-08-16",
+  "generated_at": "2026-08-16T17:37:19.817001+00:00"
+}

@@ -32,6 +32,8 @@ function buildChainArgs(input) {
     ...(input.sampleRatio ? ["--sample-ratio", String(input.sampleRatio)] : []),
     ...(input.annotationLayoutMode
       ? ["--annotation-layout-mode", input.annotationLayoutMode] : []),
+    ...(input.translationMode
+      ? ["--translation-mode", input.translationMode] : []),
   ];
 }
 

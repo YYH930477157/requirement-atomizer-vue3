@@ -113,6 +113,25 @@ class LLMRouteTests(unittest.TestCase):
             tmp, sections=sections, blocks=blocks, chat=chat, route="openai_compatible", **kwargs
         )
 
+    def test_llm_job_attempt_ledger_records_doc_map(self) -> None:
+        """M8 迁移：doc_map 调用经 LLMJobRunner——attempt 账本在案且归属正确。"""
+        from llm_job_runner import LLM_JOB_ATTEMPTS_FILENAME
+
+        with TemporaryDirectory() as tmp:
+            result = self._run(tmp, lambda system, user: _valid_llm_payload())
+            self.assertEqual(result["status"], "ok")
+            ledger = Path(tmp) / LLM_JOB_ATTEMPTS_FILENAME
+            self.assertTrue(ledger.is_file())
+            rows = [json.loads(line) for line in
+                    ledger.read_text(encoding="utf-8").splitlines() if line.strip()]
+            self.assertEqual(len(rows), 1)
+            row = rows[0]
+            self.assertEqual(row["stage"], "doc_map")
+            self.assertEqual(row["processor"], "structure_hypothesis")
+            self.assertEqual(row["outcome"], "initial")
+            self.assertEqual(row["execution_status"], "ok")
+            self.assertTrue(row["fingerprint"].startswith("docmap:"))
+
     def test_ok_path_writes_doc_map_and_validates_schema(self) -> None:
         with TemporaryDirectory() as tmp:
             result = self._run(tmp, lambda system, user: _valid_llm_payload())

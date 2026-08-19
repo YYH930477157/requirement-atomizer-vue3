@@ -63,3 +63,16 @@ textarea:focus-visible {
   background: rgba(60, 60, 67, 0.36);
   background-clip: padding-box;
 }
+
+/* §20.1 高级设置折叠区：A/B 技术选择不进普通主流程（默认收起） */
+.settings-advanced > summary {
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--muted, #6b7280);
+  padding: 6px 0;
+  user-select: none;
+}
+.settings-advanced[open] > summary {
+  color: inherit;
+  margin-bottom: 6px;
+}

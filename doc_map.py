@@ -360,57 +360,27 @@ def _read_cache(out_dir: Path) -> dict[str, dict[str, Any]]:
     path = governed_artifact_path(out_dir, DOC_MAP_CACHE, category="cache", for_write=False)
     if not path.is_file():
         return {}
-    cache: dict[str, dict[str, Any]] = {}
-    try:
-        for line in path.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            row = json.loads(line)
-            fp = str(row.get("fingerprint") or "")
-            if fp:
-                cache[fp] = row
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return cache
+    from paid_cache_store import read_dual_format
+
+    return read_dual_format(path)
 
 
 def _write_cache_entry(out_dir: Path, fingerprint: str, payload: dict[str, Any]) -> None:
-    from process_file_lock import process_file_lock
+    """缓存写经 PaidCacheStore（M7/M8 迁移）：锁 + fsync + 原子替换 + Windows 退避。
+
+    写失败不阻断主流程只记日志（既有语义）；行形态为 paid-cache-store payload 行，
+    读侧双格式兼容旧顶层行。
+    """
     from result_package import governed_artifact_path
 
-    path = governed_artifact_path(out_dir, DOC_MAP_CACHE, category="cache", for_write=True)
-    lock_path = governed_artifact_path(
-        out_dir, "doc_map_cache.lock", category="cache", for_write=True
-    )
-    entry = {"fingerprint": fingerprint, "payload": payload}
-    tmp: Path | None = None
     try:
-        with process_file_lock(lock_path, timeout_s=10.0, label="doc_map_cache"):
-            existing = []
-            if path.is_file():
-                existing = [
-                    line for line in path.read_text(encoding="utf-8").splitlines()
-                    if line.strip() and json.loads(line).get("fingerprint") != fingerprint
-                ]
-            with tempfile.NamedTemporaryFile(
-                mode="w", dir=path.parent, prefix=".doc_map_cache.",
-                suffix=".tmp", delete=False, encoding="utf-8", newline="\n",
-            ) as handle:
-                tmp = Path(handle.name)
-                for line in existing:
-                    handle.write(line + "\n")
-                handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
-                handle.flush()
-                os.fsync(handle.fileno())
-            _replace_with_retry(tmp, path)
-            tmp = None
+        from paid_cache_store import PaidCacheStore
+
+        path = governed_artifact_path(out_dir, DOC_MAP_CACHE, category="cache", for_write=True)
+        PaidCacheStore.from_file(path).record(fingerprint, {"payload": payload})
     except Exception as exc:  # 缓存写失败不阻断主流程，只记日志
         LOGGER.warning("doc_map 缓存写入失败：%s", exc)
-        if tmp is not None:
-            try:
-                tmp.unlink(missing_ok=True)
-            except Exception:  # noqa: BLE001
-                pass
+
 
 
 def _replace_with_retry(source: Path, target: Path) -> None:
@@ -498,16 +468,50 @@ def run_doc_map(
 
     # 预算：真实路由经 llm_client.chat_json 自动扣减；这里把调用包进
     # structure_hypothesis 子预算环节（无活动预算单时 enter_stage 空操作）。
+    # M8：调用机械走 LLMJobRunner——attempt 落 llm_job_attempts.jsonl、归属进
+    # llm_trace context；chat_json/chat 注入/温度 0/截断升级语义经适配器原样保留，
+    # LLMBudgetExceeded 由 runner 穿透回此处的既有降级分支。
     from llm_budget import STAGE_STRUCTURE_HYPOTHESIS
+    from llm_job_runner import LLMJob, LLMJobRunner
 
+    def _chat_with_meta(config, system, user, *, request_budget=None):
+        # 与 _resolve_extract_chat 的 invoke 同一条 chat_json 路径（含
+        # max_truncation_escalations=1 与文档预算扣减），并带回真实 usage
+        from llm_client import chat_json_with_meta
+
+        return chat_json_with_meta(config, system, user,
+                                   max_truncation_escalations=1,
+                                   request_budget=request_budget)
+
+    if chat is not None:
+        # 注入路径（测试）：chat 闭包语义原样；占位 config 只为 runner 形参完整
+        from llm_client import LLMClientConfig
+
+        _injected_adapter = (lambda config, system, user, *, request_budget=None:
+                             (active_chat(system, user), {"call_count": 1, "usage": {}}))
+        runner = LLMJobRunner(out_dir, route_config=LLMClientConfig(
+            base_url="injected://local", model="injected"),
+            chat_with_meta=_injected_adapter)
+        job_route = "injected"
+    else:
+        runner = LLMJobRunner(out_dir, chat_with_meta=_chat_with_meta)
+        job_route = executed_route
+    job = LLMJob(stage="doc_map", processor=STAGE_STRUCTURE_HYPOTHESIS, unit_id="",
+                 system_prompt=_SYSTEM_PROMPT,
+                 user_prompt=_build_user_prompt(scaffold),
+                 route=job_route,
+                 fingerprint=f"docmap:{fingerprint}")
     hook = llm_client.get_document_budget_hook()
     enter_stage = getattr(hook, "enter_stage", None)
     try:
         if callable(enter_stage):
             with enter_stage(STAGE_STRUCTURE_HYPOTHESIS):
-                raw = active_chat(_SYSTEM_PROMPT, _build_user_prompt(scaffold))
+                job_result = runner.run(job)
         else:
-            raw = active_chat(_SYSTEM_PROMPT, _build_user_prompt(scaffold))
+            job_result = runner.run(job)
+        if not job_result.ok:
+            raise RuntimeError(job_result.error or "doc_map job failed")
+        raw = job_result.data or {}
     except llm_client.LLMBudgetExceeded as exc:
         # 预算耗尽：诚实降级，不伪造地图；文档预算单记 degraded（S1-1 同款）
         LOGGER.warning("doc_map 预算耗尽，如实降级 unavailable：%s", exc)

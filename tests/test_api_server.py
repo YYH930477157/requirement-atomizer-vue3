@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import tempfile
 import threading
 import time
@@ -2039,6 +2040,41 @@ class RequirementsEndpointTests(unittest.TestCase):
         self.assertEqual(status, 503)
         self.assertTrue(payload["retryable"])
         self.assertIn("Expecting", payload["error"])
+
+
+class UnitRoutingEndpointTests(unittest.TestCase):
+    def test_unit_routing_unavailable_without_units(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with _claim_api(Path(tmp)) as base_url:
+                status, payload = _http_json(base_url, "/unit-routing")
+        self.assertEqual(status, 200)
+        self.assertFalse(payload["available"])
+
+    def test_unit_routing_returns_shadow_summary(self) -> None:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from test_extraction_units import _corpus
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            blocks, table_items, cell_items, dispositions = _corpus()
+            for name, rows in (("blocks.jsonl", blocks),
+                               ("table_items.jsonl", table_items),
+                               ("table_cell_items.jsonl", cell_items),
+                               ("table_cell_dispositions.jsonl", dispositions)):
+                (root / name).write_text(
+                    "\n".join(json.dumps(row, ensure_ascii=False) for row in rows) + "\n",
+                    encoding="utf-8")
+            from extraction_units import plan_extraction_units
+
+            plan_extraction_units(root)
+            with _claim_api(root) as base_url:
+                status, payload = _http_json(base_url, "/unit-routing")
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["available"])
+        routing = payload["routing"]
+        self.assertTrue(routing["shadow_mode"])
+        self.assertGreater(routing["unit_count"], 0)
+        self.assertIn("counts_by_route", routing)
 
 
 class ReviewStatesBoundaryTests(unittest.TestCase):

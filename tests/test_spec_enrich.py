@@ -109,6 +109,43 @@ class SpecEnrichTests(unittest.TestCase):
             self.assertEqual(rows, {"good": valid_row})
             self.assertEqual(cache.read_text(encoding="utf-8"), valid_line)
 
+    def test_runner_path_writes_attempt_ledger_and_reraises(self) -> None:
+        """M8 迁移：enrich_one 经 LLMJobRunner——账本在案；失败重抛原始异常类型。"""
+        from llm_client import LLMError
+        from llm_job_runner import LLM_JOB_ATTEMPTS_FILENAME, LLMJobRunner
+
+        server, port = start_server()
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                out = Path(tmp)
+                runner = LLMJobRunner(out, route_config=make_config(port))
+                desc, note = spec_enrich.enrich_one(obj_req(), make_config(port), None,
+                                                 runner=runner)
+                self.assertIn("富化", note)
+                ledger = out / LLM_JOB_ATTEMPTS_FILENAME
+                self.assertTrue(ledger.is_file())
+                rows = [json.loads(line) for line in
+                        ledger.read_text(encoding="utf-8").splitlines() if line.strip()]
+                self.assertEqual(rows[0]["stage"], "assemble")
+                self.assertEqual(rows[0]["processor"], "spec_enrich")
+                self.assertEqual(rows[0]["outcome"], "initial")
+                self.assertEqual(rows[0]["execution_status"], "ok")
+        finally:
+            server.shutdown()
+            server.server_close()
+
+        # 失败重抛：不可达端点 → 原始 LLMConnectionError（熔断语义依赖的类型）
+        from llm_client import LLMConnectionError
+
+        with tempfile.TemporaryDirectory() as tmp:
+            runner = LLMJobRunner(Path(tmp),
+                                  route_config=LLMClientConfig(
+                                      base_url="http://127.0.0.1:9/v1",
+                                      model="m", api_key_env="RATOMIZER_TEST_KEY",
+                                      timeout_s=1, max_retries=0))
+            with self.assertRaises(LLMConnectionError):
+                spec_enrich.enrich_one(obj_req(), make_config(1), None, runner=runner)
+
     def test_guards_version_invalidates_cache_and_is_recorded(self) -> None:
         server, port = start_server()
         try:
@@ -117,7 +154,9 @@ class SpecEnrichTests(unittest.TestCase):
                 spec_enrich.enrich_descriptions([obj_req()], config=make_config(port), cache_path=cache)
                 first_calls = _Handler.calls
 
-                first_row = json.loads(cache.read_text(encoding="utf-8").splitlines()[0])
+                # M7 迁移后缓存行是 PaidCacheStore 形态（payload 嵌套）——经
+                # read_cache 解包断言语义（guards_version 记录在案且参与指纹）
+                first_row = next(iter(spec_enrich.read_cache(cache).values()))
                 self.assertEqual(first_row["guards_version"], spec_enrich.ENRICH_GUARDS_VERSION)
 
                 with patch.object(spec_enrich, "ENRICH_GUARDS_VERSION", "enrich-guards-vNEXT"):
@@ -125,7 +164,9 @@ class SpecEnrichTests(unittest.TestCase):
                         [obj_req()], config=make_config(port), cache_path=cache)
 
                 self.assertGreater(_Handler.calls, first_calls)
-                last_row = json.loads(cache.read_text(encoding="utf-8").splitlines()[-1])
+                rows = spec_enrich.read_cache(cache)
+                self.assertGreaterEqual(len(rows), 2)
+                last_row = list(rows.values())[-1]
                 self.assertEqual(last_row["guards_version"], "enrich-guards-vNEXT")
         finally:
             server.shutdown()

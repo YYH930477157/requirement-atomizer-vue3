@@ -7,6 +7,7 @@ from typing import Any, Callable
 
 import ai_extract
 from claim_artifacts import (
+    FUNCTIONAL_REQUIREMENTS_STORE,
     ClaimArtifactError,
     canonical_target_fingerprint,
     claim_budget_checkpoint_event_idempotency_key,
@@ -21,6 +22,7 @@ from claim_focus import ClaimFocusError, build_claim_focus_adapter
 from claim_ledger import CLAIM_QUEUE_PROPOSAL_SCHEMA
 from claim_reextract_attempts import (
     CLAIM_REEXTRACT_ATTEMPT_SCHEMA,
+    _route_publication_prepared,
     append_attempt_events,
     attempt_id as make_attempt_id,
     derive_attempt_states,
@@ -30,6 +32,7 @@ from claim_reextract_attempts import (
 from claim_review_actions import (
     ClaimReviewActionError,
     _load_b_track_authority,
+    _resolve_b_target_store,
     assess_effective_freshness,
 )
 from io_utils import read_jsonl
@@ -69,6 +72,10 @@ class ClaimQueueExecutionUnavailable(ClaimQueueExecutionError):
     def __init__(self, message: str, *, result: dict[str, Any] | None = None) -> None:
         super().__init__(message)
         self.result = dict(result or {})
+
+
+class ClaimQueueFunctionalProductUnhealthy(ClaimQueueExecutionError):
+    """M2 §4.2：功能级重抽产物不健康（stub/mixed/partial/不守恒）——不覆盖健康产物。"""
 
 
 def _event_key(attempt_id: str, kind: str, detail: Any) -> str:
@@ -590,7 +597,22 @@ def _append_terminal(
 def _current_published_base(root: Path, attempt_id: str) -> dict[str, Any] | None:
     from claim_reextract_attempts import require_published_attempt
 
-    requirements_path = root / ai_extract.AI_REQUIREMENTS
+    # M2 §4.3：committed generation meta 记录的 target store 是权威——直抽模式下
+    # 哈希/记账对象是 functional_requirements.json（与 _resolve_b_target_store 同序）。
+    base_probe: dict[str, Any] | None
+    try:
+        base_probe = load_committed_claim_base(root)
+    except (ClaimArtifactError, OSError, ValueError):
+        base_probe = None
+    store = ai_extract.AI_REQUIREMENTS
+    if base_probe is not None:
+        committed = str(
+            dict(base_probe.get("generation_meta") or {}).get("requirements_store")
+            or ""
+        )
+        if committed:
+            store = committed
+    requirements_path = root / store
     if not requirements_path.is_file():
         return None
     requirements_hash = file_sha256(requirements_path)
@@ -599,18 +621,17 @@ def _current_published_base(root: Path, attempt_id: str) -> dict[str, Any] | Non
         attempt_id=attempt_id,
         requirements_sha256=requirements_hash,
     )
-    try:
-        base = load_committed_claim_base(root)
-    except (ClaimArtifactError, OSError, ValueError):
+    if base_probe is None:
         return None
-    generation = dict(base.get("generation_meta") or {})
+    generation = dict(base_probe["generation_meta"] or {})
     if (
         generation.get("delivery_track") != "B"
         or generation.get("target_kind") != "ai_requirement"
+        or generation.get("requirements_store") != store
         or generation.get("requirements_sha256") != requirements_hash
     ):
         return None
-    return base
+    return base_probe
 
 
 def _terminal_attempt_is_projected(
@@ -731,6 +752,7 @@ def _finish_rebuild(
     budget: LLMRequestBudget | None,
     resolved_route_config: Any | None,
     mutation: dict[str, Any] | None,
+    functional_mode: bool = False,
 ) -> dict[str, Any]:
     refresh: dict[str, Any] | None = None
     base = _current_published_base(root, attempt_id)
@@ -739,16 +761,23 @@ def _finish_rebuild(
         # verifier scope fans each cumulative transition through its durable
         # outbox, so recovery retains extraction and verifier costs.
         try:
-            refresh = ai_extract.refresh_claim_shadow(
-                root,
-                route=route if budget is not None else None,
-                allow_llm=budget is not None,
-                resolved_route_config=(
-                    resolved_route_config if budget is not None else None
-                ),
-                verifier_request_budget=budget,
-                claim_mutation_attempt_id=attempt_id,
-            )
+            if functional_mode:
+                # M2 §4.5：直抽模式的确定性重建——shadow 重发布零 LLM（publish 内部
+                # 自带 effective fold），恢复路径不重放付费调用。
+                from functional_reextract import republish_functional_claim_shadow
+
+                refresh = republish_functional_claim_shadow(root, route=route)
+            else:
+                refresh = ai_extract.refresh_claim_shadow(
+                    root,
+                    route=route if budget is not None else None,
+                    allow_llm=budget is not None,
+                    resolved_route_config=(
+                        resolved_route_config if budget is not None else None
+                    ),
+                    verifier_request_budget=budget,
+                    claim_mutation_attempt_id=attempt_id,
+                )
         except Exception as exc:
             base = _current_published_base(root, attempt_id)
             if base is None:
@@ -936,6 +965,67 @@ def _finish_rebuild(
     }
 
 
+def _functional_queue_mutation(
+    root: Path,
+    *,
+    proposal: dict[str, Any],
+    block_id: str,
+    route: str,
+    budget: LLMRequestBudget,
+    chat_with_meta: Callable[..., tuple[dict[str, Any], dict[str, Any]]] | None,
+    resolved_route_config: Any,
+    request_idempotency_key: str,
+    revalidate: Callable[[], None],
+    supplement_persisted: Callable[[dict[str, Any]], None],
+    publication_prepared: Callable[[dict[str, Any]], None],
+    target_published: Callable[[list[dict[str, Any]]], None],
+) -> dict[str, Any]:
+    """M2 §4.3：直抽模式 mutation 执行体——包装 functional_targeted_reextract。
+
+    chat 包装沿用队列已解析的 route config + 请求预算（每次调用经 request_budget
+    记账，预算耗尽按既有 LLMBudgetExceeded 失败路径走）；异常分类映射到队列既有
+    CAS/失败语义，attempt 记账由 execute 的 except 链统一落 WAL。
+    ``publication_prepared``（复审四轮 P1-1）在产品替换**前**把新旧产品哈希
+    持久化进 attempt WAL——替换后、requirements_published 落账前的任何中断都
+    能按哈希路由恢复。
+    """
+    from functional_reextract import (
+        FunctionalReextractConflict,
+        FunctionalReextractUnhealthy,
+        functional_product_fingerprint,
+        functional_targeted_reextract,
+    )
+    from llm_client import chat_json_with_meta
+
+    chat_fn = chat_with_meta or chat_json_with_meta
+    usage_meta: list[dict[str, Any]] = []
+
+    def chat(system: str, user: str) -> dict[str, Any]:
+        payload, meta = chat_fn(resolved_route_config, system, user, request_budget=budget)
+        usage_meta.append(dict(meta or {}))
+        return payload
+
+    try:
+        mutation = functional_targeted_reextract(
+            root,
+            affected_block_ids=[block_id],
+            expected_product_fingerprint=functional_product_fingerprint(root),
+            route=route,
+            chat=chat,
+            request_idempotency_key=request_idempotency_key,
+            pre_publish_check=revalidate,
+            on_supplement_persisted=supplement_persisted,
+            on_publication_prepared=publication_prepared,
+            on_requirements_published=target_published,
+        )
+    except FunctionalReextractConflict as exc:
+        raise ClaimQueueExecutionConflict(str(exc)) from exc
+    except FunctionalReextractUnhealthy as exc:
+        raise ClaimQueueFunctionalProductUnhealthy(str(exc)) from exc
+    mutation["usage_meta"] = usage_meta
+    return mutation
+
+
 def execute_claim_queue_proposal(
     out_dir: Path | str,
     *,
@@ -969,11 +1059,16 @@ def execute_claim_queue_proposal(
         )
     if route != "openai_compatible":
         raise ValueError("claim queue execution requires openai_compatible route")
+    # M2 §4.3（2026-08-15）：队列按 B 轨 target store 分流——直抽模式走功能级
+    # functional_targeted_reextract（条款族重抽 + functional store 原子替换 + shadow
+    # 重发布），原子模式走既有 targeted_reextract。锁/CAS/WAL/预算/幂等机制共用。
+    functional_mode = _resolve_b_target_store(root) == FUNCTIONAL_REQUIREMENTS_STORE
     current_attempt_id = make_attempt_id(proposal_id, request_idempotency_key)
     budget: LLMRequestBudget | None = None
     proposal: dict[str, Any]
     mutation: dict[str, Any] | None = None
     requirements_published = False
+    prepared_publication: dict[str, Any] | None = None
     resolved_route_config: Any | None = None
 
     with extraction_operation_lock(root, operation="claim-reextract"):
@@ -1042,12 +1137,15 @@ def execute_claim_queue_proposal(
                 None,
             )
             authority = _load_b_track_authority(root)
+            recovery_store = str(
+                authority.get("target_source_store") or ai_extract.AI_REQUIREMENTS
+            )
             if (
                 publication is None
                 or publication.get("target_publication_revision")
                 != authority.get("target_publication_revision")
                 or publication.get("requirements_sha256")
-                != file_sha256(root / ai_extract.AI_REQUIREMENTS)
+                != file_sha256(root / recovery_store)
             ):
                 usage = _usage_from_history(history)
                 _append_terminal(
@@ -1174,9 +1272,50 @@ def execute_claim_queue_proposal(
                     operation_lock_held=True,
                 )
 
+            def publication_prepared(info: dict[str, Any]) -> None:
+                # 复审四轮 P1-1：产品替换**前**持久化 publication 事实的恢复
+                # 原料（target store + 新旧产品哈希；新哈希由
+                # functional_targeted_reextract 对即将写入的确切字节计算）。
+                # 该事件落账成功后才置 prepared_publication——此后"产品已替换、
+                # requirements_published 落账失败"按哈希路由恢复，不再落
+                # reextract_failed 终态。
+                nonlocal prepared_publication
+                _append_event(
+                    root,
+                    {
+                        **_common_event(
+                            attempt_id=current_attempt_id,
+                            proposal=proposal,
+                            actor=actor,
+                            event_kind="publication_prepared",
+                            detail={
+                                "target_store": str(info.get("target_store") or ""),
+                                "requirements_sha256": str(
+                                    info.get("requirements_sha256") or ""
+                                ),
+                            },
+                        ),
+                        "target_store": str(info.get("target_store") or ""),
+                        "requirements_sha256": str(
+                            info.get("requirements_sha256") or ""
+                        ),
+                        "previous_requirements_sha256": str(
+                            info.get("previous_requirements_sha256") or ""
+                        ),
+                        "supplement_id": str(info.get("supplement_id") or ""),
+                    },
+                    operation_lock_held=True,
+                )
+                prepared_publication = dict(info)
+
             def target_published(_requirements: list[dict[str, Any]]) -> None:
                 nonlocal requirements_published
                 authority = _load_b_track_authority(root)
+                # M2 §4.3：记账哈希按当前 target store 取文件（原子=ai_requirements.jsonl，
+                # 直抽=functional_requirements.json）——恢复路径用同一口径复核。
+                published_store = str(
+                    authority.get("target_source_store") or ai_extract.AI_REQUIREMENTS
+                )
                 _append_event(
                     root,
                     {
@@ -1188,7 +1327,7 @@ def execute_claim_queue_proposal(
                             detail=authority["target_publication_revision"],
                         ),
                         "requirements_sha256": file_sha256(
-                            root / ai_extract.AI_REQUIREMENTS
+                            root / published_store
                         ),
                         "target_publication_revision": authority[
                             "target_publication_revision"
@@ -1210,31 +1349,47 @@ def execute_claim_queue_proposal(
             if block is None:
                 raise ClaimQueueExecutionUnprocessable("claim parent block is unavailable")
             try:
-                mutation = targeted_reextract(
-                    root,
-                    block_id=block_id,
-                    actor=actor,
-                    reason="claim queue targeted extraction",
-                    route=route,
-                    expected_source_fingerprint=omission_source_fingerprint(
-                        block_id,
-                        str(block.get("text") or ""),
-                    ),
-                    claim_execution={
-                        "proposal_id": proposal_id,
-                        "attempt_id": current_attempt_id,
-                        "claim_id": proposal["claim_id"],
-                        "claim_hash": proposal["claim_hash"],
-                        "focus": proposal["focus"],
-                        "request_budget": budget,
-                        "pre_publish_check": revalidate,
-                        "on_supplement_persisted": supplement_persisted,
-                        "on_requirements_published": target_published,
-                        "chat_with_meta": chat_with_meta,
-                        "resolved_route_config": resolved_route_config,
-                    },
-                    operation_lock_held=True,
-                )
+                if functional_mode:
+                    mutation = _functional_queue_mutation(
+                        root,
+                        proposal=proposal,
+                        block_id=block_id,
+                        route=route,
+                        budget=budget,
+                        chat_with_meta=chat_with_meta,
+                        resolved_route_config=resolved_route_config,
+                        request_idempotency_key=request_idempotency_key,
+                        revalidate=revalidate,
+                        supplement_persisted=supplement_persisted,
+                        publication_prepared=publication_prepared,
+                        target_published=target_published,
+                    )
+                else:
+                    mutation = targeted_reextract(
+                        root,
+                        block_id=block_id,
+                        actor=actor,
+                        reason="claim queue targeted extraction",
+                        route=route,
+                        expected_source_fingerprint=omission_source_fingerprint(
+                            block_id,
+                            str(block.get("text") or ""),
+                        ),
+                        claim_execution={
+                            "proposal_id": proposal_id,
+                            "attempt_id": current_attempt_id,
+                            "claim_id": proposal["claim_id"],
+                            "claim_hash": proposal["claim_hash"],
+                            "focus": proposal["focus"],
+                            "request_budget": budget,
+                            "pre_publish_check": revalidate,
+                            "on_supplement_persisted": supplement_persisted,
+                            "on_requirements_published": target_published,
+                            "chat_with_meta": chat_with_meta,
+                            "resolved_route_config": resolved_route_config,
+                        },
+                        operation_lock_held=True,
+                    )
             except ClaimQueueExecutionConflict:
                 usage = _durable_usage(
                     root,
@@ -1275,6 +1430,28 @@ def execute_claim_queue_proposal(
                 )
                 budget.set_checkpoint(None)
                 raise ClaimQueueExecutionConflict(str(exc)) from exc
+            except ClaimQueueFunctionalProductUnhealthy as exc:
+                # M2 §4.2：stub/mixed/partial/不守恒重抽不覆盖健康产物——响亮失败，
+                # 终态如实记 failed（失败重放不得被记录为成功）。
+                usage = _durable_usage(
+                    root,
+                    attempt_id=current_attempt_id,
+                    budget=budget,
+                )
+                _append_terminal(
+                    root,
+                    attempt_id=current_attempt_id,
+                    proposal=proposal,
+                    actor=actor,
+                    event_kind="reextract_failed",
+                    code="functional_product_unhealthy",
+                    message=str(exc),
+                    retryable=True,
+                    usage=usage,
+                    operation_lock_held=True,
+                )
+                budget.set_checkpoint(None)
+                raise ClaimQueueExecutionUnavailable(str(exc)) from exc
             except (OmissionNoResultError, LLMBudgetExceeded) as exc:
                 usage = _durable_usage(
                     root,
@@ -1316,7 +1493,97 @@ def execute_claim_queue_proposal(
                 budget.set_checkpoint(None)
                 raise ClaimQueueExecutionRemoteError(str(exc)) from exc
             except Exception as exc:
-                if not requirements_published:
+                if not requirements_published and prepared_publication is not None:
+                    # 复审四轮 P1-1：产品已原子替换 + publication_prepared 已
+                    # 持久化，但 requirements_published 落账失败（WAL 追加异常
+                    # 或进程内等价崩溃窗口）——按当前产品哈希路由，绝不落
+                    # reextract_failed 终态（同幂等键重放会被 failed 卡死，
+                    # 无法进入确定性恢复）。
+                    route = _route_publication_prepared(root, prepared_publication)
+                    if route["kind"] == "conflict":
+                        # 当前哈希与新旧均不等 → 既有 CAS 冲突路径。
+                        usage = _durable_usage(
+                            root,
+                            attempt_id=current_attempt_id,
+                            budget=budget,
+                        )
+                        _append_terminal(
+                            root,
+                            attempt_id=current_attempt_id,
+                            proposal=proposal,
+                            actor=actor,
+                            event_kind="reextract_aborted_stale",
+                            code="recovery_target_changed",
+                            message=(
+                                "functional product changed to an unknown hash "
+                                "between preparation and the publication append"
+                            ),
+                            retryable=True,
+                            usage=usage,
+                            operation_lock_held=True,
+                        )
+                        budget.set_checkpoint(None)
+                        raise ClaimQueueExecutionConflict(
+                            "functional product changed between preparation "
+                            "and the publication append"
+                        ) from exc
+                    if route["kind"] == "published":
+                        # 产品已是新哈希：publication 事实成立——补记
+                        # requirements_published（复用 target_published 的
+                        # authority 口径）。补记本身失败 → rebuild_pending
+                        # 且不落任何终态：孤儿恢复会按同一 prepared 哈希
+                        # 路由重试（失败不记成功）。
+                        try:
+                            target_published([])
+                        except Exception as append_exc:
+                            budget.set_checkpoint(None)
+                            raise ClaimQueueExecutionUnavailable(
+                                "functional product was replaced but the "
+                                "requirements publication event is pending a "
+                                "durable append",
+                                result={
+                                    "schema": "claim-queue-execution/v1",
+                                    "proposal_id": proposal["proposal_id"],
+                                    "attempt_id": current_attempt_id,
+                                    "lifecycle": "rebuild_pending",
+                                    "retryable": True,
+                                    "error": (
+                                        f"{type(append_exc).__name__}: "
+                                        f"{append_exc}"
+                                    )[:1000],
+                                },
+                            ) from append_exc
+                        mutation = {
+                            "schema": "claim-reextract-mutation/v1",
+                            "warning": (
+                                "publication WAL append failed and was "
+                                "recovered by prepared-hash routing: "
+                                f"{exc}"
+                            )[:1000],
+                        }
+                    else:
+                        # "unpublished"（当前 == 旧哈希）：产品未动——干净的
+                        # 未发布失败，沿用既有 local_error 终态（可重试）。
+                        usage = _durable_usage(
+                            root,
+                            attempt_id=current_attempt_id,
+                            budget=budget,
+                        )
+                        _append_terminal(
+                            root,
+                            attempt_id=current_attempt_id,
+                            proposal=proposal,
+                            actor=actor,
+                            event_kind="reextract_failed",
+                            code="local_error",
+                            message=str(exc),
+                            retryable=True,
+                            usage=usage,
+                            operation_lock_held=True,
+                        )
+                        budget.set_checkpoint(None)
+                        raise ClaimQueueExecutionUnavailable(str(exc)) from exc
+                elif not requirements_published:
                     usage = _durable_usage(
                         root,
                         attempt_id=current_attempt_id,
@@ -1336,10 +1603,11 @@ def execute_claim_queue_proposal(
                     )
                     budget.set_checkpoint(None)
                     raise ClaimQueueExecutionUnavailable(str(exc)) from exc
-                mutation = {
-                    "schema": "claim-reextract-mutation/v1",
-                    "warning": f"post-publication derived rebuild failed: {exc}"[:1000],
-                }
+                else:
+                    mutation = {
+                        "schema": "claim-reextract-mutation/v1",
+                        "warning": f"post-publication derived rebuild failed: {exc}"[:1000],
+                    }
 
     return _finish_rebuild(
         root,
@@ -1350,4 +1618,5 @@ def execute_claim_queue_proposal(
         budget=budget,
         resolved_route_config=resolved_route_config,
         mutation=mutation,
+        functional_mode=functional_mode,
     )

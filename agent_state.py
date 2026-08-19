@@ -133,21 +133,75 @@ class AnalysisState:
         }
 
 
+def _load_functional_direct_requirements(root: Path) -> list[dict[str, Any]] | None:
+    """§3.3 直抽模式分析态回退：FRE 条目 → 需求行（带评审 status 投影）。
+
+    ai_requirements.jsonl 缺席、functional-extract 产物合法时，分析态/闭环门的"全部已
+    裁决"检查在功能条目上有意义（status 来自 ai_review_states 权威，缺省 draft——空账本
+    ≠ 已完成）。直抽产物不守恒/执行不完整时 ``functional_direct_basis`` 响亮 raise，
+    本函数不吞。非直抽形态返回 None（调用方维持既有报错）。
+    """
+    from ai_review_actions import (
+        read_ai_review_states,
+        review_state_needs_reconfirmation,
+        source_ai_requirement_id,
+    )
+    from functional_extract import functional_direct_basis
+
+    try:
+        basis = functional_direct_basis(root)
+    except FileNotFoundError:
+        return None
+    if basis is None:
+        return None
+    states = read_ai_review_states(root)
+    rows: list[dict[str, Any]] = []
+    for item in basis:
+        if not isinstance(item, dict):
+            continue
+        row = dict(item)
+        row["level"] = "functional"
+        state = states.get(source_ai_requirement_id(row))
+        needs_reconfirmation = review_state_needs_reconfirmation(row, state)
+        # 陈旧裁决不投影为已裁决（审查 2026-08-15 P1）：subject/source 指纹失配 →
+        # 回落 draft 待重新确认，不得静默沿用旧 accepted 通过闭合门。
+        row["needs_reconfirmation"] = needs_reconfirmation
+        row["status"] = (
+            "draft" if needs_reconfirmation
+            else str((state or {}).get("status") or "draft")
+        )
+        rows.append(row)
+    return rows
+
+
 def load_analysis_state(out_dir: Path) -> AnalysisState:
     root = Path(out_dir).expanduser().resolve()
     if not root.is_dir():
         raise AgentStateInputError(f"Output directory does not exist: {root}")
     blocks_path = root / "blocks.jsonl"
     requirements_path = root / "ai_requirements.jsonl"
-    missing = [path.name for path in (blocks_path, requirements_path) if not path.is_file()]
-    if missing:
+    # §3.3：直抽链形态（无原子）回退到功能直抽条目；非直抽形态维持既有硬依赖报错。
+    functional_rows: list[dict[str, Any]] | None = None
+    if not requirements_path.is_file():
+        functional_rows = _load_functional_direct_requirements(root)
+        if functional_rows is None:
+            missing = [path.name for path in (blocks_path, requirements_path) if not path.is_file()]
+            raise AgentStateInputError(
+                f"Output directory is missing required artifacts: {', '.join(missing)}"
+            )
+    if missing_artifacts := ([] if functional_rows is not None else [
+            path.name for path in (blocks_path,) if not path.is_file()]):
         raise AgentStateInputError(
-            f"Output directory is missing required artifacts: {', '.join(missing)}"
+            f"Output directory is missing required artifacts: {', '.join(missing_artifacts)}"
         )
 
     try:
         blocks = read_jsonl(blocks_path)
-        requirements = read_jsonl(requirements_path)
+        requirements = (
+            functional_rows
+            if functional_rows is not None
+            else read_jsonl(requirements_path)
+        )
         quality = _read_json_object(root / "ai_extract_quality.json", optional=True)
         manifest = read_run_manifest(root)
         stage_statuses = _stage_statuses(manifest)

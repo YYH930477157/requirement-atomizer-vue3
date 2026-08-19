@@ -154,7 +154,7 @@ declare global {
       runRequirementsAnalysis: (input: { outDir: string; llmRoute?: string; templatePath?: string }) => Promise<RequirementAtomizerTaskPayload>
       writeTemplate: (input: { outDir: string; templatePath: string }) => Promise<RequirementAtomizerTaskPayload>
       clarificationReport: (input: { outDir: string }) => Promise<RequirementAtomizerTaskPayload>
-      runChain: (input: { outDir: string; stages: string[]; llmRoute?: string; templatePath?: string; sampleRatio?: number; annotationLayoutMode?: "optimized" | "pdf_original" }) => Promise<RequirementAtomizerTaskPayload>
+      runChain: (input: { outDir: string; stages: string[]; llmRoute?: string; templatePath?: string; sampleRatio?: number; annotationLayoutMode?: "optimized" | "pdf_original"; translationMode?: "off" | "markers" | "full" }) => Promise<RequirementAtomizerTaskPayload>
       importClarificationAnswers: (input: { outDir: string }) => Promise<RequirementAtomizerTaskPayload>
       readArtifact: (input: {
         outDir: string

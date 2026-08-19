@@ -1,5 +1,629 @@
 # CLAUDE.md — Requirement Atomizer 项目上下文
 
+## 重大更新（2026-08-18）——10% 诊断驱动的路由 v3 收口（用户 key 实付 ~¥12.8）
+
+> 用户质疑全量门禁成本（A 轨冷跑实测 ¥8.07/70 节，外推 ¥45+）后转向 10% 子集诊断
+> （33-36 条，每轮 ~¥1.5）。四轮真实 flash 诊断（产物 `out/probe10-b/`、日志
+> `out/probe10-run*.log`、脚本 `out/tools/probe10_run.py`——机器本地）把 B 轨守恒
+> 失败从「表格类主导」收敛到「flash 模型质量残差」。提交 `6794da3`。
+
+- **四轮演化**：①v2 路由（表格出 B 轨）duplicates/义务覆盖 PASS，但 3 张保留
+  非 COSEM 表致 preservation（Table 1 表头列名数字）+ 错绑（Table 21 位语言）；
+  ②v3 处置权威路由后 evidence PASS，剩 2 个表号丢失（Table 13/17 引用号）；
+  ③prompt v4 保真落数后 Scope/T&D 样板章节暴露为噪声源；④前置样板章节路由后
+  义务覆盖 PASS，剩 2 个非确定性表号丢失 + 1 引文改写 + Communication profiles
+  （又一样板章节，未入枚举）+ 1-2 条空响应。
+- **路由终态**：358 节 → 177 提取（表格 173 + 前置样板 8 路由出，均带审计 meta）。
+  unit_router v3（表格处置权威优先）、planner v3（行单元补 disposition）、
+  functional-unit-routing v2（front-matter）、functional-extract-prompt v4
+  （registry 登记）、chat 截断升级 2 轮（v4-flash 推理型空响应）。
+- **残差定性（不再 prompt 迭代的理由）**：剩余失败全部是 flash 输出质量——意译丢
+  引用号（每轮 ~2/33、非确定性）、引文改写、空响应 stub（1-3/33，16384 仍空）。
+  守恒护栏在正确拦截（宁漏勿错）。收敛路径换轨：a) 更强模型（route/model 一换
+  指纹即换，probe ~¥1.5 可验）；b) M5 claim 队列逐条升级/专家审；c) 修 parse
+  （garbled PDF 是丢号根因之一）。
+- **成本账**：门禁全量中止时 ¥8.07（70/343 A 抽取缓存保留在
+  `%TEMP%/ab-runner.uqw4d3je/A_atoms`，可 --warm-a-cache 复用）+ 四轮诊断
+  ~¥4.7；key 余额 92.81→81.59。
+- 全量 3976 OK（router v3 + front-matter 新增 5 测试）。
+- **合并完成（2026-08-18，merge `6146d55` 已 push origin/main）**：golden 三种子 KB +
+  domain-pack 再生成——counts 逐项一致（1013/358/2077/10393/1999/2223/250，零漂移，
+  零 LLM 11.6s），test_golden_regression 14/14 绿，main 全量 3976 OK。30% 自检两次
+  FAIL 未翻默认（§31），翻转等待：更强模型 / 服务稳定窗口重试。
+
+
+## 重大更新（2026-08-17e）——§17 B 轨 unit 级路由接线落地 + M9 第 3-5 刀（NEXT-SESSION-PLAN 第 1/3 项完成）
+
+> 背景：WS0 门禁 FAIL 的 B 轨根因之二「表格内容混入 B 轨」（phase2 定位正确修法 =
+> M1 的 block/unit 级路由）。本会话把 `extraction_units` + `unit_router` 决策真正
+> 接进 `functional_extract` 执行路径；零成本验证 PASS（probe3 重放）；付费全量 B 确认
+> 与门禁重跑因 **API key 未设置**未执行（`RATOMIZER_LLM_API_KEY` 缺席，用户充值后
+> 按 NEXT-SESSION-PLAN 第 2 步继续）。分支 `codex/table-translation-structure`，
+> 提交 78d3d83 → c59d902。
+
+- **`functional_extract.apply_unit_routing`**（`functional-unit-routing-v1`，仅
+  clause_family 策略启用）：纯表格条款（全部声明块为表格块，且这些块上的单元路由无
+  b_track/mixed）路由出 B 轨输入**与守恒基线**；`unit_routing` 审计块（跳过清单/
+  计数/版本身份）进产物与结果摘要，绝不静默。护栏：有表格块但表格解析产物缺席 →
+  如实 `status=unavailable` 退回全量输入（保守，B 多覆盖不丢内容）；单元/决策产物
+  版本陈旧或失配 → 确定性重规划/重算（零 LLM）。指纹：`unit_routing_key`
+  （接线|规划器|路由器版本）只进 clause_family 键空间，legacy 指纹逐字节不变；
+  被路由出条款不进 clauses 列表。缓存命中补写同样携带审计块。
+- **`unit_router` v2**（真实语料标定）：COSEM 结构表（cosem 语境 row/cell 单元）
+  出现义务模态改判 `a_track`（`cosem_table_a_priority`）——模态在参数叙述列
+  （Meaning/Comment/Value），归 A 轨 claim/处置权威（phase2 实证 flash 直抽此类表
+  确定性守恒失败）；prose 的 mixed/b_track 语义不变（§8/§9.1）。
+- **`extraction_units` planner v2**：COSEM 表级语境（任一行 cosem_object_context
+  或字段键含 `Object/attribute name`）下沉到全表行/格单元的 `cosem_structured`
+  角色——行级判定按行值，稀疏行（Object/CL 空、只剩 Meaning/Comment）与 leaf-only
+  表头格都会漏；不看表级语境会把说明格误判纯 B 义务。
+- **`functional_reextract` 同口径**：clause_family 产物重抽的条款池/守恒基线用当前
+  代码确定性重算路由（不信产物记录清单，与守恒永远现算同纪律）；指向被路由出表格块
+  的 claim 找不到条款族 → 如实报错；`unit_routing` 审计块随重抽刷新。
+- **零成本验证**（`out/tools/replay_probe3_conservation.py`，机器本地）：probe3 的
+  131 条真实 flash 输出重放——探针 50 节失败簇**全部**被路由出（50/50，含 321 个
+  review 单元审计）；ABNT 全量 358 节 → 186 提取 / 172 路由出 / 3 张非 COSEM 表
+  （Table 1 服务矩阵、Table 4 安全位、Table 21 状态码——含真实 b_track 单元）保留。
+  gate_verify（上次门禁 B 腿部分降级产物）重放失败属旧运行残骸，非新代码回归。
+- **section_path 撞名根因落档**（未修，parse 侧课题）：ABNT PDF 里 "2.20 Control of
+  disconnection" 被拆成 heading「2 20 Control of」+ 段落「disconnection」（行断裂+
+  点号丢失），且 50 个 heading 中 48 个是目录条目（带页码）——337/358 chunk 共享
+  同一 section_id。本路由按 block_id 判定不受影响；修 parse 需重解析+指纹连锁+golden
+  再生成，留待门禁通过后独立处理。
+- **M9 第 3-5 刀**（每刀独立提交、全量 3972 绿）：③`api_server_support.py`（19 符号
+  ~245 行：解析/鉴权/引句匹配/审阅摘要族；20 patch 目标留守；BASELINE_BARE_JOINS
+  随迁同步）④`ai_extract_verify.py`（7 符号 ~170 行：二遍语义复核簇含 ChatFn/
+  _append_note 共享 helper；SYSTEM_PROMPT 留守因拼接 MODULE_VOCAB）⑤
+  `claim_events_journal.py`（11 符号 ~190 行：事件日志 journal 含
+  ClaimReviewActionError/EventLogSnapshot/_scan_event_log_unlocked；7 patch 目标
+  全留守，effective ledger 权威未动）⑥`desktop_imports.py`（2026-08-17f 第 6 刀，
+  7 符号 ~330 行：线下导入/回灌任务族——澄清/verification 工作簿回灌、
+  set_verification、HTML 裁决 JSON 回灌；重依赖全惰性，顶层仅 ai_extract+
+  requirements_analysis_schema，无环；32 patch 目标留守）。各刀共同纪律：AST 依赖闭包审计（不搬 patch
+  目标、不反向依赖原模块）、逐字搬运、原名重导出、py-modules 登记、packaging smoke。
+- 验证：新增 test_functional_unit_routing（15）+ router v2（4）+ 既有 router 测试；
+  全量 **3972 OK**（1 机器本地跳过，golden 无漂移）。门禁命令注意补
+  `RATOMIZER_CONTEXT_PACK_STRATEGY=clause_family`（gate_verify 实证上次门禁 B 腿
+  即此策略运行，runbook 命令已同步）。
+
+## 重大更新（2026-08-17b）——WS0 门禁 XLSX 读取器修复（phase2 交接单第 2 项，零付费）
+
+> 背景：WS0 真值门禁 FAIL 的 A 轨原因不是链路（343 节 → 996 原子 → 1847 行成文跑通），
+> 而是读取器在 V2.3.12 模板上认不出正文列（`docs/ws0-gate-result-2026-08-17.md`）。
+> 实查模板后定性为两个结构性缺口，硬加表头别名（交接单原设想）会误伤：
+> ① 计量需求 sheet 的「需求」列被电表类型列拆分（1P2W_SP/3P4W_DC/3P4W_LVCT）；
+> ② 计量/费率/显示/曲线/事件列表与 Release notes/原始需求对应表/需求变更管理/
+> Dataflash容量计算共 9 个 sheet 根本不是需求 sheet（管线从不写入，无正文列头可加），
+> 且模板自带大量「需求列留空」样例行——别名修完会接着栽在空正文行 FAIL。
+
+- **写入器列契约兜底**（`tools/ab_runner.py::_writer_contract_columns`）：表头别名
+  优先不变；签名 sheet（表头含 `序号+子模块`，`template_writer.REQUIREMENT_SHEET_SIGNATURE`）
+  body 别名不命中且列数足够时，按 `template_writer.WRITER_COLUMN_CONTRACT`
+  （子模块=3/需求=6/说明=7/章节=9，公开常量、写入读取同一权威）定位——计量需求
+  sheet 的正文与 section 读的正是写入器实际落列（纯别名方案会丢 col9 的章节）；
+  `contract_body_sheets` 入报告诊断。
+- **模板校准**（`_load_template_extents` + `_read_final_xlsx_rows(template_extents=)`）：
+  `--template` 行界（与 `template_writer._next_seq` 同一"末个非空行"判定）之内 =
+  模板自带内容（annex 清单 sheet、需求 sheet 样例行、留空行），剥离进
+  `template_rows_skipped`/`template_only_sheets`——不计 produced、不触发缺列/空正文
+  FAIL；行界之后才是管线产物（空正文/缺列/不可读单元格仍 fail-closed，annex sheet
+  出现行界外内容也判缺列）。**produced 口径 = 真实追加行**，"必须空模板"警告作废；
+  模板缺席/不可读 → None 退回旧语义（生产链路模板坏会先失败，不静默放行）。
+  报告 schema `ab-runner-report/v2 → v3`。
+- 验证：tests/test_ab_runner.py 新增 8 测试（契约兜底/行界加载/模板校准/门禁集成，
+  TDD 红→绿）；真实 V2.3.12 模板 E2E——`append_analysis_to_template` 追加 2 条
+  （计量需求+时钟需求）→ 读取器 `missing_body=[]`、`row_count=2`、section 正确读回、
+  2046 行模板内容剥离、26 个纯模板 sheet 列入 `template_only_sheets`。
+  重跑门禁（key 充值后）仍按交接单第 3 项一条命令执行。
+
+## 重大更新（2026-08-17）——效果优先单元级自动路由：M0 基线 + M1-M4/M6/M7 核心落地
+
+> 方案：`docs/quality-first-unit-routing-complete-plan-2026-08-16.md`（最终实施方案）。
+> 本轮交付全部确定性核心（零默认行为变化），并完成 M0 真实基线测量（DeepSeek
+> `openai_compatible`，deepseek-v4-flash）。
+
+- **M1 `extraction_units.py`**（`extraction-unit-planner-v1` / `extraction-unit/v1`）：
+  A/B 共用内容单元的单一事实源——正文按句（functional_drilldown 句切分权威），
+  信号句成 clause_segment、无信号块整块 narrative；表格跟随 leaf 规划（row leaf
+  携 `covers_cell_ids`、cell leaf 逐格）；定义/引用物化 context 单元（与
+  collect_term_entries 同口径，保留 section 归属）。硬校验：每个非空 canonical
+  cell 恰好被一个单元覆盖。
+- **M2 `unit_router.py`**（`unit-router-v1`，shadow、零 LLM、零执行变化）：
+  硬/弱两级信号；A 硬=合法 OBIS/白名单 class/COSEM 上下文（attribute/access 词
+  需核心信号或 COSEM 表语境；"Data" 等泛词类名只在表格语境计数）；B 硬=义务模态
+  （functional_drilldown 唯一权威）或强 normative 模式；弱信号→review（物化）；
+  定义/引用/标题恒 context（引用内嵌 shall 归被引条款）。CLI `route-units`。
+- **M3**：`routing_gaps.py`（`routing-gap/v1`，gap_id=sha256(unit|gate|reason)[:16]
+  稳定去重；review 单元物化为 gap）；`quality_gates.py`（`quality-gates-v1`，
+  只读投影既有权威——守恒/执行状态/closure/路由 review/结果包完成 →
+  pass/retry_local/needs_review/needs_work，PASS 只由质量证据决定）；
+  `routed_execution.py` 合并核心（obligation_identity 去重；implementation_constraints
+  只采白名单 class/归一化 OBIS/attribute/access；Mixed 只产一条 authoritative；
+  narrative 占位如实标 `unit_text`）。
+- **M4 `pipeline_contracts.py`+`pipeline_plan.py`**（`ratomizer-pipeline-plan/v2`，
+  sha256 指纹；策略 quality_first|force_a|force_b|full_dual_audit|legacy_combined）
+  ——CLI `plan`；**默认保持 legacy_combined**（§31：Router 过真实语料门禁前不翻）。
+  env 登记：RATOMIZER_EXECUTION_POLICY/RATOMIZER_TRANSLATION_MODE/RATOMIZER_BUDGET_MODE。
+- **M6 翻译交付模式**：`generate_annotation_translations(translation_mode=off|
+  markers|full)`——off=零调用纯维护（计数 chat 证明）；full=先从
+  document_translations.jsonl 同键采纳（同护栏，provenance=full_translation_sidecar）
+  再补 marker。`export_bundle` env 默认 full 映射 legacy marker 行为（默认面零变化），
+  显式 off/markers 强制；`full_translation_enabled()` 在 mode off/markers 下为假。
+- **M7 首批 `paid_cache_store.py`**：PaidCacheStore（governed JSONL、successful-only、
+  fsync/原子/Windows 退避/撕裂恢复 + 命中遥测；`record_many` 单锁批量重写、
+  `from_file` 接已解析 governed 路径）。**消费者迁移完成第一批**：spec_enrich 与
+  ai_extract 的裸 append 缓存全部改走 PaidCacheStore，读侧兼容旧顶层行与新
+  payload 行（旧缓存零失效、last-wins 语义不变）。
+- **M8 首片调用归属遥测**：`llm_client.call_context(stage/processor/unit_id/
+  parent_attempt_id)` 把归属写进 llm_trace 每行 `context` 键（contextvar 经
+  submit_with_context 随线程池传播；未设置时行形态不变）——§18 的
+  "provider attempts 纳入 ledger 100%" 前置就位。
+- **§20 前端**（App.vue）：设置新增业务"交付物"区（翻译交付模式 off/markers/full，
+  localStorage `ratomizer.translationMode.v1`，默认 full=行为面零变化）；A/B 技术
+  开关（LLM 审查/AI 抽取/装配）收进默认折叠的"高级"区（data-testid 保留）；
+  off/markers 不把 full-translation 排进链并经 Electron 桥透传
+  `--translation-mode`（chain_task 拿掉该阶段并落账 + export 强制）；运行摘要追加
+  `GET /unit-routing`（新增 shadow 只读端点）的单元路由计数行。npm test 277 例
+  （含 DeliverySettings.spec.ts 3 例）+ npm run build 绿。
+- **M8 完整 `llm_job_runner.py`**（`llm-job-runner-v1`）：统一 single-shot/batch
+  付费调用机械——route 经既有 config_for_route 权威、指纹→PaidCacheStore（命中=
+  零调用，成功才写）、LLMRequestBudget 透传、retry 分类（connection/remote）、
+  usage/provenance、governed attempt 账本 `llm_job_attempts.jsonl`（行携带
+  stage/processor/unit_id + outcome + tokens/duration/cache/model）；call_context
+  归属同源进 llm_trace；batch 经 submit_with_context，§3.5 ok/partial/failed
+  语义。**首个消费者已迁移**：doc_map 单遍 LLM 调用走 runner（stage=doc_map、
+  预算环节包裹与 LLMBudgetExceeded 穿透保真、注入 chat 适配器保测试语义、
+  attempt 账本断言在案）；doc_map_cache.jsonl 同步改走 PaidCacheStore
+  （双格式兼容旧行）。（2）spec_enrich：enrich_one/_enrich_batch_unit 可选
+  runner（生产入口构造，直调/测试路径零变化）；失败重抛原始异常
+  （LLMJobResult.exception 仅内存态）保真熔断语义；账本 stage=assemble/
+  processor=spec_enrich，指纹复用既有缓存指纹。（3）spot_extract：chat 闭包
+  runner 化——critique_section 自检循环每轮调用各自成 job（stage=spot-
+  extract，unit_id=spot 定位键）；失败重抛原始异常保真 fail-loudly；定点操作
+  保持无缓存。三个消费者迁移后，直调/测试路径未传 runner 处逐字节不变。
+- **M9 收敛片**：`paid_cache_store.read_dual_format()` 成为双格式缓存读的
+  唯一实现（旧顶层行 + paid payload 行、撕裂修复、中部损坏响亮抛错）——
+  spec_enrich/ai_extract/doc_map 三份手写副本收敛为一。
+- **M9 第 1 刀（大文件拆分）**：按 docs/m9-split-plan-2026-08-17.md 把
+  doc_annotation_export 的翻译子系统（47+ 符号）逐字抽到新模块
+  annotation_translations.py（5473→4457 行），dae 全量重导出；共享渲染态
+  留 dae、generate 无 texts 回退惰性回桥；_fabricated_translation_tokens
+  经 dae 命名空间调用以保 patch 保真（别名导入 patch 目标是扫描盲区，
+  已录进拆分计划）。验证：158+7+256 依赖套件 + 全量 3929（4 项既有
+  golden 漂移）。
+- **M9 首片 ADR**：`docs/adr/2026-08-17-quality-first-unit-routing.md` 记录八项
+  承重决策（单元单一事实源、零 LLM 路由、局部升级复用 claim 队列、付费缓存
+  successful-only、统一 job runner、翻译=交付选项、完成以 gate 证据为准且按
+  运行作用域、无 WS0 真值不翻默认）。
+- **预算模式接线（第 9 项，§14）**：`llm_budget.budget_mode()` 解析
+  RATOMIZER_BUDGET_MODE（off/observe/enforce，默认 off=零行为变化；off 时
+  legacy RATOMIZER_LLM_BUDGET 独管且开启即 enforce）；observe 强制开账本、
+  逐调用记账 + 超限预警不阻断（exhausted 标记照记，成本事实不抹）；enforce
+  保持既有事前拦截。tests/test_budget_mode.py。
+- **§22 结果包完成接质量门禁**：`_completion_evidence` 按
+  `completion_scope_stages`（本次运行声明阶段）评估 quality_gates——overall
+  needs_work 拒绝完成（attempt 保持 running，不冒充）；守恒/执行状态 gate 只在
+  functional-extract 在作用域内时评估（不含直抽的运行记"不适用"而非伪造失败）；
+  结果包完成 gate 在完成时自指跳过；无表格文档 closure 判不适用。每次完成在
+  证据里落 `quality_gate_snapshot`（schema/校验器允许可选第二条目，旧单条 marker
+  仍有效）；needs_review 如实记录不阻塞（blocking 语义仍在各自权威处）。
+- **M5 局部升级接线 `routing_escalation.py`**（`routing-escalation-v1`）：可执行
+  缺口（targeted_secondary_route/targeted_reextract）按块辖域匹配**已发布 pending
+  proposal**（lifecycle=open、parent_block_id 命中）并走既有
+  `execute_claim_queue_proposal`（CAS/WAL/预算/幂等全复用，幂等键
+  `gap-{gap_id}-{salt}`）；无匹配 → no_matching_proposal（绝不伪造 claim 锚）；
+  expert_review/needs_work 永不自动执行；`routing_gaps.gaps_from_functional_product`
+  从守恒失败构建块锚缺口（evidence_mismatches/duplicates→targeted_reextract，
+  无锚义务/执行失败→needs_work）；审计行落 `routing_escalations.jsonl`；E2E 证明
+  队列驱动条款族重抽 + 未受影响 FRE 字节稳定（tests/test_routing_escalation.py）。
+- **M0 基线**（`tools/m0_baseline.py` + `docs/m0-baseline-abnt-summary-2026-08-17.md`）：
+  ABNT 默认链冷跑 350 调用/1.42M tokens——功能直抽是**文档级 2 次调用/235,798
+  tokens**（legacy 大包），deepseek-v4-flash 下守恒确定性失败（duplicates=6 →
+  execution_status=failed，两轮复现），失败不缓存 → 热跑重付直抽 235,798 tokens；
+  翻译是冷成本大头（344 调用/1.18M tokens=82.6%），sidecar 热复用 1,226s→0.4s；
+  计量口径以 llm_trace 为准（预算账本逐阶段重建且漏归属）。对照 M2 shadow 路由
+  （`docs/unit-routing-shadow-abnt-2026-08-17.md`）：同文档 53.5% 单元为确定性
+  A 型、2.1% 真需 B 轨付费。
+- 新测试 54 个：extraction_units/unit_router/routing_gates_merge/pipeline_plan/
+  translation_mode/paid_cache_store；golden 4 项漂移为分支既有（stash 验证），
+  待合并时按流程再生成。
+
+## 重大更新（2026-08-16f）——四轮复审 P1-1：publication_prepared 事件 + 哈希路由恢复
+
+> 四轮复审定位：三轮的提交顺序重排仍留一个窗口——产品原子替换后、
+> requirements_published WAL 落账前发生 WAL 追加失败或进程崩溃时，产品已变但
+> 外层记 reextract_failed/local_error 终态，同幂等键重放只回放失败终态，无法进入
+> 确定性恢复；且孤儿恢复只认 ai_requirements.jsonl 补丁对账，不能从 functional
+> 产品恢复 publication 事实。
+
+- **publication_prepared 事件**（`schemas/claim_reextract_attempt.schema.json` 新
+  event kind，事件字段：`target_store`（enum 锁 `functional_requirements.json`）、
+  `requirements_sha256`（新产品哈希）、`previous_requirements_sha256`（旧产品
+  哈希）、可选 `supplement_id`；attempt 身份由公共字段绑定）。
+  `functional_reextract.functional_targeted_reextract` 新钩子
+  `on_publication_prepared` 在产品替换**前**经队列侧落 WAL——新哈希对序列化后的
+  确切字节计算（产物改 `tmp.write_bytes(content)`，与哈希共用同一字节串，杜绝
+  write_text 换行翻译造成的哈希分叉）。事件顺序合同：supplement → prepared →
+  published；`_validate_attempt_histories` 强制 prepared 不重复、必有 supplement
+  在前、不得晚于 published。
+- **哈希路由恢复规则**（孤儿恢复 + 队列 WAL 失败路径共用
+  `claim_reextract_attempts._route_publication_prepared`，哈希口径 = 队列记账的
+  `root / target_store`）：当前产品哈希 == 新哈希 → 补记 requirements_published
+  进 rebuild_pending（publication revision 用与
+  `claim_review_actions._target_publication_revision` 同公式计算，直接可过
+  rebuild_pending 重放护栏 → 既有确定性恢复 base 重发布+fold，零付费调用）；
+  == 旧哈希 → 按未发布处理（interrupted 可重试 / 队列内 local_error 可重试）；
+  均不等 → 既有 CAS 冲突路径（recovery_target_changed 终态）。原子
+  ai_requirements 分支行为不变（原子 attempt 不写 prepared 事件）。
+- **队列 WAL 失败路径**（`claim_queue_execution`）：generic except 在
+  "产品已替换 + prepared 已持久化"时不再落 reextract_failed——published 路由先
+  尝试补记 requirements_published（复用 target_published 的 authority 口径），
+  补记仍失败 → 抛 rebuild_pending 可重试且**不落任何终态**（下次 execute 入口
+  的孤儿恢复按同一 prepared 哈希路由重试）；失败不记成功的纪律不变。
+- **测试**（`tests/test_functional_claim_queue.py` 新增
+  PreparedPublicationRecoveryTests，全离线注入 chat）：① on_requirements_published
+  抛 OSError → 无 reextract_failed 终态 + rebuild_pending + 同幂等键重放确定性
+  恢复不死锁不重复付费；② SystemExit 模拟替换后、WAL 前进程退出 → 恢复器按哈希
+  补记 published 进 rebuild_pending（revision 与权威口径一致）；产品未变 →
+  interrupted；产品被外部改写 → CAS 冲突；另有 prepared 确切字节绑定与事件顺序
+  合同反例。验证：
+  `tests.test_functional_claim_queue`（21）、`tests.test_claim_queue_execution`、
+  `tests.test_claim_reextract_attempts`、`tests.test_claim_ledger`、
+  `tests.test_claim_functional_store`（合计 174）全绿。- **四轮复审 P1-2 锚块集合同**（主线程，`claim_ledger.py`）：义务身份索引携带
+  section 实际块集；锚 block_ids 必须非空且 ⊆ 所属 section 真实块集，再执行
+  Claim locator 辖域过滤——"合法 section/unit/hash + 外条款 block"的伪锚（4.1
+  身份配 B2 块参与 B2 Claim）被剔除，跨条款借位封死。反例测试入
+  `test_foreign_block_ids_cannot_borrow_across_clauses`。
+- **四轮复审 P2 守恒版本登记链闭合**（主线程）：`FUNCTIONAL_CONSERVATION_MODEL_VERSION`
+  进 functional-extract 的 stage producer stamp（四版本）与 prompt registry
+  （id `functional-extract-conservation`），producer 测试同步断言四处一致
+  （指纹/registry/producer stamp/claim lineage）。
+
+
+## 重大更新（2026-08-16e）——三轮复审残余四项全修（P1×3 + P2×1）
+
+> 三轮复审定位：缓存半提交、存量缓存版本失效、大矩阵分数优先级、锚字段语义。
+> 定位维持"默认启用、受控运行、继续收口"。
+
+- **P1-1 提交顺序重排消除半提交**（`functional_reextract.py`）：新顺序 =
+  ①产品替换**前**严格失效旧缓存行（删除+读回确认消失；失败→产物分毫未动、
+  CAS 干净重试）→ ②产品原子替换 → ③**立即**记录 requirements_published WAL →
+  ④新缓存行**尽力而为**写入（读回校验，失败保持 cache miss，由确定性恢复完成
+  Claim 重发布与 fold）。缓存完全不可用时不再出现"产品已变、WAL 未记、队列
+  failed 终态、同幂等键重放卡死"的半提交——失效失败发生在产物变化之前。
+  `reextract_version` 修正为在序列化**前**进 update 块（此前写盘后才写内存对象，
+  产物文件实际不含该字段，与缓存行分叉）。修复过程中 functional_reextract.py
+  曾因编辑切片失误整体损坏，已从代理会话转录（Write/Edit 重放，190 操作）完整
+  重建并经 106 项 claim 套件验证。
+- **P1-2 存量缓存版本失效**：cross_script_review 携带 source_text_hash 改变了
+  守恒载荷语义——`FUNCTIONAL_EXTRACT_GUARDS_VERSION` v4→v5、
+  `FUNCTIONAL_CONSERVATION_MODEL_VERSION` v2→v3（均进缓存指纹与 prompt registry）；
+  `current_producer_lineage()` 新增 `conservation_model` 键（Claim lineage 的
+  currency 校验随守恒语义演进同步失效）。
+- **P1-3 有界决胜乘法隔离**（`tools/ab_runner.py`）：二轮的加性编码把决胜加成
+  直接加在 scaled 分数上，而 scaled 最小差是 1——决胜总和虽 <1e6 仍可翻转 1 个
+  分数单位（复审复现：66 真值/65 行/4290 边，52.0 被打成 51.999999）。改为复审
+  建议的乘法隔离：`weight = (cardinality_bonus + scaled) × (max_tie_sum + 1) +
+  tie_bonus`——任何匹配的决胜总和 ≤ max_tie_sum < 乘数，TP → 总分 → 稳定决胜
+  严格有序。反例测试：注入 1e-6 级评分差异 + 强制双档，断言返回总分等于暴力
+  枚举最大值（两种档位都通过）。
+- **P2 锚字段语义校验**（`claim_ledger.py`）：`functional_anchor_obligation_hashes`
+  升级为完整义务身份 {sentence_index, source_text_hash}；`_edge` 校验从"六字段
+  存在"升级为**联合指向同一当前义务单元**：match_method ∈
+  {lexical, cross_script_review, source_quote}（forged 拒）、unit 存在、句序一致
+  （999 伪句序拒）、哈希一致。反例测试：伪句序/伪造方法名的锚被剔除、合法锚保留。
+
+## 重大更新（2026-08-16d）——二轮复审残余四项全修（P1×3 + P2×1）
+
+> 二轮复审指出首轮五修的残余（故障恢复/确认失效/算法规模/锚完整性）。定位维持
+> "默认启用、受控运行、继续收口"。
+
+- **P1-1 缓存刷新可证成功**（`functional_reextract.py`）：刷新不再信任
+  `_write_cache_entry` 的"吞错=成功"——**读回校验**（载荷逐键相等，含新 lineage 键
+  `reextract_version`=FUNCTIONAL_REEXTRACT_VERSION，进缓存行与产物、claim 文件哈希
+  绑定链覆盖）→ 失败重试 ×3 → 仍失败则**删除该缓存行**（后续普通直抽缓存 miss 走
+  全量真实抽取，绝不恢复重抽前产物）→ 连删除都失败抛
+  `FunctionalReextractCacheRefreshError`（队列不记 executed，恢复路径重试）。
+  测试：写失败→失效兜底（普通重跑真实再抽取）；写+删全失败→响亮 raise。
+- **P1-2 跨语种确认绑定源义务文本**：`conservation_report` 的 cross_script_review
+  记录新增 `source_text_hash`+句子摘录；澄清问题的 evidence 与 subject_key 并入哈希
+  → 义务文本变化即换新 clarification_id/evidence_fingerprint，旧确认不沿用。测试：
+  确认→改义务文本→阻塞重现（新 ID）→重新确认→恢复 READY。
+- **P1-3 Hungarian 平局编码规模安全**（`tools/ab_runner.py`）：几何位权
+  `2^(E-1-r)` 整数位数随可配边数增长（全候选边 500×500 → GiB 级）。改双档：
+  E ≤ `_LEX_EXACT_EDGE_LIMIT`(4096) 保留严格字典序几何编码；超阈值降级**有界加性
+  决胜**（任何匹配的决胜总和 < 1 个分数单位 → TP/分数严格优先不被翻转；规范序
+  确定性保持，非严格字典序——`matcher_tiebreak` 诊断键如实标注）。测试：
+  150×150 全可配（E=22500）走有界档、TP 全配满、重复求解一致；8×8 保留几何档。
+- **P2 功能锚六字段合同强制**（`claim_ledger.py`）：`functional_source_anchors`
+  投影与 `_edge` 双层强制 section_id/block_ids/sentence_index/unit_index/
+  source_text_hash/match_method 缺一不可——不完整锚剔除（计入 mismatch），全部
+  失配即 stale 不得关闭 Claim。复现的"只有 section/block/unit/hash 的锚"现被拒。
+
+## 重大更新（2026-08-16c）——复审收口五项全修（P1×3 + P2×2，双线程并行）
+
+> 背景：M1-M3 复审后项目决定 `RATOMIZER_FUNCTIONAL_EXTRACT` 默认值已置 1（config.
+> ENV_REGISTRY 单源；显式 =0 回滚链保留）——默认启用≠全部质量门通过，状态为
+> "默认启用、受控运行、继续收口"。本轮修复复审五项；回归见条目末尾。
+
+- **P1-1 重抽缓存一致性**（`functional_reextract.py`）：定向重抽原子替换产物后立即用
+  **合并产物刷新同指纹缓存行**（`functional_extract._write_cache_entry`，按指纹替换
+  旧行）。旧缺陷：sections/route 未变 → 缓存指纹不变，产物被清理后一次普通
+  `run_functional_extract` 会按旧缓存行恢复**重抽前**产物静默覆盖重抽。载荷如实携带
+  `reextract` 合并 provenance。测试：重抽 → 删产物 → 同指纹重跑 → 恢复的是合并产物
+  （含 reextract 键与新叙述）。
+- **P1-2 跨语种复核进人工评审状态机**（`clarification_report.py`）：
+  `cross_script_review` 边从"仅 warning"升级为 **BLOCKING 内部核对澄清问题**
+  （signal `functional:cross_script_review`，subject 按 FRE+条款+义务单元稳定键）——
+  未确认 → unresolved_blocking>0 → readiness NEEDS WORK → full closure 阻塞；专家在
+  内部核对状态机 `verified_ok` 确认后自动解除（readiness 恢复 READY）。测试覆盖
+  阻断与确认恢复两端。
+- **P1-3 保存率分母口径**（`tools/ab_runner.py`，代理线程）：六类保存率分母从"已匹配
+  对的期望条目"改为**全部真值行**的期望条目——未匹配真值（FN）的全部期望条目计为
+  未保存（此前不进分母常以空真 1.0 虚高）。新增诊断键
+  `truth_metrics.preservation_denominator_scope="all_truth_rows"`；反例测试：真值含
+  数值/条件、输出少一条 → 保存率 0.0 并触发阈值违例。
+- **P2-1 Claim 锚文本身份核验**（`claim_ledger.py` + `claim_artifacts.py`）：新增
+  `functional_anchor_obligation_hashes(root)`——按当前条款（chunks）重算义务单元
+  sha256；`_edge` 在辖域过滤之上做**文本身份过滤**（锚 source_text_hash 与重算值
+  失配/义务缺席 → 锚剔除 + `target_source_anchor_text_mismatch` 计数；全部失配 →
+  stale，不得关闭 Claim）。发布侧（publish_b_track_shadow，functional store 时计算）
+  与回放侧（_validate_shadow_graph，store 由发布参数/generation meta 显式传入）同一
+  公式。原子目标无锚行为不变；legacy 无 chunks = 不可核验（索引 None，如实跳过）。
+  测试：篡改哈希锚被剔（好锚保留）；篡改条款文本后重发布 → 篡改条款（4.1）不再有
+  validated 组、未篡改条款（4.2）保持 validated。
+- **P2-2 一对一匹配改最大权重二分图匹配**（`tools/ab_runner.py`，代理线程）：自实现
+  Hungarian/Kuhn-Munkres（O(n³) 整数运算，零新依赖），单次求解编码三层目标——
+  先最大化 TP（基数奖励 > 任何分数差）→ 再最大化总匹配分（×10⁶）→ 同分平局按
+  (truth_id, 行序) 几何级数决胜（字典序稳定，对真值输入顺序不变；既有顺序稳定性
+  测试不改一字通过）。贪心反例测试：贪心 TP=1 时 Hungarian 得 TP=2；TP 相同时取
+  更高总权；40 个随机矩阵与暴力枚举对拍最优性；300×300 冒烟 2.5s。
+- 回归：`tests.test_ab_runner` 47 例、claim/functional 面板 419 例全绿；全量见下。
+
+## 重大更新（2026-08-16b）——功能直抽默认翻转
+
+- 按用户决定，将 `config.ENV_REGISTRY` 中 `RATOMIZER_FUNCTIONAL_EXTRACT` 的单源默认值
+  从 `0` 翻转为 `1`。未显式配置时，chain 默认以 `functional-extract` 替换
+  `ai-extract` + `functional-synthesis`；显式设置 `RATOMIZER_FUNCTIONAL_EXTRACT=0`
+  仍可回滚旧原子化路径。
+- 本次翻转只改变入口默认值，不放宽守恒、`execution_status`、Claim closure 或发布门禁。
+  WS0 真实文档真值、4 项 golden 漂移、桌面打包与 `=0` 回滚链实测仍是未完成验证项；
+  不得因为默认已开启而将这些项目记为 PASS。
+
+## 重大更新（2026-08-16）——去原子化修复方案 M1-M3（三线程并行实施）
+
+> 依据：`C:/Users/YYHwudi/Downloads/DEATOMIZATION_REMEDIATION_PLAN.md`。M1 主线程、
+> M2/M3 并行代理实施（文件面互斥：M1=functional_extract.py；M2=claim 队列/账本+新
+> 模块 functional_reextract.py；M3=tools/ab_runner.py+真值 schema）。M4（真实语料/
+> golden 重建/默认翻转）原按 Go/No-Go 门另行推进；默认值随后按用户决定完成翻转，
+> 见上方 2026-08-16b 条目。集成回归见条目末尾。
+
+- **M1 obligation/evidence 局部绑定**（`functional_extract.py`）：新增统一函数
+  `_obligation_evidence_edges(items, sections)`——义务覆盖只在 **eligible items**
+  （声明块与该义务条款块相交）内判定，彻底删除"所有叙述全局并集"借位（F1 声明 B1
+  复述 B1/B2 + F2 占位声明 B2 的假通过组合不再可能）。边方法三分：
+  `lexical`（叙述 token 覆盖，计入覆盖）> `cross_script_review`（跨语种：声明+引句
+  有效 → 覆盖成立但进 `obligation_coverage.cross_script_review` 人工复核清单，
+  warning 级；优先于 source_quote 判定）> `source_quote`（引句逐字含义务单元——
+  **只作证据锚，不计入覆盖**，占位叙述不能靠引句回充当覆盖）。`assign_evidence_
+  anchors` 与 `conservation_report` 共用同一边生成；持久化锚含
+  `source_text_hash`/`match_method`，守恒永远现算。`binding_mismatches` 新增
+  `declared_section_has_no_local_obligation_coverage`（声明含义务条款却连一条本地边
+  都没有的占位；注意义务覆盖缺口由检查 2 eligible-only 兜底，绑定检查不要求
+  "覆盖级"边——合法多视角转述不受罚）。单个义务单元必须由**单条** eligible FRE
+  覆盖（`any` 语义——同一单元拆半分摊到多条 FRE 判义务丢失，这是"拆散"病灶本身）；
+  保留检查的叙述并集改为"声明了该条款的 items"。锚只在声明条款上产生（复述未声明
+  条款不再产生跨条款锚；要锚多条款必须声明多来源）。版本：
+  `functional-extract-guards-v4` + `functional-conservation-obligation-evidence-v2`
+  （均进缓存指纹/prompt registry/producer stamp/claim lineage）。测试矩阵 §3.5 九项
+  全数落位（`M1LocalBindingTests` + 改写的旧语义测试）。
+
+
+
+- **功能级定向重抽 `functional_reextract.py`（新模块）**：
+  `functional_targeted_reextract(out_dir, *, affected_block_ids,
+  expected_product_fingerprint, route, chat=None, request_idempotency_key="")`——
+  受影响块经 `extract_units.clause_key` 两级族键扩展为完整条款族（宁多勿漏）；
+  只对族内重新真实抽取（`functional_extract.extract_functional_requirements`，
+  只 import 不改该文件）；锚/声明块与族相交的旧 FRE 整体替换、其余逐字节保留
+  （不重排不改写，UID 按全量条款序幂等重算）；全量重算 anchors+conservation；
+  **仅 execution_status=ok 且 conservation.ok=true 才原子替换**
+  （`functional_extract._replace_with_retry` 同款 tmp+os.replace+PermissionError
+  重试）；stub/mixed/partial/失败/不守恒一律 `FunctionalReextractUnhealthy` 响亮
+  raise、健康产物分毫不动；产物 CAS（文件 sha256 != expected 即 abort）。替换后
+  `publish_b_track_shadow(requirements_store="functional_requirements.json")`
+  重发布（内部自带 effective fold）。合并 provenance 留痕于 payload `reextract`
+  （replaced/kept 清单 + 幂等键），不写 functional_extract 缓存（合并产物≠纯抽取）。
+- **队列分流 `claim_queue_execution.py`**：删除直抽模式整体拒绝；mutation 构造处按
+  `_resolve_b_target_store` 分流——functional 走 `_functional_queue_mutation`（chat
+  包装队列已解析的 route config + `LLMRequestBudget`，每次调用经 request_budget
+  记账），原子路径不变。**全部既有保障共用**：extraction operation lock、
+  expected claim effective revision CAS（pre_publish_check 复用 revalidate）、
+  request idempotency key、attempt WAL（supplement_persisted→requirements_published
+  →base_rebuild_published→effective_folded→reextract_succeeded 顺序不变，
+  `require_published_attempt` 合同满足）、budget checkpoint outbox、Windows 原子
+  替换、失败重放不记成功（unhealthy→`reextract_failed`/`functional_product_unhealthy`，
+  不写 requirements_published）。`requirements_published` 记账哈希与
+  rebuild_pending 恢复核验按 `authority["target_source_store"]` 取文件（原子路径
+  行为不变）；`_current_published_base` 以 committed generation meta 的 store 为
+  权威；`_finish_rebuild` functional 分支的确定性重建 =
+  `republish_functional_claim_shadow`（零 LLM）。
+- **coverage edge 源锚 `claim_ledger.py`（§4.4）**：`functional_source_anchors()`
+  把 FRE `evidence_anchors` 投影为 edge 的 `target_source_anchors`
+  （section_id/block_ids/sentence_index/unit_index/source_text_hash/match_method，
+  M1 提供后两者；不可定位锚剔除；原子目标无该键）。`_edge` 按 claim locator 块
+  辖域过滤锚——全部锚落辖域外 → `target_source_anchor_stale` → 组
+  `invalid`/`target_source_anchor_stale`（不得关闭 Claim，不改账本行数）；
+  `coverage_group_record_error` 加载/发布同公式重放（edge 全等比对覆盖锚漂移，
+  validated 组不得架在 stale 锚上）。edge_id/validation_input_hash 公式未动。
+- **测试 `tests/test_functional_claim_queue.py`（新）**：§4.6 离线矩阵——真实直抽
+  （注入 chat）产 uncertain claim+proposal → 队列对 4.2 条款族重抽（4.1 不进
+  prompt）→ 未受影响 FRE 逐字节稳定 → 受影响 FRE 替换（UID 稳定/输出序 hash id
+  如实更换）→ generation 绑新 product hash → coverage edge 含辖域内源锚且
+  `load_committed_claim_base` 重放通过 → fold 后 uncertain 归零 → full closure
+  ready（仅专家 FRE 接受，无需人工 claim 裁决）→ CAS 冲突拒绝（付费调用前）→
+  同幂等键重放零重复付费 → stub chat 终态 failed 且产物不动。注意语料产品名词
+  须在 `normative_framing` 产品名词表内（controller 而非 gateway），否则
+  deterministic verbatim 闭合不成立。
+- 旧测试 `test_queue_execution_refuses_in_direct_mode` 改为断言通用
+  allow_llm 纪律（拒绝已删除）。
+
+
+- **M3 最终 XLSX A/B 质量门**（`tools/ab_runner.py`，报告 schema `ab-runner-report/v2`；
+  `schemas/functional_truth.schema.json` + 合成 fixture `golden_sets/ab_truth_m3_v1/`）：
+  - **真值集**：truth 行必需 truth_id/document_id/section_id/expected_text + 6 列表键
+    （conditions/exceptions/negations/numbers/units/codes），逐行校验（坏行带 file:line
+    响亮报错，退出码 1）；文档键 = parsed-dir 名 / `sha256:<blocks.jsonl sha256>` /
+    绝对路径，真值集无本文档行 → NO_GATE；客户原文不进仓（schema description 明文）。
+  - **一对一匹配 `match_truth_to_rows`**：分数 = 0.40×正文 token 覆盖 + 0.20×section
+    一致 + 0.20×条件/例外/否定一致 + 0.20×数值/单位/编码不冲突；覆盖 <0.5 / 冲突 /
+    双方 section 非空且不等（禁止跨条款借位）不可匹配；确定性贪心（-score, truth_id,
+    行序），同一 produced 行不得匹配多条 truth——truth_id 唯一 + 行序固有 → 对真值
+    输入顺序稳定（有专门测试）。输出 TP/FN/FP/precision/recall/F1 + 逐对明细。
+  - **最终 XLSX 读取 `_read_final_xlsx_rows`**：openpyxl 读 软件需求列表-成文.xlsx，
+    表头别名定位（需求正文/章节/模块/条件/验收/说明/描述，中英文别名表）；缺 body 列、
+    空正文行、错误字面量单元格全部计入失败明细 → FAIL；precision/recall/保存率全部
+    基于最终 XLSX 行（functional JSON 重复率降级为 `functional_duplicate_rate` 诊断）；
+    保存率分母只含匹配对的期望条目（条件/例外/否定=token ≥0.6；数值=相等；单位=字母
+    边界大小写不敏感在场；编码=去空白 casefold 子串；替换=冲突阻匹配，纯丢失=保存率惩罚）。
+  - **阈值语义**：14 项必需键（`REQUIRED_THRESHOLD_KEYS`，方案 §5.4 全集）；缺真值集/
+    缺阈值文件/缺任一必需键 → NO_GATE（退出码 1）；层级 = 顶层默认 +
+    `{"documents": {"<键>": {...}}}` 文档覆盖（文档层覆盖默认层；无默认层时文档层须
+    自带全部 14 键）；逐文档评估绝不跨文档平均（overall = FAIL>NO_GATE>PASS）；未知键
+    → 违例 FAIL。注意真实语料两路必须用同一份**空模板**（模板自带样例行会被如实计入
+    produced 行拉低 precision）。
+  - **测试**：`tests/test_ab_runner.py` 39 例全绿（矩阵 §5.5 十项 + fixture-schema
+    一致性、坏行报错、多 sheet/错误单元格、真值顺序稳定性、层级覆盖双向、sha256 层、
+    无默认层缺键等）。
+
+- **集成回归（三线合并后，主线程验证）**：后端全量 `python -m unittest discover -s
+  tests`（带 `RATOMIZER_HISTORICAL_SAMPLE`）3807 例，仅 4 个失败——全部是
+  `test_golden_regression` 的预存 main 基线漂移（方案 §6.2 记载，M4 事项）；前端
+  vitest/build 通过。
+
+- **M4 状态与 Go/No-Go 盘点（本轮不可自动化部分）**：方案 §七 清单当前——
+  ✅ obligation 不再跨来源借位（M1）；✅ M1 正反测试（9 项矩阵）；✅ coverage 记录
+  含可验证多证据锚（M2 target_source_anchors + 辖域校验）；✅ 直抽可执行 Claim 队列
+  定向重抽（M2）；✅ 自动队列 E2E 达 full closure（M2 测试⑧）；✅ A/B 最终 XLSX
+  precision/recall/F1（M3）；✅ 六类保存率门槛（M3）；✅ 缺真值/阈值只 NO_GATE（M3）；
+  ✅ stub/mixed/partial/失败缓存不成成功交付物（§3.5+复审 P1-3）；⬜ 2-3 份真实文档
+  逐份 PASS（需人工真值+真实 LLM，WS0 pending-human）；⬜ 4 项 golden 漂移清零
+  （需合并 main 后按三 seed KB+domain-pack 重建 out/，§6.2 流程）；⬜ 桌面打包验证；
+  ⬜ `=0` 回滚链实测；✅ 默认翻转（按用户决定已将 config.ENV_REGISTRY 单源默认值改为
+  `1`，全部入口走 config.get_env*；`=0` 回滚通道保留）。M2 已知残余：产物替换→requirements_published WAL
+  之间的崩溃窗口恢复为 interrupted 可重试（不自动升 rebuild_pending），功能级补丁
+  sidecar 闭环留待后续。
+
+## 重大更新（2026-08-15c）——去原子化交付复审六项全修（P1×5 + P2×1）
+
+> 外部审查复现的问题逐条修复；回归：后端全量仅剩 4 个预存 golden 失败（stash 验证为
+> main 基线过期，方案 §3.6 记载）、前端 274/274 + 构建通过。
+
+- **P1-1 守恒门加固**：`conservation_report` 新增**错绑检测**——item 声明的
+  source_block_ids 与其叙述实际覆盖的义务单元所属条款不一致（叙述互换/错误溯源）时
+  `binding_mismatches`（blocking）；`source_quote` 在全文**零命中**也判
+  `quote_matches_no_block`（旧逻辑只在命中他块时才报）。义务覆盖保持"叙述并集"语义
+  （多对多+跨条款引用合法），错绑由新检查兜住；跨语种/无义务单元的家条款无从判定则
+  跳过（宁漏勿错）。复现用例（B1/B2 叙述互换、quote 全不命中）已入
+  `ReviewHardeningTests`。
+- **P1-2 CAS 覆盖功能字段**：`review_subject_fingerprint` 行内存在功能叙述字段
+  （objective/behaviors/preconditions/data_constraints/variants/exceptions/
+  related_dlms_objects）时并入指纹——改写这些字段即触发 needs_reconfirmation；
+  原子行不含这些键，存量裁决指纹零失效。`agent_state` 直抽回退经
+  `review_state_needs_reconfirmation` 把陈旧裁决投影回落 draft（不再静默 accepted
+  通过闭合门），并携带 `needs_reconfirmation` 标志。
+- **P1-3 stub 草稿水印**：直抽产物带 `draft: true`（executed route=stub 时）——
+  claim 发布跳过（`claim_shadow.skipped="draft_stub_product"`）、`evaluate_full_closure`
+  记 `functional_extract_draft` 显式缺口、`result_package._completion_evidence` 拒绝
+  （`_functional_product_is_draft`）。显式 stub 仍是测试/烟测合法 opt-in（stage ok、
+  分析可跑），但**不可能形成可发布成功产物**（方案 §3.5 的"或"分支：水印+证据拒绝）。
+- **P1-4 Claim 闭环补全**：三处根因修复——① fold/权威读取的 target store 以**已提交
+  generation meta 为权威**（旧 ai_requirements.jsonl 残留不再劫持）；②
+  `committed_base_versions_are_current` 的 producer lineage 比较按 store 分支
+  （直抽 generation 对 `functional_extract.current_producer_lineage()` 单源比较——
+  旧实现只认 ai_extract lineage，使 fold 恒判 base_migration_required、effective 停在
+  v1、视图层整体不可用）；③ `claim_views._document_ready` 去掉与"发布时恒 False 的
+  base 布尔"的与（该不变量由 `_shadow_meta_is_well_formed` 强制，旧实现使
+  document_ready 在两条轨结构性永假），就绪=有效态四条件。**端到端验证**
+  （`DirectModeFullClosureE2ETests`）：真实直抽→claim 发布→专家经指纹路径接受 FRE→
+  专家 claim 裁决（coverage_group 证据+CAS）→`evaluate_full_closure` ready=True 零
+  缺口。队列执行（原子级 targeted reextract）在直抽模式仍诚实拒绝——LLM 重抽队列的
+  功能级等价物是后续独立设计（记为翻转前欠项）。
+- **P1-5 A/B runner 门化**：对比对象改为 template-write 最终交付
+  `软件需求列表-成文.xlsx`（software_requirements.xlsx 仅中间指标）；新增真值指标
+  recall/错误拆分率/错误合并率/人工重拆并动作数估计（`_truth_metrics`）与
+  `--thresholds` JSON 门槛（键集 `THRESHOLD_KEYS`，逐键评估）；判定三态——链失败/
+  阈值违例=FAIL(2)、**缺真值集或缺阈值=NO_GATE(1)（不作翻转依据，不给 PASS）**、
+  全部达标=PASS(0)。B 路产物带 draft 水印也 FAIL。
+- **P2 UI 接入**：DocumentReview 的裁决按 `level==="functional"` 分流到
+  `applyFunctionalReviewAction`（CAS 材料来自功能投影；原子卡路径不动），
+  `DocClient` 能力类型扩展；spec 验证功能卡走新端点且不触发原子端点。
+
+## 重大更新（2026-08-15b）——去原子化方案 §3.1-§3.6 落地（分支 `codex/table-translation-structure`，基于 8389e1d）
+
+> 依据：`C:/Users/YYHwudi/Downloads/DEATOMIZATION_PLAN..md`（2026-08-15 定稿）。第 1 步（开关接入 chain）
+> 已在 main `8389e1d`；本次交付 §3.1/§3.2/§3.3/§3.4/§3.5/§3.6 的全部工程机制。**默认行为面不变**
+> （`RATOMIZER_FUNCTIONAL_EXTRACT` 默认仍为 0；翻转需过方案 §五 Go/No-Go 门）。
+
+- **§3.1 守恒模型重构（obligation/evidence 多对多）**：`functional_extract.py` 弃 block
+  exactly-once——多义务条款出多条合法、跨条款引用合法（多消费不判重）。五项分项检查
+  （条款覆盖/义务覆盖/无证据需求/重复需求/保留完整性）各自定性：前四类 blocking，
+  保留完整性分级（数值/单位/否定丢失=blocking，条件/例外丢失=warning）。义务单元 =
+  句号级切分（`functional_drilldown._SENTENCE_SPLIT_RE` 同源）+ 模态词前边界切分
+  （带头模态+≥1 内容词）；覆盖判定 = 逐字包含或内容 token 重叠 ≥0.6（章节引用号剔除）；
+  证据锚 `evidence_anchors` 确定性派生（守恒**总是现算**，不信任产物里的持久化锚——防篡改
+  伪造覆盖）。旧字段镜像保留（missing/extra/evidence_mismatches 语义微调，
+  `duplicate_assignments` 改为"重复需求组涉及的块"），adjudicate/orchestration_gaps/
+  shadow 消费点无需改动。版本：`FUNCTIONAL_EXTRACT_GUARDS_VERSION=v3` +
+  `FUNCTIONAL_CONSERVATION_MODEL_VERSION=functional-conservation-obligation-evidence-v1`
+  （都进缓存指纹）；stub 条目改全文回显（长条款义务不"失踪"）。
+- **§3.5 失败语义统一**：产物/缓存/结果摘要/manifest/readiness/结果包完成证据共用
+  `execution_status ∈ {ok,partial,failed}`（`functional_extract.execution_status()` 单源）：
+  请求 LLM 路由全退化=failed、mixed=partial、显式 stub opt-in=ok。`_stage_completion_status`
+  映射 partial/failed（chain 阶段不记 ok）；`functional_direct_basis` 对 failed/partial 抛
+  `FunctionalExtractionIncompleteError` 阻断分析/澄清/成文；`evaluate_full_closure` 增
+  `functional_extract_incomplete` 缺口；**failed 不落缓存**（瞬时故障不被钉死，健康重跑真实
+  再试），partial（mixed 有真实内容）照常缓存且重放保留 partial 语义。
+- **§3.6 配置单源**：`config.get_env/get_env_bool/get_env_int/get_env_float`——override >
+  os.environ > ENV_REGISTRY 默认（单源），未登记名 KeyError。`functional_extract_enabled`
+  与负例条数（`functional_extract_negative_k()`，修掉 import 时常量同进程不刷新）已切到
+  单源；抽取指纹并入 negative_k+conservation_model。**未翻转默认值**（那是 Go/No-Go 后的
+  单独动作：改注册表默认 + 保留 =0 回滚通道一个发布周期 + 重建 golden）。
+- **§3.3 统一功能级评审权威（不新增状态文件）**：`ai_review_states.jsonl` 仍是唯一专家
+  裁决存储；`source_ai_requirement_id` 显式 id 优先级扩展
+  （ai_req_id/stable_req_id/req_id → functional_requirement_id/requirement_uid），FRE 主键域
+  与 AIR 键域打通。新增 `POST /functional-review-actions`（CAS 三元组：source/subject 指纹
+  + 产物指纹 target_fingerprint + authority write revision；失配 409 needs_reconfirmation，
+  产物重生成不静默沿用旧裁决）+ `GET /functional-requirements` 评审投影
+  （status/module_effective/ownership_effective/needs_reconfirmation/level=functional）；
+  `requirements_analysis` 直抽条目的 reject/override 投影经同一主键自动生效；
+  `clarification_report._functional_guardrail_entries` 把 rejected_codes/numeric_drift
+  （BLOCKER）与守恒 warning 投影进澄清清单；`agent_state.load_analysis_state` 直抽回退
+  （无原子产物时用 FRE 条目+评审 status 合成，"全部已裁决"检查在直抽模式有对象，
+  空账本≠已完成）；批注视图 `_functional_direct_annotation_rows`（FRE 卡片 + level=
+  functional + quote→block 锚点复用 `_enrich_ai_requirement_rows`，`_functional_membership`
+  增自键投影）；前端 `api-client.applyFunctionalReviewAction` 已接（工作台按钮待后续）。
+- **§3.4 Claim 迁移（B 轨 target store 抽象）**：`claim_ledger.resolve_b_track_target_store`
+  （原子在场优先→直抽次之→皆无响亮 FileNotFoundError；直抽产物必须守恒闭合+执行完整才可
+  绑定）；`publish_b_track_shadow(requirements_store=...)` + `claim_artifacts` 发布/校验/
+  lineage/liv­e-target 全链 store 感知，generation meta 记 `requirements_store`；effective
+  快照 stat 键含 functional store；fold 侧 `_load_b_track_authority` store 感知；
+  `desktop_tasks._publish_functional_claim_shadow` 在直抽任务执行完整且守恒闭合时发布
+  B 轨 shadow（零 verifier 调用）+折叠 effective；coverage targets 用 FRE- 主键；
+  队列执行（原子级 targeted reextract）在直抽模式**诚实拒绝**并指路重跑 functional-extract；
+  篡改 functional store 后 `load_committed_attempt_lineage` fail-closed。**未竟**：
+  document_ready 翻转机制（build 恒写 False 是历史遗留 wart，涉 A/B 轨视图语义，翻转前
+  需单独设计）、直抽模式 claim 队列执行的功能级等价物——都记为 Go/No-Go 前置项。
+- **§3.2 A/B runner**：`tools/ab_runner.py`——完整 B 轨（A: ai-extract→functional-synthesis
+  →requirements-analysis→template-write；B: functional-extract→…），**唯一差异 =
+  `RATOMIZER_FUNCTIONAL_EXTRACT`**（env 快照进报告），stub route 直接拒绝，链异常/产物缺失/
+  execution_status≠ok/守恒未闭合/stub 降级一律 FAIL；对比对象是最终 xlsx 行数；逐份文档判定
+  （多文档任一 FAIL 即整体 FAIL）；指标（行数/重复率/保留完整性计数/真值集 recall）确定性
+  可算才报，真值集缺席如实 unavailable。**WS0 人工真值集仍 pending-human——翻转前必须补**。
+- 测试：新增 `tests/test_functional_conservation_v2.py`（31）、`tests/test_functional_review_
+  authority.py`（10）、`tests/test_claim_functional_store.py`（9）、`tests/test_ab_runner.py`
+  （12）；旧 exactly-once 测试改写为新模型语义。回归：后端全量见下，前端 vitest/build 通过。
+
 ## 重大更新（2026-08-14）——全库效率/效果修复（评审驱动，11 个并行工作流，未提交）
 
 > 来源：2026-08-14 全库代码评审（四个并行审查代理 + 人工汇总）定位的 25+ 项效率/效果问题全部实施。

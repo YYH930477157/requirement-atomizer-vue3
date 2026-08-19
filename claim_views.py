@@ -515,14 +515,19 @@ def build_claim_coverage_group_view(
 
 
 def _document_ready(context: dict[str, Any]) -> bool:
-    generation = context["generation"]
-    shadow_meta = dict(generation.get("shadow_meta") or {})
+    """文档级 claim 就绪 = **当前有效态**属性（复审 2026-08-15 P1 修正）。
+
+    旧实现还要求 base generation 的 ``shadow_meta.document_ready is True``——但
+    ``_shadow_meta_is_well_formed`` 按发布时不变量要求该布尔**恒为 False**（Phase 0
+    base 发布时评审尚未发生），两个条件做与使 document_ready 在两条轨上结构性永假，
+    full closure 的 claim 门永远不可达。就绪应由有效态四条件判定：effective 新鲜、
+    无 authority 审计缺口、零 uncertain、无待结构复核。
+    """
     _decisions, pending_structural_reviews, _confirmed = (
         _structural_review_state(context)
     )
     return bool(
-        shadow_meta.get("document_ready") is True
-        and context["freshness"]["effective_fresh"]
+        context["freshness"]["effective_fresh"]
         and not context["health"].get("authority_audit_gap")
         and int(context["effective"]["effective_metrics"].get("uncertain_count") or 0)
         == 0
