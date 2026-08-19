@@ -77,7 +77,25 @@
     "validation_input_hash": {"$ref": "#/$defs/hash"},
     "validation_reused": {"type": "boolean"},
     "status": {"enum": ["proposed", "validated", "invalid"]},
-    "invalid_reason": {"type": "string"}
+    "invalid_reason": {"type": "string"},
+    "table_scope_fingerprint": {"$ref": "#/$defs/hash"},
+    "compact_source_text": {"type": "string"},
+    "table_scope": {
+      "type": "object",
+      "required": ["kind"],
+      "properties": {
+        "kind": {"enum": ["table", "independent"]},
+        "table_id": {"type": "string"},
+        "block_id": {"type": "string"},
+        "title": {"type": "string"},
+        "headers": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "fingerprint": {"$ref": "#/$defs/hash"}
+      },
+      "additionalProperties": false
+    }
   },
   "allOf": [
     {
