@@ -1,5 +1,45 @@
 # CLAUDE.md — Requirement Atomizer 项目上下文
 
+## 重大更新（2026-08-20c）——招标程序性跨度路由 + 完成证据阶段名 + 交付物面板存在性（合并 `21b3b1e`）
+
+> result3 重跑实证（部分复用生效、链续跑生效、约 54 分钟零重付）后定位新缺口：
+> 守恒失败大头是"正文句被解析器升格成章节标题"的招标程序性内容（conflict of
+> interest / legal capacity / financial evaluation 等），逐标题 `classify_tender_region`
+> 对它们返回 None——旧路由只能消 duplicates 6/6、义务 13/39、保留 17/50、错绑 ~4/50。
+> 分支 `codex/tender-region-span`（grok-4.6 实施、Claude 审核），提交 `3586c67`。
+
+- **跨度继承路由**：`tender_regions.tender_region_spans(blocks)` 按块流从锚点标题
+ （heading 且 `classify_tender_region` 命中）继承区域至下一锚点；首锚点前不入表。
+ `apply_unit_routing` 两级判定：逐标题（原有）+ 跨度继承（条款**全部** block_ids 落在
+ tender_instructions/tender_commercial 跨度内、且自身标题无一 tender_technical 才路由出；
+ tender_preface 不路由——Introduction 保护）。审计分列 `tender_span_routed_out`/
+ `tender_span_section_ids`。`functional_reextract` 共用同一 `apply_unit_routing` 权威。
+- **前置样板编号剥离**：`_FRONT_MATTER_TOP_LEVEL` 匹配前剥 `^\d+(\.\d+)*\s+`
+ （"2 DEFINITIONS" 命中 definitions；"2 20 Control of" 不误伤），集合补 "definitions"。
+- **版本**：`FUNCTIONAL_UNIT_ROUTING_VERSION` v2→v3，经 `_unit_routing_key` 只进
+ clause_family 键空间（clause_family 直抽缓存自然 miss，需重付直抽）；legacy 指纹
+ 逐字节不变（测试钉住）。不放宽守恒、不动 prompt/产物 schema/EXECUTION_POLICY。
+- **完成证据阶段名**：`desktop_tasks._replace_functional_extract_stages` 成为 chain /
+ result-package-start / result-package-complete 的单点替换权威——marker 不再报
+ `requested stage is not complete: ai-extract (missing)` 盖住真实守恒失败；显式
+ `RATOMIZER_FUNCTIONAL_EXTRACT=0` 原样直通。
+- **交付物面板诚实化**：App.vue 最新交付物经 Electron 桥 `fs:stat-deliverables`
+ （basename 防穿越 + 会话目录围栏；run_manifest.json 兼查 `.ratomizer/stages/`）查
+ 存在性——缺失文件灰显「未生成」+ 禁用打开（result3 实测面板曾列出不存在的成文/
+ 澄清 xlsx）。`ui/package.json` test 入口换 `scripts/run-vitest.cjs`（worktree junction
+ 下 vitest 文件身份错位的包装，主检出行为等价）。
+- **result3 离线回放**（out/tools，机器本地）：207 条款保留 103（逐标题 20 + 跨度 28 +
+ 前置样板 2 + 既有表格路由 54）；技术条款（1 METER TECHNICAL/6 TECHNICAL DATA/8.x/
+ 9.x/11 STANDARDS ALIGNMENT/21 DCU）逐项确认保留；守恒失败估算 6/39/50/50 →
+ **0/17/18/30**。**仍未路由**（块流缺锚点，如实）：26 OEM 变更、22 供货历史、
+ 13 交货期——重跑守恒闸仍会拦成文，失败面缩 ~60% 且重复组清零。
+- **main 既有 5 失败（非本分支引入，独立复验确认）**：test_shadow_run 4 例
+ （extraction_units.jsonl 被归因 unexplained）+ test_truth_from_review 1 例
+ （Windows 子进程 stdout GBK/UTF-8）——08-20 批次 main 提交遗留，待独立修复。
+- 验证：worktree 聚焦 177 OK、全量 4020（26 环境跳过 + 上述 5 既有失败）；UI 286 +
+ vue-tsc/vite build 通过（主检出 dist/ 中运行中的打包 exe 锁文件属环境问题，
+ 隔离 outDir 构建通过）。
+
 ## 重大更新（2026-08-20b）——SBD 链续跑：成文闸失败不掐死整链
 
 > 从最新 `main` `93e9de1` 隔离分支 `codex/sbd-chain-resume` 修 result3 形态。
