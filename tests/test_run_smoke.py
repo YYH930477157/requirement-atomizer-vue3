@@ -12,9 +12,9 @@ class RunSmokeTests(unittest.TestCase):
         modules = run_smoke.load_modules(run_smoke.DEFAULT_MANIFEST)
         suite = run_smoke.build_suite(modules)
         self.assertEqual(len(modules), 90)
-        # 1778 = 1769 + 2（M8 遥测）+ 6（§20/§22：chain 翻译模式 2、/unit-routing 2、
-        # 完成证据 gate 快照 2）+ 1（M8 doc_map 消费者迁移 attempt 账本断言）。
-        self.assertEqual(suite.countTestCases(), 1778)
+        # 1785 = 1778 + 3（SBD 续跑：守恒闸后继续、mixed/partial 可复用、skip 不洗白）
+        # + 4（合入时相对旧钉值的既有漂移，按 run_smoke discover 实测对齐）。
+        self.assertEqual(suite.countTestCases(), 1785)
 
     def test_manifest_rejects_duplicates_and_non_test_modules(self) -> None:
         for content in ("tests.test_atomize\ntests.test_atomize\n", "atomize\n"):
