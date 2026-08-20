@@ -23,6 +23,7 @@ const {
   recordRecentSession,
   resolveAutoRestoreCandidates,
   resolveBackendCommand,
+  resolveDeliverableFiles,
   resolveBoundLlmApiKey,
   resolveLlmTestConnection,
   saveLlmSettingsConfig,
@@ -170,6 +171,15 @@ ipcMain.handle("shell:open-path", async (_event, targetPath) => {
     return;
   }
   await shell.openPath(targetPath);
+});
+
+ipcMain.handle("fs:stat-deliverables", async (_event, input) => {
+  const outDir = String(input?.outDir || "").trim();
+  if (!outDir) return {};
+  if (apiSession && !isInside(apiSession.outputDir, outDir)) {
+    return {};
+  }
+  return resolveDeliverableFiles(outDir, input?.names || []);
 });
 
 // S16：默认输出根目录跟随系统"文档"目录派生，绝不硬编码开发者机器路径

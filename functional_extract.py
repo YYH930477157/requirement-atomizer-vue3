@@ -80,7 +80,7 @@ FUNCTIONAL_CONSERVATION_MODEL_VERSION = "functional-conservation-obligation-evid
 # §17 unit 级路由接线（2026-08-17）：clause_family 策略下表格主导条款路由出 B 轨输入
 # 与守恒基线（表格内容归 A 轨/上下文，phase2 探针实证其混入 B 轨是守恒失败根因之一）。
 # 接线版本只进 clause_family 缓存指纹维度（legacy 指纹逐字节不变）；路由判据演进时 bump。
-FUNCTIONAL_UNIT_ROUTING_VERSION = "functional-unit-routing-v2"  # v2（2026-08-18 10% 诊断）：前置样板章节（Scope/引用/术语定义/Foreword）路由出 B 轨
+FUNCTIONAL_UNIT_ROUTING_VERSION = "functional-unit-routing-v3"  # v3（2026-08-20）：招标程序性跨度继承（锚点标题后至下一分类锚点的块继承区域）+ 前置样板顶级标题剥离前导条款编号（"2 DEFINITIONS" → definitions）
 FUNCTIONAL_REQUIREMENTS_FILENAME = "functional_requirements.json"
 FUNCTIONAL_EXTRACT_CACHE = "functional_extract_cache.jsonl"
 
@@ -1930,21 +1930,27 @@ _ROUTING_KEEP_ROUTES = frozenset({"b_track", "mixed"})
 # 引用清单、术语定义从不产出功能需求，flash 在这些章节上只会产出噪声条目并丢引用号
 # （NBR 61334/IEC 62056 → preservation 假 blocking）。归一化小写匹配顶层路径。
 _FRONT_MATTER_TOP_LEVEL = frozenset({
-    "scope", "normative references", "terms and definitions",
+    "scope", "normative references", "terms and definitions", "definitions",
     "foreword", "introduction", "abstract", "目的", "规范性引用文件", "术语和定义",
     # DLMS/COSEM 文档的行规清单章（引用性列表，同 Normative references 类）
     "communication profiles",
 })
+# SBD 顶级标题带编号前缀（"2 DEFINITIONS"）；剥离后与集合比对。
+# 保守：只剥 ``^\d+(\.\d+)*\s+``，"2 20 Control of" → "20 control of" 不命中 definitions。
+_FRONT_MATTER_NUMBER_PREFIX = re.compile(r"^\d+(\.\d+)*\s+")
 
 # 招标程序性区域：投标须知/商务附件出 B 轨。不含 tender_preface——
 # Introduction 会出现在正文技术条款标题里，误伤电表功能章。
 _TENDER_PROCEDURAL_REGIONS = frozenset({"tender_instructions", "tender_commercial"})
 
 
-def _section_is_tender_procedural(section: dict[str, Any]) -> bool:
-    """条款标题/路径是否为招标程序性章节（开标、税清、保函、商务附件）。"""
-    from tender_regions import classify_tender_region
+def _front_matter_top_key(title: str) -> str:
+    """顶级标题归一化：折叠空白并剥离前导条款编号后再比对前置样板集合。"""
+    normalized = " ".join(str(title or "").lower().split())
+    return _FRONT_MATTER_NUMBER_PREFIX.sub("", normalized, count=1)
 
+
+def _section_tender_titles(section: dict[str, Any]) -> list[str]:
     titles: list[str] = []
     for raw in (
         section.get("heading"),
@@ -1954,11 +1960,46 @@ def _section_is_tender_procedural(section: dict[str, Any]) -> bool:
         title = str(raw or "").strip()
         if title and title not in titles:
             titles.append(title)
+    return titles
+
+
+def _section_is_tender_procedural(section: dict[str, Any]) -> bool:
+    """条款标题/路径是否为招标程序性章节（开标、税清、保函、商务附件）。"""
+    from tender_regions import classify_tender_region
+
     return any(
         classify_tender_region({"type": "heading", "text": title})
         in _TENDER_PROCEDURAL_REGIONS
-        for title in titles
+        for title in _section_tender_titles(section)
     )
+
+
+def _section_has_tender_technical_title(section: dict[str, Any]) -> bool:
+    """任一标题/路径分类为 tender_technical → 保留（宁漏勿错，防程序跨度误伤技术章）。"""
+    from tender_regions import classify_tender_region
+
+    return any(
+        classify_tender_region({"type": "heading", "text": title}) == "tender_technical"
+        for title in _section_tender_titles(section)
+    )
+
+
+def _section_is_tender_span_procedural(
+    section: dict[str, Any],
+    span_by_block: dict[str, str],
+) -> bool:
+    """第二级：条款全部块落在 instructions/commercial 跨度内，且自身无 technical 标题。
+
+    tender_preface 跨度不得导致路由出（Introduction 保护）。任一块在程序跨度外 → 保留。
+    """
+    block_ids = [str(b) for b in (section.get("block_ids") or []) if str(b)]
+    if not block_ids:
+        return False
+    if any(span_by_block.get(bid) not in _TENDER_PROCEDURAL_REGIONS for bid in block_ids):
+        return False
+    if _section_has_tender_technical_title(section):
+        return False
+    return True
 
 
 def _load_routing_units(out_dir: Path) -> tuple[list[dict[str, Any]], bool]:
@@ -2070,14 +2111,18 @@ def apply_unit_routing(
             if route == "review":
                 review_units_by_block[bid] = review_units_by_block.get(bid, 0) + 1
 
+    from tender_regions import tender_region_spans
+
+    span_by_block = tender_region_spans(list(blocks))
     kept: list[dict[str, Any]] = []
     routed_out: list[dict[str, Any]] = []
     front_matter: list[dict[str, Any]] = []
     tender_procedural: list[dict[str, Any]] = []
+    tender_span: list[dict[str, Any]] = []
     mixed_kept = 0
     for section in sections:
         path = [str(part).strip() for part in (section.get("section_path") or [])]
-        top = " ".join(path[0].lower().split()) if path else ""
+        top = _front_matter_top_key(path[0]) if path else ""
         if top in _FRONT_MATTER_TOP_LEVEL:
             # §7.5 前置样板章节：范围/引用/术语定义——归 context 索引，不进 B 轨
             # （单独计数，与表格路由区分审计）。
@@ -2085,6 +2130,9 @@ def apply_unit_routing(
             continue
         if _section_is_tender_procedural(section):
             tender_procedural.append(section)
+            continue
+        if _section_is_tender_span_procedural(section, span_by_block):
+            tender_span.append(section)
             continue
         block_ids = [str(b) for b in (section.get("block_ids") or []) if str(b)]
         has_table = bool(block_ids) and any(b in table_block_ids for b in block_ids)
@@ -2112,10 +2160,15 @@ def apply_unit_routing(
         tender_procedural_routed_out=len(tender_procedural),
         tender_procedural_section_ids=[
             str(section.get("section_id") or "") for section in tender_procedural],
+        tender_span_routed_out=len(tender_span),
+        tender_span_section_ids=[
+            str(section.get("section_id") or "") for section in tender_span],
         routed_out_section_ids=[
             str(section.get("section_id") or "") for section in routed_out
         ] + [
             str(section.get("section_id") or "") for section in tender_procedural
+        ] + [
+            str(section.get("section_id") or "") for section in tender_span
         ],
         routed_out_block_ids=sorted({
             str(b) for section in routed_out

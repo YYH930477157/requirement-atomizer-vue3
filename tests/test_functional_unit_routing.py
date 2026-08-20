@@ -137,6 +137,7 @@ class ApplyUnitRoutingTests(unittest.TestCase):
             self.assertEqual(meta["routed_out_section_ids"], ["4.2"])
             self.assertEqual(meta["routed_out_block_ids"], ["B2"])
             self.assertEqual(meta["mixed_table_sections_kept"], 0)
+            self.assertEqual(meta.get("tender_span_routed_out", 0), 0)
 
     def test_b_track_cell_keeps_section(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -290,6 +291,162 @@ class ApplyUnitRoutingTests(unittest.TestCase):
                 {s["section_id"] for s in kept},
             )
             self.assertEqual(meta.get("tender_procedural_routed_out", 0), 0)
+            self.assertEqual(meta.get("tender_span_routed_out", 0), 0)
+
+    def _tender_span_blocks(self) -> list[dict]:
+        return [
+            {"block_id": "H-ITB", "type": "heading",
+             "text": "Instructions to Bidders", "order": 1},
+            {"block_id": "S-COI", "type": "heading",
+             "text": "3 Any conflict of interest on the part of the Bidder must be declared.",
+             "order": 2},
+            {"block_id": "P-COI", "type": "paragraph",
+             "text": "The Bidder shall declare any conflict.", "order": 3},
+            {"block_id": "S-TECH-IN-SPAN", "type": "heading",
+             "text": "1 METER TECHNICAL SPECIFICATION", "order": 4},
+            {"block_id": "P-TECH-IN-SPAN", "type": "paragraph",
+             "text": "The meter shall record voltage.", "order": 5},
+            {"block_id": "H-TECH", "type": "heading",
+             "text": "1 METER TECHNICAL SPECIFICATION", "order": 6},
+            {"block_id": "P-TECH", "type": "paragraph",
+             "text": "The meter shall log events.", "order": 7},
+            {"block_id": "H-PRICE", "type": "heading",
+             "text": "Commercial Schedule", "order": 8},
+            {"block_id": "P-PRICE", "type": "paragraph",
+             "text": "Unit prices shall be quoted in USD.", "order": 9},
+            {"block_id": "H-INTRO", "type": "heading",
+             "text": "Introduction", "order": 10},
+            {"block_id": "P-INTRO", "type": "paragraph",
+             "text": "This document describes the procurement.", "order": 11},
+            {"block_id": "B-CROSS-A", "type": "paragraph",
+             "text": "Conflict clause body.", "order": 12},
+            {"block_id": "B-CROSS-B", "type": "paragraph",
+             "text": "The meter shall keep a log.", "order": 13},
+        ]
+
+    def test_tender_span_inherits_sentence_headings_until_technical_reset(self) -> None:
+        """instructions 锚点后的句子型 heading 继承区域；technical 锚点重置为保留。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            _seed_out(out)
+            blocks = _blocks_jsonl() + self._tender_span_blocks()
+            sections = fe.load_clauses(out) + [
+                {
+                    "section_id": "3 Any conflict of interest on the part of the Bidder must be declared.",
+                    "section_path": [
+                        "3 Any conflict of interest on the part of the Bidder must be declared."
+                    ],
+                    "heading": "3 Any conflict of interest on the part of the Bidder must be declared.",
+                    "text": "The Bidder shall declare any conflict.",
+                    "block_ids": ["S-COI", "P-COI"],
+                },
+                {
+                    "section_id": "1 METER TECHNICAL SPECIFICATION",
+                    "section_path": ["1 METER TECHNICAL SPECIFICATION"],
+                    "heading": "1 METER TECHNICAL SPECIFICATION",
+                    "text": "The meter shall log events.",
+                    "block_ids": ["H-TECH", "P-TECH"],
+                },
+                {
+                    "section_id": "quoted prices",
+                    "section_path": ["quoted prices"],
+                    "heading": "quoted prices",
+                    "text": "Unit prices shall be quoted in USD.",
+                    "block_ids": ["P-PRICE"],
+                },
+                {
+                    "section_id": "Introduction body",
+                    "section_path": ["Introduction body"],
+                    "heading": "This document",
+                    "text": "This document describes the procurement.",
+                    "block_ids": ["P-INTRO"],
+                },
+            ]
+            kept, meta = fe.apply_unit_routing(sections, blocks=blocks, out_dir=out)
+            kept_ids = {s["section_id"] for s in kept}
+            self.assertNotIn(
+                "3 Any conflict of interest on the part of the Bidder must be declared.",
+                kept_ids)
+            self.assertIn("1 METER TECHNICAL SPECIFICATION", kept_ids)
+            self.assertNotIn("quoted prices", kept_ids)
+            self.assertIn("Introduction body", kept_ids)
+            self.assertGreaterEqual(meta["tender_span_routed_out"], 1)
+            self.assertIn(
+                "3 Any conflict of interest on the part of the Bidder must be declared.",
+                meta["tender_span_section_ids"])
+            self.assertIn(
+                "3 Any conflict of interest on the part of the Bidder must be declared.",
+                meta["routed_out_section_ids"])
+            self.assertIn("quoted prices", meta["tender_span_section_ids"])
+            self.assertNotIn(
+                "1 METER TECHNICAL SPECIFICATION", meta["tender_span_section_ids"])
+            self.assertNotIn("Introduction body", meta["tender_span_section_ids"])
+
+    def test_technical_title_inside_instructions_span_is_kept(self) -> None:
+        """条款自带 technical 标题但物理位置在 instructions 跨度内 → 保留。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            _seed_out(out)
+            blocks = _blocks_jsonl() + self._tender_span_blocks()
+            sections = fe.load_clauses(out) + [{
+                "section_id": "1 METER TECHNICAL SPECIFICATION (in span)",
+                "section_path": ["1 METER TECHNICAL SPECIFICATION"],
+                "heading": "1 METER TECHNICAL SPECIFICATION",
+                "text": "The meter shall record voltage.",
+                "block_ids": ["S-TECH-IN-SPAN", "P-TECH-IN-SPAN"],
+            }]
+            kept, meta = fe.apply_unit_routing(sections, blocks=blocks, out_dir=out)
+            self.assertIn(
+                "1 METER TECHNICAL SPECIFICATION (in span)",
+                {s["section_id"] for s in kept})
+            self.assertNotIn(
+                "1 METER TECHNICAL SPECIFICATION (in span)",
+                meta.get("tender_span_section_ids", []))
+
+    def test_clause_crossing_span_boundary_is_kept(self) -> None:
+        """条款块跨越跨度边界（部分在外）→ 保留。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            _seed_out(out)
+            blocks = _blocks_jsonl() + self._tender_span_blocks()
+            sections = fe.load_clauses(out) + [{
+                "section_id": "cross-boundary",
+                "section_path": ["cross-boundary"],
+                "heading": "cross-boundary",
+                "text": "Conflict clause body. The meter shall keep a log.",
+                "block_ids": ["P-COI", "P-TECH"],
+            }]
+            kept, meta = fe.apply_unit_routing(sections, blocks=blocks, out_dir=out)
+            self.assertIn("cross-boundary", {s["section_id"] for s in kept})
+            self.assertNotIn("cross-boundary", meta.get("tender_span_section_ids", []))
+
+    def test_front_matter_numbered_definitions_routed_control_kept(self) -> None:
+        """编号前缀剥离：'2 DEFINITIONS' 命中；'2 20 Control of' 不命中 definitions。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            _seed_out(out)
+            sections = fe.load_clauses(out) + [
+                {
+                    "section_id": "2 DEFINITIONS",
+                    "section_path": ["2 DEFINITIONS"],
+                    "heading": "2 DEFINITIONS",
+                    "text": "For the purpose of this document.",
+                    "block_ids": ["B-DEF"],
+                },
+                {
+                    "section_id": "2 20 Control of",
+                    "section_path": ["2 20 Control of"],
+                    "heading": "2 20 Control of",
+                    "text": "The meter shall control disconnection.",
+                    "block_ids": ["B-CTL"],
+                },
+            ]
+            kept, meta = fe.apply_unit_routing(
+                sections, blocks=_blocks_jsonl(), out_dir=out)
+            kept_ids = {s["section_id"] for s in kept}
+            self.assertNotIn("2 DEFINITIONS", kept_ids)
+            self.assertIn("2 20 Control of", kept_ids)
+            self.assertIn("2 DEFINITIONS", meta["front_matter_section_ids"])
 
     def test_stale_decisions_recomputed_in_memory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

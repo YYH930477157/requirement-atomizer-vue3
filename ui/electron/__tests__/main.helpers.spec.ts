@@ -34,6 +34,7 @@ import {
   resolveAutoRestoreCandidates,
   resolveAutoRestoreDir,
   resolveBackendCommand,
+  resolveDeliverableFiles,
   resolveBoundLlmApiKey,
   resolveLlmTestConnection,
   resolvePythonScriptPath,
@@ -969,5 +970,35 @@ describe("readGovernedArtifact (WS-F)", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
+  })
+})
+
+describe("resolveDeliverableFiles", () => {
+  it("reports root files and governed run_manifest", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "ratom-dl-"))
+    try {
+      writeFileSync(path.join(dir, "document_annotation.html"), "<html></html>")
+      mkdirSync(path.join(dir, ".ratomizer", "stages"), { recursive: true })
+      writeFileSync(path.join(dir, ".ratomizer", "stages", "run_manifest.json"), "{}")
+      const result = resolveDeliverableFiles(dir, [
+        "软件需求列表-成文.xlsx",
+        "document_annotation.html",
+        "clarification_questions.xlsx",
+        "run_manifest.json",
+      ])
+      expect(result["软件需求列表-成文.xlsx"].exists).toBe(false)
+      expect(result["clarification_questions.xlsx"].exists).toBe(false)
+      expect(result["document_annotation.html"].exists).toBe(true)
+      expect(result["run_manifest.json"].exists).toBe(true)
+      expect(result["run_manifest.json"].path).toContain(`${path.sep}stages${path.sep}run_manifest.json`)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("rejects path traversal names", () => {
+    const result = resolveDeliverableFiles("E:\\out", ["../secret.txt"])
+    expect(result["../secret.txt"].exists).toBe(false)
+    expect(result["../secret.txt"].path).toBeNull()
   })
 })
