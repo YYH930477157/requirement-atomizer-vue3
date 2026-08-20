@@ -200,10 +200,10 @@
                 <span class="path-hint" data-testid="selected-output-dir" :title="currentOutputDir || undefined">{{ currentOutputDir || "尚未选择输出目录" }}</span>
               </div>
               <div class="dl-files" data-testid="deliverable-html">
-                <div v-for="f in DELIVERABLE_FILES" :key="f.key" class="dl-file">
+                <div v-for="f in DELIVERABLE_FILES" :key="f.key" class="dl-file" :class="{ 'is-missing': !deliverableExists(f.name) }">
                   <span class="dl-icon" :class="f.tone"><component :is="f.icon" :size="16" :stroke-width="1.9" aria-hidden="true" /></span>
-                  <span class="dl-name"><strong>{{ f.name }}</strong><small>{{ f.hint }}</small></span>
-                  <button class="deliverable-open" type="button" :aria-label="`打开 ${f.name}`" :title="`打开 ${f.name}`" @click="openDeliverable(f.name)"><ExternalLink :size="15" aria-hidden="true" /></button>
+                  <span class="dl-name"><strong>{{ f.name }}</strong><small>{{ deliverableExists(f.name) ? f.hint : "未生成" }}</small></span>
+                  <button class="deliverable-open" type="button" :aria-label="`打开 ${f.name}`" :title="deliverableExists(f.name) ? `打开 ${f.name}` : `${f.name} 未生成`" :disabled="!deliverableExists(f.name)" @click="openDeliverable(f.name)"><ExternalLink :size="15" aria-hidden="true" /></button>
                 </div>
               </div>
               <div v-if="lastStageNotes.length" class="note-warn">
@@ -875,17 +875,44 @@ const DELIVERABLE_FILES = [
   { key: "clarification", icon: CircleHelp, tone: "xls", name: "clarification_questions.xlsx", hint: "必答澄清 · 问客户/内部核对" },
   { key: "manifest", icon: Braces, tone: "jsn", name: "run_manifest.json", hint: "阶段台账 · 路由与续跑依据" },
 ] as const
+const deliverablePresence = ref<Record<string, { exists: boolean; path: string | null }>>({})
+function deliverableExists(name: string): boolean {
+  return Boolean(deliverablePresence.value[name]?.exists)
+}
+async function refreshDeliverablePresence() {
+  const names = DELIVERABLE_FILES.map((item) => item.name)
+  const dir = currentOutputDir.value
+  if (!dir) {
+    deliverablePresence.value = Object.fromEntries(names.map((name) => [name, { exists: false, path: null }]))
+    return
+  }
+  const stat = window.ratomizerDesktop?.statDeliverables
+  if (!stat) {
+    deliverablePresence.value = Object.fromEntries(names.map((name) => [name, { exists: false, path: null }]))
+    return
+  }
+  try {
+    deliverablePresence.value = await stat({ outDir: dir, names })
+  } catch {
+    deliverablePresence.value = Object.fromEntries(names.map((name) => [name, { exists: false, path: null }]))
+  }
+}
 async function openDeliverable(name: string) {
   if (!currentOutputDir.value) {
     apiMessage.value = "尚未选择输出目录——先运行或打开一个输出目录"
+    return
+  }
+  if (!deliverableExists(name)) {
+    apiMessage.value = `${name} 未生成`
     return
   }
   if (name === "document_annotation.html") {
     void handleExportAnnotationHtml()   // 幂等重渲染,保证打开最新
     return
   }
+  const resolved = deliverablePresence.value[name]?.path || (currentOutputDir.value + "\\" + name)
   try {
-    await window.ratomizerDesktop?.openPath?.(currentOutputDir.value + "\\" + name)
+    await window.ratomizerDesktop?.openPath?.(resolved)
   } catch (error) {
     apiMessage.value = error instanceof Error ? error.message : `打开 ${name} 失败（可能尚未生成）`
   }
@@ -925,6 +952,7 @@ const apiMessageExpanded = ref(false)
 watch(apiMessage, () => { apiMessageExpanded.value = false })
 const currentInputPath = ref("")
 const currentOutputDir = ref("")
+watch(currentOutputDir, () => { void refreshDeliverablePresence() })
 const isRunning = ref(false)
 const isTranslating = ref(false)
 const isSubmitting = ref(false)
@@ -2362,6 +2390,7 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
   } finally {
     stopProgress?.()
     isRunning.value = false
+    void refreshDeliverablePresence()
   }
 }
 
@@ -4058,6 +4087,14 @@ tbody tr.selected {
 .dl-name strong { display: block; font-size: 13px; font-weight: 600; color: #1a2233;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .dl-name small { font-size: 11.5px; color: #98a1b3; }
+.dl-file.is-missing { opacity: 0.55; }
+.dl-file.is-missing .dl-name strong { color: #98a1b3; }
+.deliverable-open:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+  color: #98a1b3;
+  background: transparent;
+}
 
 .note-warn {
   display: flex;

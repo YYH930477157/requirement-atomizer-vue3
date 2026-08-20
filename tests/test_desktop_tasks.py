@@ -8,7 +8,7 @@ import tempfile
 import threading
 import time
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 from unittest.mock import ANY, patch
@@ -2980,6 +2980,110 @@ class FunctionalExtractStageConfigTests(unittest.TestCase):
             config["strategy_warning"],
             "functional_extract_with_explicit_legacy_packing",
         )
+
+
+class FunctionalExtractCompletionScopeTests(unittest.TestCase):
+    """WP3：完成证据的阶段名与 chain 替换权威同步。"""
+
+    def test_replace_helper_swaps_legacy_pair_when_extract_on(self) -> None:
+        with patch.dict(os.environ, {"RATOMIZER_FUNCTIONAL_EXTRACT": "1"}):
+            self.assertEqual(
+                desktop_tasks._replace_functional_extract_stages([
+                    "atomize", "ai-extract", "functional-synthesis",
+                    "export-annotation-html",
+                ]),
+                ["atomize", "functional-extract", "export-annotation-html"],
+            )
+
+    def test_replace_helper_noop_when_extract_off(self) -> None:
+        stages = ["atomize", "ai-extract", "functional-synthesis"]
+        with patch.dict(os.environ, {"RATOMIZER_FUNCTIONAL_EXTRACT": "0"}):
+            self.assertEqual(
+                desktop_tasks._replace_functional_extract_stages(stages),
+                stages,
+            )
+
+    def test_start_stores_replaced_requested_stages(self) -> None:
+        from result_package import load_result_package
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "o"
+            source = Path(tmp) / "in.docx"
+            source.write_bytes(b"docx-fixture")
+            with patch.dict(os.environ, {"RATOMIZER_FUNCTIONAL_EXTRACT": "1"}):
+                with redirect_stdout(io.StringIO()):
+                    code = desktop_tasks.main([
+                        "result-package-start", "--out", str(out),
+                        "--input", str(source),
+                        "--stages", "atomize,ai-extract,functional-synthesis",
+                    ])
+            self.assertEqual(code, 0)
+            package = load_result_package(out)
+            self.assertEqual(
+                package["active_attempt"]["requested_stages"],
+                ["atomize", "functional-extract"],
+            )
+
+    def test_complete_partial_names_functional_extract_not_ai_extract(self) -> None:
+        from result_package import load_result_package, package_artifact_path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "o"
+            source = Path(tmp) / "in.docx"
+            source.write_bytes(b"docx-fixture")
+            with patch.dict(os.environ, {"RATOMIZER_FUNCTIONAL_EXTRACT": "1"}):
+                with redirect_stdout(io.StringIO()):
+                    self.assertEqual(desktop_tasks.main([
+                        "result-package-start", "--out", str(out),
+                        "--input", str(source),
+                        "--stages", "atomize,ai-extract,functional-synthesis",
+                    ]), 0)
+                run_id = load_result_package(out)["active_attempt"]["run_id"]
+                manifest = package_artifact_path(out, "run_manifest", for_write=True)
+                manifest.write_text(json.dumps({
+                    "manifest_version": 2,
+                    "stages": {
+                        "atomize": {"status": "ok", "attempt_run_id": run_id},
+                    },
+                }), encoding="utf-8")
+                stdout = io.StringIO()
+                stderr = io.StringIO()
+                with redirect_stdout(stdout), redirect_stderr(stderr):
+                    code = desktop_tasks.main([
+                        "result-package-complete", "--out", str(out),
+                        "--run-id", run_id,
+                        "--completed-stages",
+                        "atomize,ai-extract,functional-synthesis",
+                    ])
+            self.assertEqual(code, 2)
+            text = stdout.getvalue() + stderr.getvalue()
+            self.assertIn("functional-extract (missing)", text)
+            self.assertNotIn("ai-extract (missing)", text)
+            package = load_result_package(out)
+            self.assertEqual(package["last_attempt"]["status"], "partial")
+            self.assertIn("functional-extract (missing)", package["last_attempt"]["error"])
+            self.assertNotIn("ai-extract (missing)", package["last_attempt"]["error"])
+
+    def test_rollback_start_keeps_ai_extract_requested(self) -> None:
+        from result_package import load_result_package
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "o"
+            source = Path(tmp) / "in.docx"
+            source.write_bytes(b"docx-fixture")
+            with patch.dict(os.environ, {"RATOMIZER_FUNCTIONAL_EXTRACT": "0"}):
+                with redirect_stdout(io.StringIO()):
+                    code = desktop_tasks.main([
+                        "result-package-start", "--out", str(out),
+                        "--input", str(source),
+                        "--stages", "atomize,ai-extract,functional-synthesis",
+                    ])
+            self.assertEqual(code, 0)
+            package = load_result_package(out)
+            self.assertEqual(
+                package["active_attempt"]["requested_stages"],
+                ["atomize", "ai-extract", "functional-synthesis"],
+            )
 
 
 if __name__ == "__main__":

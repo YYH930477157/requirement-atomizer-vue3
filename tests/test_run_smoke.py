@@ -12,9 +12,8 @@ class RunSmokeTests(unittest.TestCase):
         modules = run_smoke.load_modules(run_smoke.DEFAULT_MANIFEST)
         suite = run_smoke.build_suite(modules)
         self.assertEqual(len(modules), 90)
-        # 1785 = 1778 + 3（SBD 续跑：守恒闸后继续、mixed/partial 可复用、skip 不洗白）
-        # + 4（合入时相对旧钉值的既有漂移，按 run_smoke discover 实测对齐）。
-        self.assertEqual(suite.countTestCases(), 1785)
+        # 1790 = 1785 + 5（WP3：completion 阶段名与直抽替换权威同步）
+        self.assertEqual(suite.countTestCases(), 1790)
 
     def test_manifest_rejects_duplicates_and_non_test_modules(self) -> None:
         for content in ("tests.test_atomize\ntests.test_atomize\n", "atomize\n"):

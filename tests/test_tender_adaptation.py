@@ -12,7 +12,11 @@ import table_structure
 import unextracted_registry
 from claim_catalog import build_claim_catalog
 from table_dispositions import build_table_cell_dispositions
-from tender_regions import apply_tender_regions, classify_tender_region
+from tender_regions import (
+    apply_tender_regions,
+    classify_tender_region,
+    tender_region_spans,
+)
 from tender_table_filter import (
     TENDER_TABLE_FILTER_VERSION,
     classify_tender_table_kind,
@@ -259,6 +263,56 @@ class TenderRegionTests(unittest.TestCase):
     def test_tax_clearance_still_instructions(self):
         block = {"type": "heading", "text": "11 Valid Tax Clearance Certificate"}
         self.assertEqual(classify_tender_region(block), "tender_instructions")
+
+
+class TenderRegionSpanTests(unittest.TestCase):
+    """招标程序性区域跨度继承（不改 apply_tender_regions / A9-2 默认关）。"""
+
+    def test_span_inherits_until_next_anchor(self):
+        blocks = [
+            {"block_id": "B0", "type": "paragraph", "text": "Cover text"},
+            {"block_id": "H1", "type": "heading", "text": "Instructions to Bidders"},
+            {"block_id": "S1", "type": "heading",
+             "text": "3 Any conflict of interest on the part of the Bidder must be declared."},
+            {"block_id": "P1", "type": "paragraph", "text": "Declare conflicts."},
+            {"block_id": "H2", "type": "heading", "text": "1 METER TECHNICAL SPECIFICATION"},
+            {"block_id": "P2", "type": "paragraph", "text": "The meter shall log."},
+            {"block_id": "H3", "type": "heading", "text": "Commercial Schedule"},
+            {"block_id": "P3", "type": "paragraph", "text": "Quote in USD."},
+            {"block_id": "H4", "type": "heading", "text": "Introduction"},
+            {"block_id": "P4", "type": "paragraph", "text": "Overview only."},
+        ]
+        spans = tender_region_spans(blocks)
+        self.assertNotIn("B0", spans)
+        self.assertEqual(spans["H1"], "tender_instructions")
+        self.assertEqual(spans["S1"], "tender_instructions")
+        self.assertEqual(spans["P1"], "tender_instructions")
+        self.assertEqual(spans["H2"], "tender_technical")
+        self.assertEqual(spans["P2"], "tender_technical")
+        self.assertEqual(spans["H3"], "tender_commercial")
+        self.assertEqual(spans["P3"], "tender_commercial")
+        self.assertEqual(spans["H4"], "tender_preface")
+        self.assertEqual(spans["P4"], "tender_preface")
+
+    def test_apply_tender_regions_still_heading_only(self):
+        """跨度函数不得改变 A9-2 默认关闭面：apply 仍只标命中 heading。"""
+        blocks = [
+            {"block_id": "H1", "type": "heading", "text": "Instructions to Bidders",
+             "doc_region": "body"},
+            {"block_id": "P1", "type": "paragraph", "text": "Declare conflicts.",
+             "doc_region": "body"},
+        ]
+        apply_tender_regions(blocks)
+        self.assertEqual(blocks[0]["tender_region"], "tender_instructions")
+        self.assertNotIn("tender_region", blocks[1])
+        self.assertEqual(blocks[1]["doc_region"], "body")
+
+    def test_no_anchor_document_has_empty_spans(self):
+        blocks = [
+            {"block_id": "H1", "type": "heading", "text": "8 METER FUNCTIONS"},
+            {"block_id": "P1", "type": "paragraph", "text": "The meter shall log events."},
+        ]
+        self.assertEqual(tender_region_spans(blocks), {})
 
 
 class TenderFigurePageTests(unittest.TestCase):

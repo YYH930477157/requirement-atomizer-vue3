@@ -101,6 +101,28 @@ def _normalize_title(text: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"[^\w\s]", " ", text or "").lower()).strip()
 
 
+def tender_region_spans(blocks: list[dict[str, Any]]) -> dict[str, str]:
+    """按文档物理块流继承 tender 区域（block_id → tender_region）。
+
+    遍历 blocks 顺序：heading 经 ``classify_tender_region`` 命中时更新当前区域；
+    其后所有块（含未命中的 heading——解析器升格的正文句）继承该区域，直到
+    下一个命中的 heading。首个锚点之前的块不入表（保守，调用方不得据此路由）。
+
+    不改 ``apply_tender_regions``、A9-2 默认关闭面或 ``TENDER_REGION_FILTER_VERSION``。
+    """
+    spans: dict[str, str] = {}
+    current: str | None = None
+    for block in blocks:
+        if str(block.get("type") or "") == "heading":
+            hit = classify_tender_region(block)
+            if hit is not None:
+                current = hit
+        block_id = str(block.get("block_id") or "")
+        if block_id and current is not None:
+            spans[block_id] = current
+    return spans
+
+
 def classify_tender_region(block: dict[str, Any]) -> str | None:
     """对单个 heading 块判定 tender 区域类型；非 heading 返回 None。
 

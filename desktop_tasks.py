@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from functools import wraps
 from pathlib import Path
 from threading import RLock
-from typing import Any, Iterator, Sequence
+from typing import Any, Iterable, Iterator, Sequence
 
 import ai_extract
 import claim_ledger
@@ -2367,6 +2367,34 @@ def _stage_completion_status(stage: str, payload: Any) -> str:
     return "ok"
 
 
+def _replace_functional_extract_stages(stages: Iterable[str]) -> list[str]:
+    """直抽开启时把 ai-extract + functional-synthesis 换成 functional-extract。
+
+    chain / result-package-start / result-package-complete 共用这一替换权威。
+    显式 ``RATOMIZER_FUNCTIONAL_EXTRACT=0`` 原样返回（旧回滚链不受影响）。
+    保留 CHAIN_ORDER 之外的阶段（atomize / llm-review）。
+    """
+    from functional_extract import functional_extract_enabled
+
+    incoming = [str(stage).strip() for stage in stages if str(stage).strip()]
+    if not functional_extract_enabled():
+        return list(dict.fromkeys(incoming))
+    legacy_pair = {"ai-extract", "functional-synthesis"}
+    if not legacy_pair.intersection(incoming):
+        return list(dict.fromkeys(incoming))
+    replaced: list[str] = []
+    inserted = False
+    for stage in incoming:
+        if stage in legacy_pair:
+            if not inserted and "functional-extract" not in replaced:
+                replaced.append("functional-extract")
+                inserted = True
+            continue
+        if stage not in replaced:
+            replaced.append(stage)
+    return replaced
+
+
 def _functional_extract_stage_config() -> dict[str, Any]:
     """functional-extract 阶段指纹配置：策略/负例条数改变产物 → 阶段必须重跑。
 
@@ -2430,8 +2458,7 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
         legacy_pair = [s for s in ("ai-extract", "functional-synthesis") if s in ordered]
         if legacy_pair:
             functional_extract_replaced = legacy_pair
-            ordered = [s for s in CHAIN_ORDER
-                       if s in (set(ordered) - set(legacy_pair)) | {"functional-extract"}]
+            ordered = [s for s in CHAIN_ORDER if s in set(_replace_functional_extract_stages(ordered))]
     if "template-write" in ordered and template_path is None:
         raise ValueError("template-write 阶段需要 --template（公司需求列表模板路径）")
     # 翻译交付模式（§12.1，M6/§20）：off/markers 明确不需要全文双语——full-translation
@@ -2996,13 +3023,15 @@ def _result_package_main(args: argparse.Namespace) -> int:
             package = initialize_result_package(
                 package_root,
                 input_path=args.input,
-                requested_stages=split_formats(args.stages),
+                requested_stages=_replace_functional_extract_stages(
+                    split_formats(args.stages)),
             )
         elif args.command == "result-package-complete":
             package = commit_analysis_completion(
                 package_root,
                 run_id=args.run_id,
-                completed_stages=split_formats(args.completed_stages),
+                completed_stages=_replace_functional_extract_stages(
+                    split_formats(args.completed_stages)),
             )
         elif args.command == "result-package-fail":
             package = record_analysis_failure(

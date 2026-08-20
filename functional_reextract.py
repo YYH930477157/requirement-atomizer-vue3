@@ -354,6 +354,7 @@ def functional_targeted_reextract(
     # 用当前代码确定性重算路由（不信产物记录的清单——与守恒永远现算同纪律）；legacy
     # 产物零变化。指向被路由出表格块的 claim 会找不到条款族 → 如实报错（表格归 A 轨）。
     if str(payload.get("context_pack_strategy") or "legacy") == "clause_family":
+        # 单一权威：与直抽同一 apply_unit_routing（含招标跨度/前置样板），不复制判定。
         sections, _routing_meta = fe.apply_unit_routing(
             sections, blocks=fe._load_blocks(root), out_dir=root)
         if not sections:

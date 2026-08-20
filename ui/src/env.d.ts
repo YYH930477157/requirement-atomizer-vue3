@@ -74,6 +74,7 @@ declare global {
       selectOutputDir: () => Promise<string | null>
       openOutput: () => Promise<RequirementAtomizerApiSession | null>
       openPath: (targetPath: string) => Promise<void>
+      statDeliverables?: (input: { outDir: string; names: string[] }) => Promise<Record<string, { exists: boolean; path: string | null }>>
       getApiSession: () => Promise<RequirementAtomizerApiSession | null>
       getDefaultOutputRoot: () => Promise<string>
       startApiSession: (outDir: string) => Promise<RequirementAtomizerApiSession | null>

@@ -771,6 +771,38 @@ function resolveAutoRestoreDir(filePath, deps = {}) {
   return resolveAutoRestoreCandidates(filePath, deps)[0] || "";
 }
 
+// 最新交付物面板：按输出目录解析 basename 是否真实存在。根文件优先；
+// run_manifest.json 在 package_v1 下落在 .ratomizer/stages/（根目录通常没有）。
+function resolveDeliverableFiles(outDir, names, deps = {}) {
+  const fsImpl = deps.fs || fs;
+  const root = String(outDir || "").trim();
+  const result = {};
+  for (const raw of names || []) {
+    const name = typeof raw === "string" ? raw.trim() : "";
+    if (!root || !name || path.basename(name) !== name) {
+      result[name || String(raw || "")] = { exists: false, path: null };
+      continue;
+    }
+    const candidates = [path.join(root, name)];
+    if (name === "run_manifest.json") {
+      candidates.push(path.join(root, ".ratomizer", "stages", "run_manifest.json"));
+    }
+    let found = null;
+    for (const candidate of candidates) {
+      try {
+        if (fsImpl.statSync(candidate).isFile()) {
+          found = candidate;
+          break;
+        }
+      } catch {
+        // 候选不存在或不可访问——试下一个
+      }
+    }
+    result[name] = { exists: Boolean(found), path: found };
+  }
+  return result;
+}
+
 module.exports = {
   DEFAULT_LLM_SETTINGS,
   acquireSingleInstanceLock,
@@ -800,6 +832,7 @@ module.exports = {
   recentSessionLabel,
   resolveAutoRestoreCandidates,
   resolveAutoRestoreDir,
+  resolveDeliverableFiles,
   resolveLlmTestConnection,
   resolveBackendCommand,
   resolveBoundLlmApiKey,

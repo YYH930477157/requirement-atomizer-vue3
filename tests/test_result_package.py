@@ -731,6 +731,15 @@ class ResultPackageTests(unittest.TestCase):
 class ResultPackagePublicationTimingTests(unittest.TestCase):
     """2026-08-03 审查 I1/I2/I3 回归：发布时机、只读纪律与结构化错误面。"""
 
+    def setUp(self) -> None:
+        # 本类用 ai-extract 阶段名测发布事务，不是直抽替换。默认 FUNCTIONAL_EXTRACT=1
+        # 时 desktop_tasks 会把 start/complete 的阶段名换成 functional-extract，
+        # 与本类直接 commit_analysis_completion(completed_stages=["ai-extract"]) 对不上。
+        # 显式 =0 走旧回滚链词汇，发布时机断言保持原语义。
+        patcher = patch.dict(os.environ, {"RATOMIZER_FUNCTIONAL_EXTRACT": "0"})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def _source(self, root: Path) -> Path:
         source = root / "standard.docx"
         source.write_bytes(b"docx-fixture")
@@ -1052,6 +1061,11 @@ class ResultPackagePublicationTimingTests(unittest.TestCase):
 
 class PublishRaceAndPartialPersistenceTests(unittest.TestCase):
     """2026-08-03 复审残余项回归：R1 发布并发窗口、R2 partial 状态持久化。"""
+
+    def setUp(self) -> None:
+        patcher = patch.dict(os.environ, {"RATOMIZER_FUNCTIONAL_EXTRACT": "0"})
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def _source(self, root: Path) -> Path:
         source = root / "standard.docx"
