@@ -1581,6 +1581,21 @@ def raise_if_unconserved(report: dict[str, Any]) -> None:
 
 
 def _check_failure_count(name: str, result: dict[str, Any]) -> int:
+    if name == "evidence_presence":
+        # 该检查同时写 items_without_evidence / evidence_mismatches /
+        # binding_mismatches；先读到空的 items_without_evidence 不得把失败数报成 0。
+        total = sum(
+            len(result[key])
+            for key in (
+                "items_without_evidence",
+                "evidence_mismatches",
+                "binding_mismatches",
+            )
+            if isinstance(result.get(key), list)
+        )
+        if total:
+            return total
+        return 0 if result.get("ok", True) else 1
     for key in ("uncovered_sections", "uncovered_obligations", "items_without_evidence",
                 "evidence_mismatches", "binding_mismatches", "groups", "blocking_losses"):
         value = result.get(key)
@@ -1921,6 +1936,30 @@ _FRONT_MATTER_TOP_LEVEL = frozenset({
     "communication profiles",
 })
 
+# 招标程序性区域：投标须知/商务附件出 B 轨。不含 tender_preface——
+# Introduction 会出现在正文技术条款标题里，误伤电表功能章。
+_TENDER_PROCEDURAL_REGIONS = frozenset({"tender_instructions", "tender_commercial"})
+
+
+def _section_is_tender_procedural(section: dict[str, Any]) -> bool:
+    """条款标题/路径是否为招标程序性章节（开标、税清、保函、商务附件）。"""
+    from tender_regions import classify_tender_region
+
+    titles: list[str] = []
+    for raw in (
+        section.get("heading"),
+        section.get("section_id"),
+        *((section.get("section_path") or [])),
+    ):
+        title = str(raw or "").strip()
+        if title and title not in titles:
+            titles.append(title)
+    return any(
+        classify_tender_region({"type": "heading", "text": title})
+        in _TENDER_PROCEDURAL_REGIONS
+        for title in titles
+    )
+
 
 def _load_routing_units(out_dir: Path) -> tuple[list[dict[str, Any]], bool]:
     """加载（必要时现场规划）extraction units；返回 (units, planned_now)。
@@ -2034,6 +2073,7 @@ def apply_unit_routing(
     kept: list[dict[str, Any]] = []
     routed_out: list[dict[str, Any]] = []
     front_matter: list[dict[str, Any]] = []
+    tender_procedural: list[dict[str, Any]] = []
     mixed_kept = 0
     for section in sections:
         path = [str(part).strip() for part in (section.get("section_path") or [])]
@@ -2042,6 +2082,9 @@ def apply_unit_routing(
             # §7.5 前置样板章节：范围/引用/术语定义——归 context 索引，不进 B 轨
             # （单独计数，与表格路由区分审计）。
             front_matter.append(section)
+            continue
+        if _section_is_tender_procedural(section):
+            tender_procedural.append(section)
             continue
         block_ids = [str(b) for b in (section.get("block_ids") or []) if str(b)]
         has_table = bool(block_ids) and any(b in table_block_ids for b in block_ids)
@@ -2066,8 +2109,14 @@ def apply_unit_routing(
         front_matter_section_ids=[
             " / ".join(str(p) for p in (section.get("section_path") or []))
             for section in front_matter],
+        tender_procedural_routed_out=len(tender_procedural),
+        tender_procedural_section_ids=[
+            str(section.get("section_id") or "") for section in tender_procedural],
         routed_out_section_ids=[
-            str(section.get("section_id") or "") for section in routed_out],
+            str(section.get("section_id") or "") for section in routed_out
+        ] + [
+            str(section.get("section_id") or "") for section in tender_procedural
+        ],
         routed_out_block_ids=sorted({
             str(b) for section in routed_out
             for b in (section.get("block_ids") or []) if str(b)

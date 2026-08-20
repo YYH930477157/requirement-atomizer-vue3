@@ -64,6 +64,8 @@ declare global {
     analysis_root?: string
     package?: unknown
     layout?: string
+    conservation_blocked?: boolean
+    conservation_block_error?: string
   }
 
   interface Window {

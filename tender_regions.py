@@ -43,6 +43,8 @@ _INSTRUCTIONS_RE = re.compile(
     r"price\s+schedule|bill\s+of\s+quantities|boq|form\s+of\s+tender|tender\s+form|"
     r"bid\s+form|declaration|signatory|bank\s+guarantee|performance\s+bond|"
     r"tender\s+validity|validity\s+period|closing\s+date|opening\s+of\s+tender|"
+    r"bid\s+opening|opening\s+of\s+(?:the\s+)?bids?|"
+    r"tax\s+clearance|bid\s+security|bid\s+bond|"
     r"submission\s+deadline|procurement|purchasing|vendor\s+registration)"
     r"|^(?:投标须知|投标人须知|资格要求|评审办法|评标办法|合同条款|商务条款|"
     r"价格表|报价表|投标函|法定代表人|授权书|银行保函|履约保函|开标|评标|定标|"

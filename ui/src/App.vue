@@ -1258,6 +1258,13 @@ function startProgressDemo() {
   }, tickMs)
 }
 
+function shortConservationError(raw: string, limit = 180): string {
+  const marker = "功能需求守恒核对未闭合"
+  const idx = raw.indexOf(marker)
+  const focused = idx >= 0 ? raw.slice(idx) : raw
+  return focused.length > limit ? `${focused.slice(0, limit)}…` : focused
+}
+
 function applyRunManifestSummary(summary: Record<string, unknown> | null) {
   const manifest = objectValue(summary?.run_manifest)
   const stages = objectValue(manifest?.stages)
@@ -1273,10 +1280,21 @@ function applyRunManifestSummary(summary: Record<string, unknown> | null) {
         percent: 100,
         detail: lastAction === "skipped" ? "复用已有产物" : "产物已生成",
       })
+    } else if (status === "partial") {
+      setRunStageState(item.key, {
+        status: "ok",
+        percent: 100,
+        detail: "产物已生成（部分条款降级，待核对）",
+      })
     } else if (status === "running") {
       setRunStageState(item.key, { status: "running", percent: 0, detail: "上次中断在此阶段" })
     } else if (status === "failed") {
-      setRunStageState(item.key, { status: "failed", percent: 0, detail: String(entry.error || "上次执行失败") })
+      const raw = String(entry.error || "上次执行失败")
+      setRunStageState(item.key, {
+        status: "failed",
+        percent: 0,
+        detail: raw.includes("功能需求守恒核对未闭合") ? shortConservationError(raw) : raw,
+      })
     }
   }
 }
@@ -2220,6 +2238,10 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
           ? (chainPayload.stage_notes as unknown[]).map((n) => String(n)) : []
         if (chainNotes.length) {
           readinessNote += `；注意：${chainNotes.join("；")}`
+        }
+        if (chainPayload?.conservation_blocked) {
+          const block = String(chainPayload.conservation_block_error || "功能需求守恒核对未闭合")
+          readinessNote += `；成文已阻断：${shortConservationError(block)}`
         }
         lastStageNotes.value = chainNotes
         // 运行页总览瓦片（样机）：从链载荷提取,缺项保持 —

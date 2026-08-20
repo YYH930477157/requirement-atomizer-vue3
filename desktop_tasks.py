@@ -1645,11 +1645,22 @@ def _stage_reuse_check(out_dir: Path, stage: str, *,
     # 复用任何现成产物无害（最坏反而复用了更好的），保留遗留目录续跑价值（文件存在即可）。
     if not entry:
         return False, None
+    recorded_status = str(entry.get("status") or "")
+    recorded_route = str(entry.get("route") or "")
+    # SBD result3：直抽 mixed/partial 仍有可用产物。openai_compatible 请求应复用
+    # mixed 台账，缺 fingerprint 的旧账本不得因此整段重抽（约 2 小时）。
+    # 翻译/批注等其他阶段的 partial 仍不可复用。
+    partial_reusable = (
+        stage == "functional-extract"
+        and recorded_status == "partial"
+        and recorded_route in {"openai_compatible", "mixed"}
+    )
     if route == "openai_compatible" and entry.get("route") != route:
+        if not (partial_reusable and recorded_route == "mixed"):
+            return False, None
+    if recorded_status != "ok" and not partial_reusable:
         return False, None
     if entry:
-        if entry.get("status") != "ok":
-            return False, None
         # 生产者戳只算一次：显式比对与 stage_input_fingerprint 载荷共用同一字符串
         # （llm-review 的戳含 evidence_fingerprint，重复计算会重复哈希全部证据文件）。
         producer = stage_producer(
@@ -1657,13 +1668,16 @@ def _stage_reuse_check(out_dir: Path, stage: str, *,
         if entry.get("producer") and entry.get("producer") != producer:
             return False, None
         recorded_fingerprint = str(entry.get("input_fingerprint") or "")
-        recorded_route = str(entry.get("route") or "")
-        fingerprint_route = recorded_route if route == "stub" and recorded_route == "openai_compatible" else route
+        fingerprint_route = recorded_route if (
+            (route == "stub" and recorded_route == "openai_compatible")
+            or (partial_reusable and recorded_route == "mixed")
+        ) else route
         current_fingerprint = stage_input_fingerprint(
             out_dir, stage, route=fingerprint_route, template_path=template_path,
             input_path=input_path, config=config, producer=producer)
-        if recorded_fingerprint != current_fingerprint:
-            return False, None
+        if recorded_fingerprint or not partial_reusable:
+            if recorded_fingerprint != current_fingerprint:
+                return False, None
         recorded_files = str(entry.get("input_files_fingerprint") or "")
         if recorded_files and recorded_files != stage_input_files_fingerprint(out_dir, stage):
             return False, None
@@ -2304,7 +2318,9 @@ def update_run_manifest(out_dir: Path, stage: str, status: str, *,
                     entry["outputs"] = _relative_outputs(root, outputs)
                 elif status == "ok" and "outputs" not in entry and stage in STAGE_REQUIRED_OUTPUTS:
                     entry["outputs"] = list(STAGE_REQUIRED_OUTPUTS[stage])
-                if status == "ok":
+                if status == "ok" or (
+                    stage == "functional-extract" and status == "partial"
+                ):
                     entry["input_fingerprint"] = input_fingerprint or stage_input_fingerprint(
                         root, stage, route=route, template_path=template_path,
                         input_path=input_path, config=config)
@@ -2405,7 +2421,11 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
     # functional-synthesis（重并）整体替换为 functional-extract——UI/CLI 仍传旧阶段名，
     # 替换在此单点完成并落账；显式 =0 时保留旧原子化回滚路径。
     functional_extract_replaced: list[str] = []
-    from functional_extract import functional_extract_enabled
+    from functional_extract import (
+        FunctionalConservationError,
+        FunctionalExtractionIncompleteError,
+        functional_extract_enabled,
+    )
     if functional_extract_enabled():
         legacy_pair = [s for s in ("ai-extract", "functional-synthesis") if s in ordered]
         if legacy_pair:
@@ -2469,6 +2489,11 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
 
     results: dict[str, Any] = {}
     skipped_stages: list[str] = []
+    conservation_blocked = False
+    conservation_block_error = ""
+    conservation_gated = {
+        "requirements-analysis", "template-write", "clarification-report",
+    }
     payload: dict[str, Any] = {"kind": "chain", "out_dir": str(out_dir), "stages": ordered}
     if translation_mode is not None or translation_dropped:
         payload["translation_mode"] = resolved_translation_mode
@@ -2488,6 +2513,18 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
         for index, stage in enumerate(ordered, start=1):
             emit_progress({"stage": "chain", "step": stage, "completed": index - 1,
                            "total": len(ordered), "percent": int((index - 1) * 100 / len(ordered))})
+            if conservation_blocked and stage in conservation_gated:
+                update_run_manifest(out_dir, stage, "failed", error=conservation_block_error)
+                results[stage] = {
+                    "error": conservation_block_error,
+                    "skipped_due_to_conservation": True,
+                }
+                emit_progress({
+                    "stage": "chain", "step": stage, "status": "failed",
+                    "completed": index, "total": len(ordered),
+                    "percent": int(index * 100 / len(ordered)),
+                })
+                continue
             stage_route = route if stage in llm_stages else None
             stage_template = template_path if stage in {"requirements-analysis", "template-write"} else None
             if stage == "ai-extract":
@@ -2570,7 +2607,12 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
                 existing_stages = read_run_manifest(out_dir).get("stages", {})
                 existing_entry = existing_stages.get(stage, {}) if isinstance(existing_stages, dict) else {}
                 preserved_route = str(existing_entry.get("route") or stage_route or "") or None
-                update_run_manifest(out_dir, stage, "ok", route=preserved_route,
+                reuse_status = (
+                    "partial"
+                    if str(existing_entry.get("status") or "") == "partial"
+                    else "ok"
+                )
+                update_run_manifest(out_dir, stage, reuse_status, route=preserved_route,
                                     outputs=stage_payload.get("written") or _stage_outputs(stage), action="skipped",
                                     input_fingerprint=str(existing_entry.get("input_fingerprint") or "") or None,
                                     template_path=stage_template, config=stage_config)
@@ -2584,6 +2626,19 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
                     # 无活动预算单时空操作，确定性环节不进账本分摊）
                     with _budget_stage(chain_budget, _CHAIN_BUDGET_STAGES.get(stage, "default")):
                         stage_payload = runners[stage]()
+                except (FunctionalConservationError, FunctionalExtractionIncompleteError) as exc:
+                    update_run_manifest(out_dir, stage, "failed", error=str(exc))
+                    conservation_blocked = True
+                    conservation_block_error = str(exc)
+                    payload["conservation_blocked"] = True
+                    payload["conservation_block_error"] = conservation_block_error
+                    results[stage] = {"error": str(exc)}
+                    emit_progress({
+                        "stage": "chain", "step": stage, "status": "failed",
+                        "completed": index, "total": len(ordered),
+                        "percent": int(index * 100 / len(ordered)),
+                    })
+                    continue
                 except Exception as exc:
                     update_run_manifest(out_dir, stage, "failed", error=str(exc))
                     raise RuntimeError(f"{stage} 阶段失败：{exc}") from exc

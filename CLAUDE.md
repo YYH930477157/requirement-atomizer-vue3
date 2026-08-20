@@ -1,5 +1,27 @@
 # CLAUDE.md — Requirement Atomizer 项目上下文
 
+## 重大更新（2026-08-20b）——SBD 链续跑：成文闸失败不掐死整链
+
+> 从最新 `main` `93e9de1` 隔离分支 `codex/sbd-chain-resume` 修 result3 形态。
+> 不放宽守恒、不翻 `RATOMIZER_EXECUTION_POLICY`、不改直抽 prompt、不 bump 产物版本。
+
+- **链不再因成文闸崩掉**：`FunctionalConservationError` / `FunctionalExtractionIncompleteError`
+  记失败后继续；分析/成文/澄清跳过，全文翻译与批注仍跑；链**返回**
+  `conservation_blocked`，结果包走 `requested_stage_partial`，不再把整段 `run.log`
+  包进 `交付物链失败`。
+- **mixed/partial 直抽可续跑**：`functional-extract` 在 `partial` + `mixed|openai_compatible`
+  且产物在场时复用（result3 缺 `input_fingerprint` 也复用）；跳过时保持 `partial`，
+  不洗成 `ok`。翻译/批注的 `partial` 仍不可复用。
+- **招标程序性条款出 B 轨**：开标/税清/保函/商务附件经 `classify_tender_region`
+  路由出抽取与守恒基线；**不含** `tender_preface`（正文 `Introduction` 不得误伤）。
+  不默认打开 A9-2。新冷抽因条款集变化自然 miss 旧大包缓存。
+- **计数器**：`evidence_presence` 失败数改为三项列表之和（不再先读空的
+  `items_without_evidence` 报 0）。
+- **界面**：`functional-extract=partial` 画成「产物已生成（部分条款降级，待核对）」；
+  守恒失败文案截到「功能需求守恒核对未闭合…」；stderr 取最后一个合法 CLI 信封。
+- **诚实边界**：技术条款未盖/重复/错绑仍拦成文。本修让续跑复用已付的 388 FRE，
+  不是让 result3 自动过守恒。旧打包 exe 不含本修。
+
 ## 重大更新（2026-08-20）——直抽进度上报 + SBD 真跑守恒闸门
 
 > 用户试用打包 exe 跑 `1780709839_SBD_ZETDC.pdf` → `result3`（机器本地，不进仓）。

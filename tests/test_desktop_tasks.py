@@ -2216,6 +2216,113 @@ class ChainAndManifestTests(unittest.TestCase):
             self.assertEqual(entry["status"], "failed")
             self.assertIn("boom", entry["error"])
 
+    def test_chain_continues_after_conservation_block(self) -> None:
+        """成文闸失败不得掐死整链：分析/成文/澄清跳过，翻译批注继续，链返回。"""
+        from functional_extract import FunctionalConservationError
+
+        calls: list[str] = []
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            err = FunctionalConservationError(
+                "功能需求守恒核对未闭合（duplicates=6），阻塞成文导出（强制人工）"
+            )
+            with (
+                mock.patch.object(
+                    desktop_tasks, "requirements_analysis_task", side_effect=err),
+                mock.patch.object(
+                    desktop_tasks, "clarification_report_task",
+                    side_effect=lambda *a, **k: calls.append("clarification") or {}),
+                mock.patch.object(
+                    desktop_tasks, "export_annotation_html_task",
+                    side_effect=lambda *a, **k: (
+                        calls.append("annotation")
+                        or {"kind": "annotation_html", "written": []})),
+            ):
+                payload = desktop_tasks.chain_task(
+                    out,
+                    stages=[
+                        "requirements-analysis",
+                        "clarification-report",
+                        "export-annotation-html",
+                    ],
+                    route="openai_compatible",
+                )
+            self.assertTrue(payload["conservation_blocked"])
+            self.assertIn("守恒核对未闭合", payload["conservation_block_error"])
+            self.assertEqual(calls, ["annotation"])
+            manifest = desktop_tasks.read_run_manifest(out)["stages"]
+            self.assertEqual(manifest["requirements-analysis"]["status"], "failed")
+            self.assertEqual(manifest["clarification-report"]["status"], "failed")
+            self.assertEqual(manifest["export-annotation-html"]["status"], "ok")
+
+    def test_functional_extract_partial_mixed_is_reusable(self) -> None:
+        """SBD result3 形态：mixed/partial 直抽产物在场即可续跑，不因缺 fingerprint 重抽。"""
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            (out / "functional_requirements.json").write_text("{}", encoding="utf-8")
+            config = desktop_tasks._functional_extract_stage_config()
+            desktop_tasks.update_run_manifest(
+                out,
+                "functional-extract",
+                "partial",
+                route="mixed",
+                outputs=["functional_requirements.json"],
+                action="ran",
+                config=config,
+            )
+            self.assertTrue(
+                desktop_tasks.stage_is_reusable(
+                    out, "functional-extract", route="openai_compatible",
+                    config=config,
+                )
+            )
+            data = desktop_tasks.read_run_manifest(out)
+            data["stages"]["functional-extract"].pop("input_fingerprint", None)
+            (out / desktop_tasks.RUN_MANIFEST).write_text(
+                json.dumps(data, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            self.assertTrue(
+                desktop_tasks.stage_is_reusable(
+                    out, "functional-extract", route="openai_compatible",
+                    config=config,
+                )
+            )
+
+    def test_chain_skips_reusable_partial_extract_preserves_status(self) -> None:
+        """续跑跳过 mixed/partial 直抽时不得把台账洗成 ok。"""
+        extract_calls: list[str] = []
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            (out / "functional_requirements.json").write_text("{}", encoding="utf-8")
+            config = desktop_tasks._functional_extract_stage_config()
+            desktop_tasks.update_run_manifest(
+                out,
+                "functional-extract",
+                "partial",
+                route="mixed",
+                outputs=["functional_requirements.json"],
+                action="ran",
+                config=config,
+            )
+            with (
+                mock.patch.object(
+                    desktop_tasks, "functional_extract_task",
+                    side_effect=lambda *a, **k: extract_calls.append("ran") or {}),
+                mock.patch.object(
+                    desktop_tasks, "export_annotation_html_task",
+                    return_value={"kind": "annotation_html", "written": []}),
+            ):
+                desktop_tasks.chain_task(
+                    out,
+                    stages=["functional-extract", "export-annotation-html"],
+                    route="openai_compatible",
+                )
+            self.assertEqual(extract_calls, [])
+            entry = desktop_tasks.read_run_manifest(out)["stages"]["functional-extract"]
+            self.assertEqual(entry["status"], "partial")
+            self.assertEqual(entry["last_action"], "skipped")
+
     def test_update_run_manifest_lifecycle(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             out = Path(td)

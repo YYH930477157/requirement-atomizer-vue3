@@ -252,6 +252,14 @@ class TenderRegionTests(unittest.TestCase):
         block = {"type": "heading", "text": "Scoring Sheet"}
         self.assertEqual(classify_tender_region(block), "tender_instructions")
 
+    def test_bid_opening_still_instructions(self):
+        block = {"type": "heading", "text": "1.10 Bid Opening"}
+        self.assertEqual(classify_tender_region(block), "tender_instructions")
+
+    def test_tax_clearance_still_instructions(self):
+        block = {"type": "heading", "text": "11 Valid Tax Clearance Certificate"}
+        self.assertEqual(classify_tender_region(block), "tender_instructions")
+
 
 class TenderFigurePageTests(unittest.TestCase):
     """A9-3：疑似流程图页强制高亮。"""

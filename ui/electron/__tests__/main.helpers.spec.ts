@@ -771,6 +771,18 @@ describe("parseTaskErrorEnvelope (I6 稳定错误码透传)", () => {
     expect(parseTaskErrorEnvelope(new Error("{not json}"))).toBeNull()
     expect(parseTaskErrorEnvelope(null)).toBeNull()
   })
+
+  it("prefers the last valid CLI envelope when stderr also contains earlier braces", () => {
+    const envelope = {
+      kind: "result_package_complete",
+      ok: false,
+      error: { type: "requested_stage_partial", message: "requirements-analysis (failed)" },
+    }
+    const error = new Error(`00:06:01 INFO start {not json}\n${JSON.stringify(envelope)}\n`)
+    expect(parseTaskErrorEnvelope(error)).toMatchObject({
+      error: { type: "requested_stage_partial" },
+    })
+  })
 })
 
 describe("acquireSingleInstanceLock (S7)", () => {

@@ -664,24 +664,30 @@ function acquireSingleInstanceLock(appLike, onSecondInstance) {
 // 结构化 envelope，让稳定错误码（如 requested_stage_partial）能透传到渲染层。
 function parseTaskErrorEnvelope(error) {
   const text = String(error?.message || error || "");
-  const start = text.indexOf("{");
   const end = text.lastIndexOf("}");
-  if (start < 0 || end <= start) {
+  if (end < 0) {
     return null;
   }
-  try {
-    const parsed = JSON.parse(text.slice(start, end + 1));
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+  let from = end;
+  for (let attempt = 0; attempt < 40 && from >= 0; attempt += 1) {
+    const start = text.lastIndexOf("{", from);
+    if (start < 0 || start >= end) {
       return null;
     }
-    const envelopeError = parsed.error;
-    if (!envelopeError || typeof envelopeError !== "object" || !envelopeError.type) {
-      return null;
+    try {
+      const parsed = JSON.parse(text.slice(start, end + 1));
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        const envelopeError = parsed.error;
+        if (envelopeError && typeof envelopeError === "object" && envelopeError.type) {
+          return parsed;
+        }
+      }
+    } catch {
+      // stderr 里常夹着进度 JSON / 日志花括号；继续往前找最后一个合法信封。
     }
-    return parsed;
-  } catch {
-    return null;
+    from = start - 1;
   }
+  return null;
 }
 
 function loadRecentSessions(filePath, deps = {}) {

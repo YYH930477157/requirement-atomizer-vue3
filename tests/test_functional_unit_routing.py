@@ -223,6 +223,74 @@ class ApplyUnitRoutingTests(unittest.TestCase):
             self.assertEqual(meta["front_matter_routed_out"], 1)
             self.assertEqual(meta["front_matter_section_ids"], ["Scope"])
 
+    def test_tender_instruction_sections_routed_out_meter_kept(self) -> None:
+        """招标程序性条款（开标/税清/保函）出 B 轨；电表技术条款留下。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            _seed_out(out)
+            sections = fe.load_clauses(out) + [
+                {
+                    "section_id": "1.10 Bid Opening",
+                    "section_path": ["1.10 Bid Opening"],
+                    "heading": "1.10 Bid Opening",
+                    "text": "Bids shall be opened in public.",
+                    "block_ids": ["B-BID"],
+                },
+                {
+                    "section_id": "11 Valid Tax Clearance Certificate",
+                    "section_path": ["11 Valid Tax Clearance Certificate"],
+                    "heading": "11 Valid Tax Clearance Certificate",
+                    "text": "Bidders shall attach a tax clearance certificate.",
+                    "block_ids": ["B-TAX"],
+                },
+                {
+                    "section_id": "Bank Guarantee letterhead",
+                    "section_path": [
+                        "Letterhead of registered commercial bank "
+                        "(i.e. the Supplier of the Bank Guarantee)"
+                    ],
+                    "heading": "Bank Guarantee",
+                    "text": "The guarantee shall be an original document.",
+                    "block_ids": ["B-BG"],
+                },
+                {
+                    "section_id": "8.7 EVENT LOG",
+                    "section_path": ["8 METER FUNCTIONS", "8.7 EVENT LOG"],
+                    "heading": "8.7 EVENT LOG",
+                    "text": "The meter shall store events in memory.",
+                    "block_ids": ["B-EVT"],
+                },
+            ]
+            kept, meta = fe.apply_unit_routing(
+                sections, blocks=_blocks_jsonl(), out_dir=out)
+            kept_ids = {s["section_id"] for s in kept}
+            self.assertIn("4.1", kept_ids)
+            self.assertIn("8.7 EVENT LOG", kept_ids)
+            self.assertNotIn("1.10 Bid Opening", kept_ids)
+            self.assertNotIn("11 Valid Tax Clearance Certificate", kept_ids)
+            self.assertNotIn("Bank Guarantee letterhead", kept_ids)
+            self.assertEqual(meta["tender_procedural_routed_out"], 3)
+
+    def test_mid_document_introduction_not_routed_as_tender(self) -> None:
+        """正文条款标题含 Introduction 不得当招标前言踢出。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            _seed_out(out)
+            sections = fe.load_clauses(out) + [{
+                "section_id": "5.1 Introduction to event records",
+                "section_path": ["5 Meter functions", "5.1 Introduction to event records"],
+                "heading": "5.1 Introduction to event records",
+                "text": "The meter shall record events.",
+                "block_ids": ["B-INTRO"],
+            }]
+            kept, meta = fe.apply_unit_routing(
+                sections, blocks=_blocks_jsonl(), out_dir=out)
+            self.assertIn(
+                "5.1 Introduction to event records",
+                {s["section_id"] for s in kept},
+            )
+            self.assertEqual(meta.get("tender_procedural_routed_out", 0), 0)
+
     def test_stale_decisions_recomputed_in_memory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)

@@ -190,6 +190,23 @@ class ConservationTests(unittest.TestCase):
         with self.assertRaises(fe.FunctionalConservationError):
             fe.raise_if_unconserved(report)
 
+    def test_evidence_presence_failure_count_uses_mismatches(self) -> None:
+        """evidence_presence 先读空的 items_without_evidence 时不得把失败数报成 0。"""
+        report = {
+            "ok": False,
+            "checks": {
+                "evidence_presence": {
+                    "ok": False,
+                    "items_without_evidence": [],
+                    "evidence_mismatches": [{"functional_requirement_id": "F1"}],
+                    "binding_mismatches": [{"functional_requirement_id": "F2"}] * 2,
+                }
+            },
+        }
+        with self.assertRaises(fe.FunctionalConservationError) as ctx:
+            fe.raise_if_unconserved(report)
+        self.assertIn("evidence_presence=3", str(ctx.exception))
+
     def test_multi_consumption_is_legal_not_duplicate(self) -> None:
         """§3.1：同一 block 被多条需求引用不再判重——义务句同覆盖但叙述不同=多视角引用。"""
         sections = [_clause("5.1", ["B1"], "The meter shall log events.")]
