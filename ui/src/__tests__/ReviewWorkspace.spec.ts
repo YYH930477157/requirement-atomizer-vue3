@@ -2180,4 +2180,48 @@ describe("review workspace shell", () => {
       vi.useRealTimers()
     }
   })
+
+  it("shows clause-level progress for functional extract instead of staying at 0%", async () => {
+    const runPromise = new Promise<{ kind: string; out_dir: string }>(() => {})
+    type AnyEvent = { stage: string; step?: string; status?: string; completed?: number; total?: number; percent?: number }
+    let progressHandler: (event: AnyEvent) => void = () => {
+      throw new Error("progress handler was not registered")
+    }
+    Object.defineProperty(window, "ratomizerDesktop", {
+      configurable: true,
+      value: {
+        getApiSession: vi.fn().mockResolvedValue(null),
+        openDocument: vi.fn().mockResolvedValue("C:\input\doc.pdf"),
+        selectOutputDir: vi.fn().mockResolvedValue("E:\out\demo"),
+        openOutput: vi.fn(),
+        openPath: vi.fn(),
+        startApiSession: vi.fn().mockResolvedValue(null),
+        runPipeline: vi.fn().mockReturnValue(runPromise),
+        onTaskProgress: vi.fn((handler: (event: AnyEvent) => void) => {
+          progressHandler = handler
+          return vi.fn()
+        }),
+      },
+    })
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({ ok: true, json: async () => [] } as Response)
+
+    const wrapper = mount(App)
+    await wrapper.find('[data-testid="action-open-document"]').trigger("click")
+    await wrapper.find('[data-testid="nav-运行"]').trigger("click")
+    await flushPromises()
+    await wrapper.find('[data-testid="action-select-output-dir"]').trigger("click")
+    void wrapper.find('[data-testid="action-run-pipeline"]').trigger("click")
+    await vi.waitFor(() => {
+      expect(window.ratomizerDesktop?.onTaskProgress).toHaveBeenCalled()
+    })
+
+    progressHandler({ stage: "chain", step: "functional-extract", completed: 0, total: 7, percent: 0 })
+    progressHandler({ stage: "functional_extract", completed: 40, total: 200, percent: 20 })
+    await vi.waitFor(() => {
+      const extractCard = wrapper.find('[data-testid="run-stage-ai-extract"]').text()
+      expect(extractCard).toContain("运行中 20%")
+      expect(extractCard).toContain("40/200 条款")
+    })
+    expect(wrapper.find('[data-testid="run-stall-ai-extract"]').exists()).toBe(false)
+  })
 })

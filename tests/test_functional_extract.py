@@ -486,5 +486,75 @@ class NegativeExemplarTests(unittest.TestCase):
         self.assertEqual(result.stdout.strip(), "1")
 
 
+class ExtractProgressTests(unittest.TestCase):
+    def test_clause_family_emits_initial_and_per_package(self) -> None:
+        """每条款包回调一次——直抽不报进度时 GUI 会在 0% 停半小时。"""
+        sections = [
+            _clause("4.1", ["B1"], "The meter shall log events."),
+            _clause("4.2", ["B2"], "The meter shall alarm."),
+        ]
+        events: list[dict] = []
+
+        def chat(system: str, user: str) -> dict:
+            block = "B1" if "4.1" in user or "log events" in user else "B2"
+            return {"items": [{"objective": "do it", "source_block_ids": [block]}]}
+
+        items, _route = fe.extract_functional_requirements(
+            sections,
+            chat=chat,
+            route="openai_compatible",
+            strategy="clause_family",
+            progress_callback=events.append,
+        )
+        self.assertEqual(len(items), 2)
+        self.assertGreaterEqual(len(events), 3)
+        self.assertEqual(events[0]["stage"], "functional_extract")
+        self.assertEqual(events[0]["completed"], 0)
+        self.assertEqual(events[0]["total"], 2)
+        self.assertEqual(events[0]["percent"], 0)
+        self.assertEqual(events[0]["unit"], "clauses")
+        self.assertEqual(events[-1]["completed"], 2)
+        self.assertEqual(events[-1]["total"], 2)
+        self.assertEqual(events[-1]["percent"], 100)
+        completed = [row["completed"] for row in events]
+        self.assertEqual(completed, [0, 1, 2])
+
+    def test_legacy_emits_start_and_finish(self) -> None:
+        sections = [_clause("4.1", ["B1"], "The meter shall log events.")]
+        events: list[dict] = []
+
+        def chat(system: str, user: str) -> dict:
+            return {"items": [{"objective": "log", "source_block_ids": ["B1"]}]}
+
+        fe.extract_functional_requirements(
+            sections,
+            chat=chat,
+            route="openai_compatible",
+            strategy="legacy",
+            progress_callback=events.append,
+        )
+        self.assertEqual(events[0]["completed"], 0)
+        self.assertEqual(events[-1]["completed"], 1)
+        self.assertEqual(events[-1]["percent"], 100)
+
+    def test_cache_hit_emits_complete(self) -> None:
+        with TemporaryDirectory() as tmp:
+            sections = [_clause("7.2", ["B1"], "shall X.")]
+            fe.run_functional_extract(tmp, sections=sections, route="stub", strategy="legacy")
+            events: list[dict] = []
+            second = fe.run_functional_extract(
+                tmp,
+                sections=sections,
+                route="stub",
+                strategy="legacy",
+                progress_callback=events.append,
+            )
+            self.assertEqual(second["written"], [])
+            self.assertTrue(events)
+            self.assertEqual(events[-1]["stage"], "functional_extract")
+            self.assertEqual(events[-1]["percent"], 100)
+            self.assertEqual(events[-1]["completed"], events[-1]["total"])
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

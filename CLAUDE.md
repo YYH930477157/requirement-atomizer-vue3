@@ -1,5 +1,35 @@
 # CLAUDE.md — Requirement Atomizer 项目上下文
 
+## 重大更新（2026-08-20）——直抽进度上报 + SBD 真跑守恒闸门
+
+> 用户试用打包 exe 跑 `1780709839_SBD_ZETDC.pdf` → `result3`（机器本地，不进仓）。
+> 本条含已修一项 + 实测未修项，避免把「界面红了」误读成抽取没跑。
+
+- **已修 · 进度事件**：`functional_extract` 每条款包回调 `stage=functional_extract`
+  （completed/total/percent/unit=clauses）；`desktop_tasks.functional_extract_task`
+  转发 `emit_progress`；GUI 把事件写到「AI抽取」卡片（`n/N 条款`）。
+  不传回调则静默。不 bump 产物版本、缓存指纹不变。旧打包 exe 仍无此事件。
+
+- **SBD 真跑台账**（`result3/.ratomizer/stages/run_manifest.json`）：
+  原子化 00:05:32–00:05:59 ok；直抽 00:06:01–01:58:39 **partial / route=mixed**
+  （131 条款 → 388 FRE，产物在 `.ratomizer/pipeline/functional_requirements.json`）；
+  assemble 01:58:39–02:01:34 ok（268 条富化）；requirements-analysis **02:01:34 failed**：
+  `功能需求守恒核对未闭合（duplicates=6；obligation_coverage=39；preservation=50），
+  阻塞成文导出（强制人工）`。守恒细目：obligation 未盖 39、evidence_mismatches 15、
+  binding_mismatches 50、重复组 6（税务清关段 3 条 FRE 抢同一批义务）、
+  preservation blocking 50 + warning 20。`evidence_presence=0` 是计数器先读了
+  空的 `items_without_evidence`，不是「零错绑」。条款覆盖检查通过。
+
+- **界面误导（未修）**：① 旧 exe 直抽不报进度 → 卡片 0% +「无新进度」黄条，
+  后台其实在串行打 flash（40–90s/包，截断升级、60s 读超时重试）。② 链失败后
+  Electron 顶栏变成 `task:chain` + `run.log` 开头（`00:06:01 INFO desktop task chain`），
+  把真正的 `RuntimeError` 盖掉。③ `applyRunManifestSummary` 只认 ok/running/failed，
+  不认 `functional-extract=partial`，AI 抽取卡被画成失败/交付物丢失——产物在。
+
+- **未做**：不放宽守恒、不翻 `RATOMIZER_EXECUTION_POLICY`、不改 functional-extract
+  prompt、不修 IPC 错文、不把 partial 投影进运行卡片。再跑同指纹会命中直抽缓存，
+  分析/成文仍会被同一道闸拦住，除非定向重抽或人工收重复/错绑。
+
 ## 重大更新（2026-08-19）——碎原子不再是需求产品（代码 `11da57b`，本条为分批说明）
 
 > 用户裁定「拆得很碎的原子是失败的一笔」。代码一次提交，决策是两批。

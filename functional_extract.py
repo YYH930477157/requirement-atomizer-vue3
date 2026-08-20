@@ -1755,6 +1755,24 @@ def _negative_exemplars_for_section(section: dict[str, Any], bank: dict[str, Any
 # 主入口
 # ---------------------------------------------------------------------------
 
+def _emit_functional_extract_progress(
+    progress_callback: Callable[[dict[str, Any]], None] | None,
+    *,
+    completed: int,
+    total: int,
+) -> None:
+    """桌面进度条：每条款包一次。不传回调则静默（测试/CLI 直调零变化）。"""
+    if progress_callback is None or total <= 0:
+        return
+    progress_callback({
+        "stage": "functional_extract",
+        "completed": completed,
+        "total": total,
+        "percent": int(round(completed * 100 / total)),
+        "unit": "clauses",
+    })
+
+
 def extract_functional_requirements(
     sections: Sequence[dict[str, Any]],
     *,
@@ -1764,6 +1782,7 @@ def extract_functional_requirements(
     strategy: str = "legacy",
     doc_map: dict[str, Any] | None = None,
     max_chars: int | None = None,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> tuple[list[dict[str, Any]], str]:
     """条款集合 → 功能需求条目列表 + 执行路由标签（如实，不夸大）。
 
@@ -1774,6 +1793,8 @@ def extract_functional_requirements(
     A2：``strategy="clause_family"`` 时按条款自然边界逐包调用（目标条款整文不截断 +
     同族邻居 + doc_map 热区摘要）；部分包 LLM 失败只对受影响条款诚实 stub 退化，
     路由标签如实为 'mixed'（全部失败为 'stub'，绝不夸大为纯 LLM 路由）。
+
+    ``progress_callback``：每完成一个条款包回调一次（GUI 进度条用；不传则静默）。
     """
     if not sections:
         return [], "stub"
@@ -1784,9 +1805,13 @@ def extract_functional_requirements(
         return _extract_by_context_packages(
             sections, active_chat, executed_route, doc_map=doc_map, max_chars=max_chars,
             bank=bank,
+            progress_callback=progress_callback,
         )
     items: list[dict[str, Any]] | None = None
     negative_exemplars = _negative_exemplars_for_section(sections[0], bank) if bank else ""
+    _emit_functional_extract_progress(
+        progress_callback, completed=0, total=len(sections),
+    )
     if active_chat is not None:
         try:
             payload = active_chat(_system_prompt(negative_exemplars), _build_user_prompt(sections))
@@ -1813,6 +1838,9 @@ def extract_functional_requirements(
     # §3.1：盖确定性证据锚（义务句 → block/引句/句序），LLM 不得填写。
     assign_stable_uids(items, sections)
     assign_evidence_anchors(items, sections)
+    _emit_functional_extract_progress(
+        progress_callback, completed=len(sections), total=len(sections),
+    )
     return items, executed_route
 
 
@@ -1824,6 +1852,7 @@ def _extract_by_context_packages(
     doc_map: dict[str, Any] | None,
     max_chars: int | None,
     bank: dict[str, Any] | None = None,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> tuple[list[dict[str, Any]], str]:
     """clause_family 策略：每条款包一次 LLM 调用；包级失败只退化受影响条款。"""
     packages = build_context_packages(sections, doc_map=doc_map, max_chars=max_chars)
@@ -1831,7 +1860,9 @@ def _extract_by_context_packages(
     llm_ok = 0
     stub_fallback = 0
     bank = bank or {}
-    for package in packages:
+    total = len(packages)
+    _emit_functional_extract_progress(progress_callback, completed=0, total=total)
+    for index, package in enumerate(packages, start=1):
         target = package["target"]
         package_items: list[dict[str, Any]] | None = None
         negative_exemplars = _negative_exemplars_for_section(target, bank)
@@ -1848,6 +1879,9 @@ def _extract_by_context_packages(
         else:
             items.extend(package_items)
             llm_ok += 1
+        _emit_functional_extract_progress(
+            progress_callback, completed=index, total=total,
+        )
     if active_chat is None or llm_ok == 0:
         final_route = "stub"
     elif stub_fallback:
@@ -2110,6 +2144,7 @@ def run_functional_extract(
     strategy: str | None = None,
     doc_map: dict[str, Any] | None = None,
     max_chars: int | None = None,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """运行功能需求直抽，写 functional_requirements.json（governed 路径 + 原子写）。
 
@@ -2124,6 +2159,9 @@ def run_functional_extract(
     if sections is None:
         sections = load_clauses(out_dir)
     sections = list(sections)
+    _emit_functional_extract_progress(
+        progress_callback, completed=0, total=len(sections),
+    )
     resolved_strategy = context_pack_strategy(strategy)
     if resolved_strategy == "clause_family" and doc_map is None:
         try:
@@ -2140,6 +2178,9 @@ def run_functional_extract(
             blocks = _load_blocks(out_dir)
         sections, unit_routing = apply_unit_routing(
             sections, blocks=blocks, out_dir=out_dir)
+        _emit_functional_extract_progress(
+            progress_callback, completed=0, total=len(sections),
+        )
     # S1-7：指纹并入 route 维度——算指纹前先把 route 解析成稳定身份标签（与执行路径同源）。
     route_label = _resolve_route_label(route, chat)
     fingerprint = extraction_fingerprint(
@@ -2154,6 +2195,11 @@ def run_functional_extract(
     cached = cache.get(fingerprint)
     if cached is not None and isinstance(cached.get("payload"), dict):
         payload = dict(cached["payload"])
+        _emit_functional_extract_progress(
+            progress_callback,
+            completed=len(sections),
+            total=len(sections) or 1,
+        )
         from result_package import governed_artifact_path
         target = governed_artifact_path(
             out_dir, FUNCTIONAL_REQUIREMENTS_FILENAME, category="pipeline", for_write=False
@@ -2171,6 +2217,7 @@ def run_functional_extract(
     items, executed_route = extract_functional_requirements(
         sections, chat=chat, route=route, blocks=blocks,
         strategy=resolved_strategy, doc_map=doc_map, max_chars=max_chars,
+        progress_callback=progress_callback,
     )
     conservation = conservation_report(sections, items, blocks=blocks)
     # §3.5：执行结果类别随产物持久化（缓存行同样携带——重放不洗白失败语义）。

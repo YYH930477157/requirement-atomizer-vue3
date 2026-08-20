@@ -2393,6 +2393,19 @@ function handleTaskProgress(event: { stage: string; step?: string; status?: stri
     runProgressDetail.value = `正在执行：${label}…`
     return
   }
+  if (event.stage === "functional_extract") {
+    setRunStageState("ai-extract", {
+      status: percent >= 100 ? "ok" : "running",
+      percent,
+      detail: total ? `${completed}/${total} 条款` : "准备条款包",
+    })
+    runStage.value = total ? `功能需求直抽 ${completed}/${total} 条款` : "功能需求直抽"
+    runProgress.value = percent
+    runProgressDetail.value = event.model
+      ? `模型：${event.model} · 逐条款调用 LLM`
+      : "逐条款调用 LLM（条款级，无原子化）"
+    return
+  }
   if (event.stage === "ai_extract") {
     if (completed !== lastAiExtractCompleted) {
       lastAiExtractCompleted = completed

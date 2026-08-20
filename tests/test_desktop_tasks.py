@@ -809,6 +809,25 @@ class DesktopTaskTests(unittest.TestCase):
         self.assertEqual(payload["merged"]["total"], 10)
         self.assertIn(str(out_dir.resolve() / "merged_spec.xlsx"), payload["written"])
 
+    def test_functional_extract_task_forwards_progress_callback(self) -> None:
+        import desktop_tasks
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            with patch("functional_extract._route_config", return_value={"model": "x"}), \
+                 patch("functional_extract.run_functional_extract") as run:
+                run.return_value = {
+                    "written": ["functional_requirements.json"],
+                    "route": "openai_compatible",
+                    "execution_status": "failed",
+                    "conservation": {"ok": False},
+                }
+                desktop_tasks.functional_extract_task(out_dir, route="openai_compatible")
+
+        kwargs = run.call_args.kwargs
+        self.assertEqual(kwargs["route"], "openai_compatible")
+        self.assertIs(kwargs["progress_callback"], desktop_tasks.emit_progress)
+
     def test_main_ai_extract_command_dispatches(self) -> None:
         import desktop_tasks
 

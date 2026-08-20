@@ -449,7 +449,9 @@ def functional_extract_task(out_dir: Path, *, route: str | None = "openai_compat
             f"functional-extract 请求 LLM 路由 {route} 但无可用 key/端点配置——"
             "拒绝静默 stub 占位产物；请配置 RATOMIZER_LLM_* 或显式使用 --llm-route stub")
     out_dir = out_dir.expanduser().resolve()
-    result = dict(run_functional_extract(out_dir, route=route))
+    result = dict(run_functional_extract(
+        out_dir, route=route, progress_callback=emit_progress,
+    ))
     if result.get("written"):
         result["written"] = [str(out_dir / FUNCTIONAL_REQUIREMENTS_FILENAME)]
     if str(result.get("route") or "") == "stub" and route != "stub":
