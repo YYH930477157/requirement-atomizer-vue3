@@ -35,7 +35,13 @@
  13 交货期——重跑守恒闸仍会拦成文，失败面缩 ~60% 且重复组清零。
 - **main 既有 5 失败（非本分支引入，独立复验确认）**：test_shadow_run 4 例
  （extraction_units.jsonl 被归因 unexplained）+ test_truth_from_review 1 例
- （Windows 子进程 stdout GBK/UTF-8）——08-20 批次 main 提交遗留，待独立修复。
+ （Windows 子进程 stdout GBK/UTF-8）——08-20 批次 main 提交遗留。**已修复
+ （2026-08-22 合并 `adaf768`，分支 `codex/fix-shadow-run-baseline`，grok-4.6 实施、
+ Claude 审核）**：shadow_run `_classify_added` 新增 `extraction_unit_planning`
+ 归因模板（只登记 `extraction_units.jsonl` 一个文件名，HARD 门语义不动）；
+ truth_from_review `main()` 入口加 `configure_stdio()` 强制 stdout UTF-8
+ （工具侧修，兑现 cli-contract JSON 信封承诺）。无行为版本 bump。合并后主检出
+ 全量 4021 OK（skipped=20，golden 实跑通过）。
 - 验证：worktree 聚焦 177 OK、全量 4020（26 环境跳过 + 上述 5 既有失败）；UI 286 +
  vue-tsc/vite build 通过（主检出 dist/ 中运行中的打包 exe 锁文件属环境问题，
  隔离 outDir 构建通过）。
