@@ -45,6 +45,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from cosem_behavior_spec import extract_codes                     # noqa: E402
+from extraction_units import EXTRACTION_UNITS_FILENAME            # noqa: E402
 from functional_extract import (                                  # noqa: E402
     FUNCTIONAL_REQUIREMENTS_FILENAME,
     conservation_report,
@@ -97,6 +98,7 @@ ALL_TRACKED_FILES: tuple[str, ...] = DETERMINISTIC_CORE_FILES + (
 )
 # 归因模板枚举（difference.template）。
 TPL_DIRECT_EXTRACT = "direct_extract_granularity"          # 直抽侧车新增 functional_requirements.json
+TPL_EXTRACTION_UNIT_PLANNING = "extraction_unit_planning"  # 直抽/单元路由入口确定性规划 extraction_units
 TPL_DUAL_TRACK_HEADER = "dual_track_header_judgment"        # 双轨签发假设 → header 判定差异
 TPL_SAMPLING_VERIFIER = "sampling_verifier_coverage"        # 抽检模式 verifier 面差异
 TPL_BUDGET_COST_REPORT = "budget_cost_report"               # 预算单 cost-report 产物差异
@@ -548,6 +550,10 @@ def _classify_added(filename: str, run_meta: dict[str, Any]) -> tuple[str, str, 
     if filename == FUNCTIONAL_REQUIREMENTS_FILENAME:
         return (TPL_DIRECT_EXTRACT, ATTR_EXPECTED,
                 "直抽入口开关 ON：functional_extract 侧车新增 functional_requirements.json。")
+    if filename == EXTRACTION_UNITS_FILENAME:
+        return (TPL_EXTRACTION_UNIT_PLANNING, ATTR_EXPECTED,
+                "直抽/单元路由入口开关 ON：functional_extract 确定性规划 "
+                f"{EXTRACTION_UNITS_FILENAME}（A/B 共用单元事实源，零 LLM shadow 产物）。")
     if filename == "table_structure_hypotheses.jsonl":
         return (TPL_DUAL_TRACK_HEADER, ATTR_EXPECTED,
                 "双轨开关 ON 且提议器签发：新增 table_structure_hypotheses.jsonl。")
