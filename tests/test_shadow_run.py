@@ -258,6 +258,14 @@ class AttributionClassifierTests(unittest.TestCase):
         self.assertEqual(d["template"], sr.TPL_DIRECT_EXTRACT)
         self.assertEqual(d["attribution"], sr.ATTR_EXPECTED)
 
+    def test_added_extraction_units_is_unit_planning(self):
+        from extraction_units import EXTRACTION_UNITS_FILENAME
+
+        self._write(self.new, EXTRACTION_UNITS_FILENAME, "{}")
+        d = self._diff(EXTRACTION_UNITS_FILENAME, "added")
+        self.assertEqual(d["template"], sr.TPL_EXTRACTION_UNIT_PLANNING)
+        self.assertEqual(d["attribution"], sr.ATTR_EXPECTED)
+
     def test_added_hypotheses_is_dual_track_header(self):
         self._write(self.new, sr.TABLE_HYPOTHESES_FILE, "")
         d = self._diff(sr.TABLE_HYPOTHESES_FILE, "added")

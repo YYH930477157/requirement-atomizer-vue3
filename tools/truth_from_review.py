@@ -36,6 +36,17 @@ import ab_runner as ab  # noqa: E402  列别名/正则/校验的既有权威
 SCHEMA_PATH = REPO_ROOT / "schemas" / "functional_truth.schema.json"
 
 
+def configure_stdio() -> None:
+    """stdout/stderr UTF-8（对齐 docs/cli-contract.md JSON 信封口径）。"""
+    for stream, kwargs in (
+        (sys.stdout, {"encoding": "utf-8"}),
+        (sys.stderr, {"encoding": "utf-8", "errors": "replace"}),
+    ):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure:
+            reconfigure(**kwargs)
+
+
 def _cell_text(value: object) -> str:
     if value is None:
         return ""
@@ -174,6 +185,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-extract", action="store_true",
                         help="不自动抽取 numbers/units/codes（留空，门禁按无约束处理）")
     args = parser.parse_args(argv)
+    configure_stdio()
 
     source = args.input
     if source.suffix.lower() in (".xlsx", ".xlsm"):
