@@ -493,6 +493,54 @@ class ApplyUnitRoutingTests(unittest.TestCase):
             )
             self.assertIn("CH-000004", meta["tender_procedural_section_ids"])
 
+    def test_block_only_procedural_heading_kept_when_section_title_technical(self) -> None:
+        """块内程序性句 heading 不得把自身 technical 标题的条款一级误路由出。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            _seed_out(out)
+            tech_section_id = "6 TECHNICAL DATA REQUIREMENTS TABLE"
+            blocks = _blocks_jsonl() + [
+                {"block_id": "H-TECH", "type": "heading",
+                 "text": tech_section_id, "order": 1},
+                {"block_id": "S-DELIVERY", "type": "heading",
+                 "text": (
+                     "13 Delivery period is two (2) months or better from receipt "
+                     "of order and contract and must be clearly stated;"
+                 ),
+                 "order": 2},
+                {"block_id": "P-TECH", "type": "paragraph",
+                 "text": "The meter shall measure voltage.", "order": 3},
+            ]
+            sections = fe.load_clauses(out) + [
+                {
+                    "section_id": tech_section_id,
+                    "section_path": [tech_section_id],
+                    "heading": tech_section_id,
+                    "text": "The meter shall measure voltage.",
+                    "block_ids": ["H-TECH", "S-DELIVERY", "P-TECH"],
+                },
+                {
+                    "section_id": "CH-000004",
+                    "section_path": [],
+                    "heading": "",
+                    "text": "Complete the bid submission sheet.",
+                    "block_ids": ["H-CHUNK", "P-CHUNK"],
+                },
+            ]
+            chunk_blocks = [
+                {"block_id": "H-CHUNK", "type": "heading",
+                 "text": "1.1 Preparation of Bids", "order": 4},
+                {"block_id": "P-CHUNK", "type": "paragraph",
+                 "text": "Complete the bid submission sheet.", "order": 5},
+            ]
+            kept, meta = fe.apply_unit_routing(
+                sections, blocks=blocks + chunk_blocks, out_dir=out)
+            kept_ids = {s["section_id"] for s in kept}
+            self.assertIn(tech_section_id, kept_ids)
+            self.assertNotIn(tech_section_id, meta["tender_procedural_section_ids"])
+            self.assertNotIn("CH-000004", kept_ids)
+            self.assertIn("CH-000004", meta["tender_procedural_section_ids"])
+
     def test_front_matter_numbered_definitions_routed_control_kept(self) -> None:
         """编号前缀剥离：'2 DEFINITIONS' 命中；'2 20 Control of' 不命中 definitions。"""
         with tempfile.TemporaryDirectory() as tmp:

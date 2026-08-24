@@ -1950,10 +1950,7 @@ def _front_matter_top_key(title: str) -> str:
     return _FRONT_MATTER_NUMBER_PREFIX.sub("", normalized, count=1)
 
 
-def _section_tender_titles(
-    section: dict[str, Any],
-    blocks_by_id: dict[str, dict[str, Any]] | None = None,
-) -> list[str]:
+def _section_own_tender_titles(section: dict[str, Any]) -> list[str]:
     titles: list[str] = []
     for raw in (
         section.get("heading"),
@@ -1963,15 +1960,44 @@ def _section_tender_titles(
         title = str(raw or "").strip()
         if title and title not in titles:
             titles.append(title)
-    if blocks_by_id:
-        for block_id in (section.get("block_ids") or []):
-            block = blocks_by_id.get(str(block_id))
-            if block is None or str(block.get("type") or "") != "heading":
-                continue
-            title = str(block.get("text") or "").strip()
-            if title and title not in titles:
-                titles.append(title)
     return titles
+
+
+def _section_block_heading_titles(
+    section: dict[str, Any],
+    blocks_by_id: dict[str, dict[str, Any]] | None,
+) -> list[str]:
+    if not blocks_by_id:
+        return []
+    titles: list[str] = []
+    for block_id in (section.get("block_ids") or []):
+        block = blocks_by_id.get(str(block_id))
+        if block is None or str(block.get("type") or "") != "heading":
+            continue
+        title = str(block.get("text") or "").strip()
+        if title and title not in titles:
+            titles.append(title)
+    return titles
+
+
+def _section_tender_titles(
+    section: dict[str, Any],
+    blocks_by_id: dict[str, dict[str, Any]] | None = None,
+) -> list[str]:
+    titles = _section_own_tender_titles(section)
+    for title in _section_block_heading_titles(section, blocks_by_id):
+        if title not in titles:
+            titles.append(title)
+    return titles
+
+
+def _title_is_tender_procedural(title: str) -> bool:
+    from tender_regions import classify_tender_region
+
+    return (
+        classify_tender_region({"type": "heading", "text": title})
+        in _TENDER_PROCEDURAL_REGIONS
+    )
 
 
 def _section_is_tender_procedural(
@@ -1979,12 +2005,19 @@ def _section_is_tender_procedural(
     blocks_by_id: dict[str, dict[str, Any]] | None = None,
 ) -> bool:
     """条款标题/路径是否为招标程序性章节（开标、税清、保函、商务附件）。"""
+    if any(_title_is_tender_procedural(title) for title in _section_own_tender_titles(section)):
+        return True
+    if not any(
+        _title_is_tender_procedural(title)
+        for title in _section_block_heading_titles(section, blocks_by_id)
+    ):
+        return False
+    # 块内 heading 程序性证据须条款自身标题无 technical 反向保护（解析升格句不误伤技术章）
     from tender_regions import classify_tender_region
 
-    return any(
-        classify_tender_region({"type": "heading", "text": title})
-        in _TENDER_PROCEDURAL_REGIONS
-        for title in _section_tender_titles(section, blocks_by_id)
+    return not any(
+        classify_tender_region({"type": "heading", "text": title}) == "tender_technical"
+        for title in _section_own_tender_titles(section)
     )
 
 
