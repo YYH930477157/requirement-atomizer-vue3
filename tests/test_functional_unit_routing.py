@@ -373,7 +373,7 @@ class ApplyUnitRoutingTests(unittest.TestCase):
             self.assertGreaterEqual(meta["tender_span_routed_out"], 1)
             self.assertIn(
                 "3 Any conflict of interest on the part of the Bidder must be declared.",
-                meta["tender_span_section_ids"])
+                meta["tender_procedural_section_ids"])
             self.assertIn(
                 "3 Any conflict of interest on the part of the Bidder must be declared.",
                 meta["routed_out_section_ids"])
@@ -419,6 +419,79 @@ class ApplyUnitRoutingTests(unittest.TestCase):
             kept, meta = fe.apply_unit_routing(sections, blocks=blocks, out_dir=out)
             self.assertIn("cross-boundary", {s["section_id"] for s in kept})
             self.assertNotIn("cross-boundary", meta.get("tender_span_section_ids", []))
+
+    def test_sentence_procedural_headings_routed_by_title_anchor(self) -> None:
+        """句子形程序性 heading 自身成为锚点 → 逐标题路由出（不依赖跨度继承）。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            _seed_out(out)
+            blocks = _blocks_jsonl() + [
+                {"block_id": "H-TECH-BRO", "type": "heading",
+                 "text": "16 Technical Brochures and Technical Data Sheets", "order": 1},
+                {"block_id": "S-OEM", "type": "heading",
+                 "text": (
+                     "26 There shall be no change of Original Equipment Manufacturer "
+                     "(OEM) for this tender."
+                 ),
+                 "order": 2},
+                {"block_id": "P-OEM", "type": "paragraph",
+                 "text": "Change of OEM is prohibited.", "order": 3},
+                {"block_id": "H-METER", "type": "heading",
+                 "text": "1 METER TECHNICAL SPECIFICATION", "order": 4},
+                {"block_id": "P-METER", "type": "paragraph",
+                 "text": "The meter shall log events.", "order": 5},
+                {"block_id": "H-CHUNK", "type": "heading",
+                 "text": "1.1 Preparation of Bids", "order": 6},
+                {"block_id": "P-CHUNK", "type": "paragraph",
+                 "text": "Complete the bid submission sheet.", "order": 7},
+            ]
+            sections = fe.load_clauses(out) + [
+                {
+                    "section_id": (
+                        "26 There shall be no change of Original Equipment Manufacturer "
+                        "(OEM) for this tender."
+                    ),
+                    "section_path": [
+                        "26 There shall be no change of Original Equipment Manufacturer "
+                        "(OEM) for this tender."
+                    ],
+                    "heading": (
+                        "26 There shall be no change of Original Equipment Manufacturer "
+                        "(OEM) for this tender."
+                    ),
+                    "text": "Change of OEM is prohibited.",
+                    "block_ids": ["S-OEM", "P-OEM"],
+                },
+                {
+                    "section_id": "1 METER TECHNICAL SPECIFICATION",
+                    "section_path": ["1 METER TECHNICAL SPECIFICATION"],
+                    "heading": "1 METER TECHNICAL SPECIFICATION",
+                    "text": "The meter shall log events.",
+                    "block_ids": ["H-METER", "P-METER"],
+                },
+                {
+                    "section_id": "CH-000004",
+                    "section_path": [],
+                    "heading": "",
+                    "text": "Complete the bid submission sheet.",
+                    "block_ids": ["H-CHUNK", "P-CHUNK"],
+                },
+            ]
+            kept, meta = fe.apply_unit_routing(sections, blocks=blocks, out_dir=out)
+            kept_ids = {s["section_id"] for s in kept}
+            self.assertNotIn(
+                "26 There shall be no change of Original Equipment Manufacturer "
+                "(OEM) for this tender.",
+                kept_ids,
+            )
+            self.assertIn("1 METER TECHNICAL SPECIFICATION", kept_ids)
+            self.assertNotIn("CH-000004", kept_ids)
+            self.assertIn(
+                "26 There shall be no change of Original Equipment Manufacturer "
+                "(OEM) for this tender.",
+                meta["tender_procedural_section_ids"],
+            )
+            self.assertIn("CH-000004", meta["tender_procedural_section_ids"])
 
     def test_front_matter_numbered_definitions_routed_control_kept(self) -> None:
         """编号前缀剥离：'2 DEFINITIONS' 命中；'2 20 Control of' 不命中 definitions。"""

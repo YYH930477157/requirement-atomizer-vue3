@@ -265,6 +265,84 @@ class TenderRegionTests(unittest.TestCase):
         self.assertEqual(classify_tender_region(block), "tender_instructions")
 
 
+class SentenceProceduralAnchorTests(unittest.TestCase):
+    """句子形程序性 heading 窄锚点（2026-08-24）。"""
+
+    def test_oem_no_change_routes_instructions(self):
+        block = {
+            "type": "heading",
+            "text": (
+                "26. There shall be no change of Original Equipment Manufacturer "
+                "(OEM) for this tender."
+            ),
+        }
+        self.assertEqual(classify_tender_region(block), "tender_instructions")
+
+    def test_supply_history_routes_instructions(self):
+        block = {
+            "type": "heading",
+            "text": (
+                "22. Manufacturer's supply history for the past five (5) years "
+                "on supplied products"
+            ),
+        }
+        self.assertEqual(classify_tender_region(block), "tender_instructions")
+
+    def test_delivery_period_is_routes_instructions(self):
+        block = {
+            "type": "heading",
+            "text": (
+                "13. Delivery period is two (2) months or better from receipt of order"
+            ),
+        }
+        self.assertEqual(classify_tender_region(block), "tender_instructions")
+
+    def test_warranty_period_for_specified_routes_instructions(self):
+        block = {
+            "type": "heading",
+            "text": (
+                "19. The warranty period for the specified product family shall be "
+                "twelve months"
+            ),
+        }
+        self.assertEqual(classify_tender_region(block), "tender_instructions")
+
+    def test_conflict_of_interest_bidder_routes_instructions(self):
+        block = {
+            "type": "heading",
+            "text": "3. Any conflict of interest on the part of the Bidder must be declared.",
+        }
+        self.assertEqual(classify_tender_region(block), "tender_instructions")
+
+    def test_factory_certificates_exact_heading_routes_instructions(self):
+        block = {"type": "heading", "text": "13. FACTORY CERTIFICATES"}
+        self.assertEqual(classify_tender_region(block), "tender_instructions")
+
+    def test_preparation_of_bids_routes_instructions(self):
+        block = {"type": "heading", "text": "1.1 Preparation of Bids"}
+        self.assertEqual(classify_tender_region(block), "tender_instructions")
+
+    def test_delivery_of_data_stays_not_procedural(self):
+        block = {"type": "heading", "text": "7.2 Delivery of data records to the head-end"}
+        self.assertNotEqual(classify_tender_region(block), "tender_instructions")
+
+    def test_warranty_flag_register_stays_technical_or_unclassified(self):
+        block = {
+            "type": "heading",
+            "text": "7.4 Warranty flag register for tamper event logging",
+        }
+        region = classify_tender_region(block)
+        self.assertNotEqual(region, "tender_instructions")
+
+    def test_technical_data_requirements_stays_technical(self):
+        block = {"type": "heading", "text": "6. TECHNICAL DATA REQUIREMENTS TABLE"}
+        self.assertEqual(classify_tender_region(block), "tender_technical")
+
+    def test_meter_technical_specification_stays_technical(self):
+        block = {"type": "heading", "text": "1. METER TECHNICAL SPECIFICATION"}
+        self.assertEqual(classify_tender_region(block), "tender_technical")
+
+
 class TenderRegionSpanTests(unittest.TestCase):
     """招标程序性区域跨度继承（不改 apply_tender_regions / A9-2 默认关）。"""
 
