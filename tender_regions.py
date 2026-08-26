@@ -15,7 +15,7 @@ import os
 import re
 from typing import Any
 
-TENDER_REGION_FILTER_VERSION = "tender-region-filter-v2"
+TENDER_REGION_FILTER_VERSION = "tender-region-filter-v3"
 
 # --- 程序性章节词表（non_product_reference）-------------------------------------
 # A-1 收窄（2026-08-07）：qualification/evaluation/assessment/scoring 这类泛词在
@@ -90,6 +90,32 @@ _COMMERCIAL_RE = re.compile(
     re.IGNORECASE,
 )
 
+# --- 句子形程序性标题（解析器升格的正文句 → heading，需自身成为锚点）----------------
+# 2026-08-24：SBD 真跑中大量投标人/采购程序义务以 numbered sentence heading 出现，
+# 既不命中章节词表，又常落在 tender_technical 跨度内（如 "Technical Brochures"
+# 锚点之后）。只用窄整句/短语锚定，禁止单词级宽词（delivery/warranty 单字会误伤
+# 技术语境）。匹配前剥离前导条款编号（与 functional_extract 前置样板一致）。
+_CLAUSE_NUMBER_PREFIX = re.compile(r"^\d+(?:\.\d+)*\s+")
+
+_SENTENCE_INSTRUCTIONS_RE = re.compile(
+    r"(?:"
+    r"no change of original equipment manufacturer|"
+    r"manufacturer s supply history|"
+    r"delivery period is|"
+    r"warranty period for the specified|"
+    r"conflict of interest on the part of the bidder|"
+    r"conflict of interest in relation to this procurement|"
+    r"preparation of bids|"
+    r"compliance statement to the technical specification"
+    r")",
+    re.IGNORECASE,
+)
+
+# 极短标题级短语：整行归一后精确匹配，避免技术表行 "factory certificates" 误触。
+_SENTENCE_INSTRUCTIONS_EXACT = frozenset({
+    "factory certificates",
+})
+
 
 def tender_region_filter_enabled() -> bool:
     """A9-2 开关：默认关闭。"""
@@ -98,7 +124,21 @@ def tender_region_filter_enabled() -> bool:
 
 
 def _normalize_title(text: str) -> str:
-    return re.sub(r"\s+", " ", re.sub(r"[^\w\s]", " ", text or "").lower()).strip()
+    collapsed = re.sub(
+        r"\s+", " ", re.sub(r"[^\w\s]", " ", text or "").lower(),
+    ).strip()
+    return _CLAUSE_NUMBER_PREFIX.sub("", collapsed, count=1)
+
+
+def _sentence_procedural_region(text: str) -> str | None:
+    """句子形程序性 heading 的窄锚定；未命中返回 None。"""
+    if not text:
+        return None
+    if text in _SENTENCE_INSTRUCTIONS_EXACT:
+        return "tender_instructions"
+    if _SENTENCE_INSTRUCTIONS_RE.search(text):
+        return "tender_instructions"
+    return None
 
 
 def tender_region_spans(blocks: list[dict[str, Any]]) -> dict[str, str]:
@@ -108,7 +148,7 @@ def tender_region_spans(blocks: list[dict[str, Any]]) -> dict[str, str]:
     其后所有块（含未命中的 heading——解析器升格的正文句）继承该区域，直到
     下一个命中的 heading。首个锚点之前的块不入表（保守，调用方不得据此路由）。
 
-    不改 ``apply_tender_regions``、A9-2 默认关闭面或 ``TENDER_REGION_FILTER_VERSION``。
+    不改 ``apply_tender_regions`` 或 A9-2 默认关闭面。
     """
     spans: dict[str, str] = {}
     current: str | None = None
@@ -139,6 +179,9 @@ def classify_tender_region(block: dict[str, Any]) -> str | None:
         return None
     if _TECHNICAL_RE.search(text):
         return "tender_technical"
+    sentence_region = _sentence_procedural_region(text)
+    if sentence_region is not None:
+        return sentence_region
     if _INSTRUCTIONS_RE.search(text):
         return "tender_instructions"
     if _COMMERCIAL_RE.search(text):

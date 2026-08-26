@@ -80,7 +80,7 @@ FUNCTIONAL_CONSERVATION_MODEL_VERSION = "functional-conservation-obligation-evid
 # §17 unit 级路由接线（2026-08-17）：clause_family 策略下表格主导条款路由出 B 轨输入
 # 与守恒基线（表格内容归 A 轨/上下文，phase2 探针实证其混入 B 轨是守恒失败根因之一）。
 # 接线版本只进 clause_family 缓存指纹维度（legacy 指纹逐字节不变）；路由判据演进时 bump。
-FUNCTIONAL_UNIT_ROUTING_VERSION = "functional-unit-routing-v3"  # v3（2026-08-20）：招标程序性跨度继承（锚点标题后至下一分类锚点的块继承区域）+ 前置样板顶级标题剥离前导条款编号（"2 DEFINITIONS" → definitions）
+FUNCTIONAL_UNIT_ROUTING_VERSION = "functional-unit-routing-v4"  # v4（2026-08-24）：句子形程序性 heading 窄锚点（classify_tender_region 补锚，重置 technical 跨度误继承）+ v3 跨度继承/前置样板编号剥离
 FUNCTIONAL_REQUIREMENTS_FILENAME = "functional_requirements.json"
 FUNCTIONAL_EXTRACT_CACHE = "functional_extract_cache.jsonl"
 
@@ -1950,7 +1950,7 @@ def _front_matter_top_key(title: str) -> str:
     return _FRONT_MATTER_NUMBER_PREFIX.sub("", normalized, count=1)
 
 
-def _section_tender_titles(section: dict[str, Any]) -> list[str]:
+def _section_own_tender_titles(section: dict[str, Any]) -> list[str]:
     titles: list[str] = []
     for raw in (
         section.get("heading"),
@@ -1963,30 +1963,81 @@ def _section_tender_titles(section: dict[str, Any]) -> list[str]:
     return titles
 
 
-def _section_is_tender_procedural(section: dict[str, Any]) -> bool:
-    """条款标题/路径是否为招标程序性章节（开标、税清、保函、商务附件）。"""
+def _section_block_heading_titles(
+    section: dict[str, Any],
+    blocks_by_id: dict[str, dict[str, Any]] | None,
+) -> list[str]:
+    if not blocks_by_id:
+        return []
+    titles: list[str] = []
+    for block_id in (section.get("block_ids") or []):
+        block = blocks_by_id.get(str(block_id))
+        if block is None or str(block.get("type") or "") != "heading":
+            continue
+        title = str(block.get("text") or "").strip()
+        if title and title not in titles:
+            titles.append(title)
+    return titles
+
+
+def _section_tender_titles(
+    section: dict[str, Any],
+    blocks_by_id: dict[str, dict[str, Any]] | None = None,
+) -> list[str]:
+    titles = _section_own_tender_titles(section)
+    for title in _section_block_heading_titles(section, blocks_by_id):
+        if title not in titles:
+            titles.append(title)
+    return titles
+
+
+def _title_is_tender_procedural(title: str) -> bool:
     from tender_regions import classify_tender_region
 
-    return any(
+    return (
         classify_tender_region({"type": "heading", "text": title})
         in _TENDER_PROCEDURAL_REGIONS
-        for title in _section_tender_titles(section)
     )
 
 
-def _section_has_tender_technical_title(section: dict[str, Any]) -> bool:
+def _section_is_tender_procedural(
+    section: dict[str, Any],
+    blocks_by_id: dict[str, dict[str, Any]] | None = None,
+) -> bool:
+    """条款标题/路径是否为招标程序性章节（开标、税清、保函、商务附件）。"""
+    if any(_title_is_tender_procedural(title) for title in _section_own_tender_titles(section)):
+        return True
+    if not any(
+        _title_is_tender_procedural(title)
+        for title in _section_block_heading_titles(section, blocks_by_id)
+    ):
+        return False
+    # 块内 heading 程序性证据须条款自身标题无 technical 反向保护（解析升格句不误伤技术章）
+    from tender_regions import classify_tender_region
+
+    return not any(
+        classify_tender_region({"type": "heading", "text": title}) == "tender_technical"
+        for title in _section_own_tender_titles(section)
+    )
+
+
+def _section_has_tender_technical_title(
+    section: dict[str, Any],
+    blocks_by_id: dict[str, dict[str, Any]] | None = None,
+) -> bool:
     """任一标题/路径分类为 tender_technical → 保留（宁漏勿错，防程序跨度误伤技术章）。"""
     from tender_regions import classify_tender_region
 
     return any(
         classify_tender_region({"type": "heading", "text": title}) == "tender_technical"
-        for title in _section_tender_titles(section)
+        for title in _section_tender_titles(section, blocks_by_id)
     )
 
 
 def _section_is_tender_span_procedural(
     section: dict[str, Any],
     span_by_block: dict[str, str],
+    blocks_by_id: dict[str, dict[str, Any]] | None = None,
 ) -> bool:
     """第二级：条款全部块落在 instructions/commercial 跨度内，且自身无 technical 标题。
 
@@ -1997,7 +2048,7 @@ def _section_is_tender_span_procedural(
         return False
     if any(span_by_block.get(bid) not in _TENDER_PROCEDURAL_REGIONS for bid in block_ids):
         return False
-    if _section_has_tender_technical_title(section):
+    if _section_has_tender_technical_title(section, blocks_by_id):
         return False
     return True
 
@@ -2114,6 +2165,11 @@ def apply_unit_routing(
     from tender_regions import tender_region_spans
 
     span_by_block = tender_region_spans(list(blocks))
+    blocks_by_id = {
+        str(block.get("block_id")): block
+        for block in blocks
+        if str(block.get("block_id") or "")
+    }
     kept: list[dict[str, Any]] = []
     routed_out: list[dict[str, Any]] = []
     front_matter: list[dict[str, Any]] = []
@@ -2128,10 +2184,10 @@ def apply_unit_routing(
             # （单独计数，与表格路由区分审计）。
             front_matter.append(section)
             continue
-        if _section_is_tender_procedural(section):
+        if _section_is_tender_procedural(section, blocks_by_id):
             tender_procedural.append(section)
             continue
-        if _section_is_tender_span_procedural(section, span_by_block):
+        if _section_is_tender_span_procedural(section, span_by_block, blocks_by_id):
             tender_span.append(section)
             continue
         block_ids = [str(b) for b in (section.get("block_ids") or []) if str(b)]
