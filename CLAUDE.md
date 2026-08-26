@@ -1,5 +1,37 @@
 # CLAUDE.md — Requirement Atomizer 项目上下文
 
+## 重大更新（2026-08-26）——句子形程序性标题窄锚点路由 v4（合并 `97408a3`）
+
+> v3 跨度路由后 result3 仍有一批"解析器把正文句升格成 heading"的程序性条款
+> （26 OEM 变更、22 供货历史、13 交货期、19 质保、3 利益冲突、13 FACTORY
+> CERTIFICATES、CH-000004）无锚点可继承，留在抽取池贡献守恒失败。分支
+> `codex/tender-sentence-anchors`（grok-4.6 实施、Claude 审核），提交
+> `12342de`+`f73aaf1`。
+
+- **窄短语锚点**：`classify_tender_region` 新增 9 条句子形程序性规则（如
+ "no change of original equipment manufacturer"、"delivery period is"、
+ "preparation of bids"、整行精确 "factory certificates"），匹配前剥前导条款
+ 编号；禁止单词级宽词（delivery/warranty 单词会误伤技术语境）；`_TECHNICAL_RE`
+ 仍优先。`apply_unit_routing` 扫描条款内 heading 块（chunk 节如 CH-000004
+ 无自身标题）；**仅块内 heading 证据须过自身 technical 标题反向保护**
+ （宁漏勿错——技术章混入升格程序性句不整节误路由，f73aaf1 加固）。
+- **版本**：`TENDER_REGION_FILTER_VERSION` v2→v3、`FUNCTIONAL_UNIT_ROUTING_VERSION`
+ v3→v4（clause_family 直抽缓存自然 miss；legacy 指纹逐字节不变，测试钉住）。
+- **result3 离线回放**（out/tools/replay_tender_sentence_anchors.py，机器本地）：
+ sections_extracted 103→92（procedural 20→39、span 28→20、table 54 不变）；
+ 目标程序性条款全部路由出；技术章 1/6/7/8/9/11/21 零误伤（v4 kept 是 v3 严格
+ 子集；9.3 为既有纯表格路由）。守恒预期：uncovered 50→39、binding 45→36、
+ duplicates 0。**preservation 50 不变的真相（Claude 审核深挖）**：v3 时 section 6
+ 表格行号（21/22/23/24 等 token）的数字丢失经 token 级去重被归因到程序性节头上，
+ 程序性节出基线后同样的丢失如实转移归因——49/50 集中在"6 TECHNICAL DATA
+ REQUIREMENTS TABLE 表格数字"，是既有技术表格质量课题（中期项），非本次回归。
+ 另 `15 GUARANTEED LIFE SPAN`（含 16 EXTENDED WARRANTY，ALT/SLT 证书+质保条款）
+ 被跨度继承顺带路由出——与 19 质保同族可辩护，但含"最低 15 年寿命/故障率≤3%"
+ 产品色彩语句，如需保留待用户裁定加保护词。
+- 验证：worktree 全量 4034 OK（skipped=26）；合并后主检出 golden 6/6 零漂移、
+ semantic_quality 不设 env OK（本机 YYHwudi 历史样本路径缺失，设 env 指向缺失
+ 路径会出 1 failure+1 error，属 2026-08-03 已记载环境性行为）。
+
 ## 重大更新（2026-08-20c）——招标程序性跨度路由 + 完成证据阶段名 + 交付物面板存在性（合并 `21b3b1e`）
 
 > result3 重跑实证（部分复用生效、链续跑生效、约 54 分钟零重付）后定位新缺口：
