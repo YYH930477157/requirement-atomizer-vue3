@@ -1,0 +1,73 @@
+{
+  "plan": {
+    "unit_count": 13,
+    "counts_by_kind": {
+      "clause_segment": 4,
+      "heading": 7,
+      "narrative": 2
+    },
+    "counts_by_role": {
+      "context": 9,
+      "requirement_candidate": 4
+    }
+  },
+  "router": {
+    "unit_count": 13,
+    "counts_by_route": {
+      "a_track": 0,
+      "b_track": 4,
+      "mixed": 0,
+      "context": 9,
+      "review": 0
+    },
+    "counts_by_rule": {
+      "context_by_kind": 9,
+      "hard_b_only": 4
+    }
+  },
+  "apply": {
+    "status": "ok",
+    "sections_total": 6,
+    "sections_extracted": 4,
+    "table_dominated_routed_out": 0,
+    "front_matter_routed_out": 0,
+    "tender_procedural_routed_out": 2,
+    "tender_procedural_section_ids": [
+      "26 There shall be no change of original equipment manufacturer for this lot.",
+      "CH-000004"
+    ],
+    "tender_span_routed_out": 0,
+    "tender_span_section_ids": [],
+    "routed_out_section_ids": [
+      "26 There shall be no change of original equipment manufacturer for this lot.",
+      "CH-000004"
+    ],
+    "mixed_table_sections_kept": 0,
+    "section_ids": [
+      "26 There shall be no change of original equipment manufacturer for this lot.",
+      "2.2 Delivery Schedule",
+      "2.3 STATEMENT OF REQUIREMENTS (TECHNICAL)",
+      "2 20 Control of",
+      "2 20 Control of",
+      "CH-000004"
+    ],
+    "kept_section_ids": [
+      "2.2 Delivery Schedule",
+      "2.3 STATEMENT OF REQUIREMENTS (TECHNICAL)",
+      "2 20 Control of",
+      "2 20 Control of"
+    ],
+    "section_id_collision_counts": {
+      "2 20 Control of": 2,
+      "2.2 Delivery Schedule": 1,
+      "2.3 STATEMENT OF REQUIREMENTS (TECHNICAL)": 1,
+      "26 There shall be no change of original equipment manufacturer for this lot.": 1,
+      "CH-000004": 1
+    }
+  },
+  "conservation": {
+    "obligation_units_all_sections": 5,
+    "obligation_units_kept_baseline": 3,
+    "preservation_tokens": []
+  }
+}

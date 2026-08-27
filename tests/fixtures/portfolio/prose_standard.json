@@ -1,0 +1,48 @@
+{
+  "id": "prose_standard",
+  "notes": [
+    "散文标准：无表格。名词短语式规格与义务句混排。",
+    "形态对照 CLAUDE.md 2026-07-20 招标/散文轨（规则层对名词短语规格盲）。"
+  ],
+  "blocks": [
+    {
+      "block_id": "BLK-PS-H",
+      "order": 1,
+      "type": "heading",
+      "text": "5 Functional behaviour",
+      "raw_text": "5 Functional behaviour",
+      "section_path": ["5 Functional behaviour"],
+      "noise": false,
+      "doc_region": "body"
+    },
+    {
+      "block_id": "BLK-PS-NOUN",
+      "order": 2,
+      "type": "paragraph",
+      "text": "Rated voltage 230 V. Rated frequency 50 Hz. Optical port. Auxiliary supply.",
+      "raw_text": "Rated voltage 230 V. Rated frequency 50 Hz. Optical port. Auxiliary supply.",
+      "section_path": ["5 Functional behaviour"],
+      "noise": false,
+      "doc_region": "body"
+    },
+    {
+      "block_id": "BLK-PS-OBL",
+      "order": 3,
+      "type": "paragraph",
+      "text": "The meter shall store daily load profiles. The device shall expose an optical communication port.",
+      "raw_text": "The meter shall store daily load profiles. The device shall expose an optical communication port.",
+      "section_path": ["5 Functional behaviour"],
+      "noise": false,
+      "doc_region": "body"
+    }
+  ],
+  "chunks": [
+    {
+      "chunk_id": "CH-PS-1",
+      "section_path": ["5 Functional behaviour"],
+      "heading": "5 Functional behaviour",
+      "text": "Rated voltage 230 V. Rated frequency 50 Hz. Optical port. Auxiliary supply. The meter shall store daily load profiles. The device shall expose an optical communication port.",
+      "block_ids": ["BLK-PS-H", "BLK-PS-NOUN", "BLK-PS-OBL"]
+    }
+  ]
+}
