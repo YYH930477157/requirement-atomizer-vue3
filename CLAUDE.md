@@ -1,5 +1,48 @@
 # CLAUDE.md — Requirement Atomizer 项目上下文
 
+## 重大更新（2026-08-27c）——架构收敛 Phase 2 第一批：大纲权威 shadow + 评审队列收敛设计（合并 `17151a5`/`3f99adb`）
+
+> Phase 2 两工作流并行（grok-4.6 实施、Claude 逐轮审核）：WS-D 分支
+> `codex/outline-authority`（三提交：主体 `c5e4ed6` → 吞并检测层返工 `5ef0183` →
+> 编号基线语义返工 `26ef200`，两次均审核打回）；WS-E 分支
+> `codex/review-queue-design`（`4c8cd60`，纯设计文档）。
+
+- **WS-D 大纲权威 shadow**：新模块 `document_outline.py`
+ （`DOCUMENT_OUTLINE_VERSION=document-outline-v1`，零 LLM、**零消费者接线**、不 bump
+ 任何既有版本——纯影子层，Phase 2b 接线前量化病理面）。对每个 heading 块确定性裁决
+ `confirmed / demoted_body_sentence / toc_entry / suspect`：义务句形降格（剥编号后
+ 情态+句号+≥60 字符，复用 drilldown 句切分与 unit_router 模态词；全大写标题永不降格）、
+ 目录点引导线+页码检出、编号序列断裂/倒退只作 suspect 证据不单独降格（宁漏勿错）。
+ **吞并 heading 检测在 section 装配层**（`load_clauses` 条款块序列的非首位 heading；
+ 首版在 blocks 的 section_path 分组上检测 result3 检出 0，审核实测装配层 155 打回返工；
+ blocks-only 调用回退 section_path 分组，报告标注 `swallow_detection_basis`）。
+ **编号基线语义**（二轮返工）：只有 demoted/toc 非法节点不进编号基线——被吞并 heading
+ 是真实大纲节点（chunk 归属错≠标题非法），首版误剔致 suspect 25→118 爆炸，修正后回 25。
+ 产物 `document_outline.json` 经 governed 寻址登记（package_v1: pipeline/）；CLI 新增
+ `outline` 子命令（JSON envelope）。
+- **result3 回放（审核方独立复验一致）**：244 heading → confirmed 213 / demoted 6 /
+ toc 0 / suspect 25；**吞并 155**（含已知病理 BLK-000240「2.3 STATEMENT OF
+ REQUIREMENTS (TECHNICAL)」被吞进利益冲突节 index=4）；6 条降格全是真升格义务句
+ （OEM 变更/保函×3/利益冲突/合同效力），零误伤技术标题。**155/207 条款边界被吞并
+ heading 污染是 Phase 2b 重切条款边界的价值量化**——招标 PDF 路由靠词表层层代偿的
+ 地基病因在此。撞名/目录 0 属 SBD 语料事实（ABNT 形态判据已备）。
+- **WS-E 评审队列收敛设计**：`docs/review-queue-convergence-design-2026-08-27.md`
+ （只设计不实施，全部论断带 file:line）。盘点 8+ 套并存评审/状态权威（A 轨
+ review_states / B 轨 ai_review_states / table 双写 / claim 候选裁决 / claim 事件链 /
+ omission / 澄清内部核对+客户答复 / WS4 四套）。核心决策：**内核复用 claim 事件机械**
+ （generation/幂等/projection CAS 已就位），按 subject_kind 分派 CAS——统一机械不统一
+ 枚举（六套指纹口径不可互替是最大语义风险）；迁移顺序 table 停双写（终态已委托 claim，
+ `table_review_states` 只是审计双写，风险最低）→ omission+内部核对 → A/B 专家裁决
+ 双写切换；claim_queue_proposals 保留为执行工作单不并入；atoms 退出的是人读交付物/
+ 主 KPI，不是 A 轨装配中间产物、不是 claim 分母（消费者分类进文档 §3.3）。
+ 旧 JSONL 只读兼容 ≥ 两个桌面发布周期、旧 API 端点不砍、错误码须别名旧码。
+- **验证**：合并后主检出全量 4097 OK（skipped=20，见下）、golden 6/6 零漂移（shadow
+ 不触 atomize 产物）；分支上专项 24 + 全量 4096 OK。`docs/architecture-convergence-
+ plan-2026-08-27.md` 随本条目入仓（此前未跟踪）。
+- **Phase 2 剩余待办**：大纲接线 Phase 2b（用 shadow 报告重切条款边界——爆炸半径
+ 重解析/atomize 指纹连锁/golden 重生成，单独立项）；队列收敛第 1 步 table 停双写；
+ atoms 退出交付物 UI 面（可与 table 停双写并行）；ABNT golden 降级（组合钉已转正）。
+
 ## 重大更新（2026-08-27b）——架构收敛 Phase 1：守恒分轨 + 路由收编 + 多文档回归组合（合并 `dfbe3dd`）
 
 > 依据 `docs/architecture-convergence-plan-2026-08-27.md`（框架四错诊断：无文档结构权威 /
