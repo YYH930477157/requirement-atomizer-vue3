@@ -200,10 +200,12 @@ class TenderPdfPathologyTests(unittest.TestCase):
             apply["tender_procedural_section_ids"],
             exp["tender_procedural_section_ids"],
         )
-        # CLAUDE.md 2026-08-26：正文句升格 heading → 节级词表路由出
+        # CLAUDE.md 2026-08-26：正文句升格 heading 仍路由出。
+        # WS-A/B 已修复（2026-08-27）：桶重分类——OEM 句从 tender_procedural
+        # 移到 tender_span（仍路由出，守恒不变）。
         self.assertIn(
             "26 There shall be no change of original equipment manufacturer for this lot.",
-            apply["tender_procedural_section_ids"],
+            apply["tender_span_section_ids"],
         )
         # CLAUDE.md 2026-08-26：无自身标题 chunk，块内 Preparation of Bids 锚点路由出
         self.assertIn("CH-000004", apply["tender_procedural_section_ids"])
@@ -333,18 +335,25 @@ class ProceduralTechnicalMixedTests(unittest.TestCase):
         # CLAUDE.md 2026-08-20b：开标/税清标题走逐标题程序性路由
         self.assertIn("1.10 Bid Opening", apply["tender_procedural_section_ids"])
         self.assertIn("11 Valid Tax Clearance Certificate", apply["tender_procedural_section_ids"])
-        # 当前行为（已知缺陷,WS-A/B 将改变此值）：开标锚点跨度继承把后续
-        # meter/device/manufacturer 产品节整节路由出（节级 all-or-nothing）
+        # WS-A/B 已修复（2026-08-27）：产品主语保护——8 Event recording /
+        # 9 Retention period 不再被开标锚点跨度整节吞没；tender_span 只剩
+        # 12 Spare parts。出处：CLAUDE.md 2026-08-27 诊断 2。
         self.assertEqual(
             apply["tender_span_section_ids"],
-            ["12 Spare parts", "8 Event recording", "9 Retention period"],
+            ["12 Spare parts"],
         )
-        # 当前行为（已知缺陷,WS-A/B 将改变此值）：technical 标题否决跨度，
-        # 节内 bidder 程序性句仍整节保留
-        self.assertEqual(apply["kept_section_ids"],
-                         ["6 TECHNICAL DATA REQUIREMENTS TABLE"])
+        # WS-A/B 已修复（2026-08-27）：产品主语保护使 8/9 进入 kept；
+        # 6 TECHNICAL DATA 仍由 technical 标题否决保留。
+        self.assertEqual(apply["kept_section_ids"], [
+            "8 Event recording",
+            "9 Retention period",
+            "6 TECHNICAL DATA REQUIREMENTS TABLE",
+        ])
 
     def test_conservation_baseline(self) -> None:
+        # WS-A/B 已修复（2026-08-27）：8/9 产品节回到基线，
+        # obligation_units_kept_baseline 1→3；9 Retention period 的 90
+        # 恢复为 number blocking。出处：CLAUDE.md 2026-08-27 诊断 2。
         self.assertEqual(self.obs["conservation"], self.exp["conservation"])
 
 

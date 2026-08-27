@@ -27,7 +27,7 @@
   "apply": {
     "status": "ok",
     "sections_total": 6,
-    "sections_extracted": 1,
+    "sections_extracted": 3,
     "table_dominated_routed_out": 0,
     "front_matter_routed_out": 0,
     "tender_procedural_routed_out": 2,
@@ -35,18 +35,14 @@
       "1.10 Bid Opening",
       "11 Valid Tax Clearance Certificate"
     ],
-    "tender_span_routed_out": 3,
+    "tender_span_routed_out": 1,
     "tender_span_section_ids": [
-      "12 Spare parts",
-      "8 Event recording",
-      "9 Retention period"
+      "12 Spare parts"
     ],
     "routed_out_section_ids": [
       "1.10 Bid Opening",
       "11 Valid Tax Clearance Certificate",
-      "12 Spare parts",
-      "8 Event recording",
-      "9 Retention period"
+      "12 Spare parts"
     ],
     "mixed_table_sections_kept": 0,
     "section_ids": [
@@ -58,6 +54,8 @@
       "6 TECHNICAL DATA REQUIREMENTS TABLE"
     ],
     "kept_section_ids": [
+      "8 Event recording",
+      "9 Retention period",
       "6 TECHNICAL DATA REQUIREMENTS TABLE"
     ],
     "section_id_collision_counts": {
@@ -71,7 +69,14 @@
   },
   "conservation": {
     "obligation_units_all_sections": 6,
-    "obligation_units_kept_baseline": 1,
-    "preservation_tokens": []
+    "obligation_units_kept_baseline": 3,
+    "preservation_tokens": [
+      {
+        "kind": "number",
+        "section_id": "9 Retention period",
+        "severity": "blocking",
+        "token": "90"
+      }
+    ]
   }
 }

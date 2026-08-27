@@ -31,13 +31,14 @@
     "sections_extracted": 4,
     "table_dominated_routed_out": 0,
     "front_matter_routed_out": 0,
-    "tender_procedural_routed_out": 2,
+    "tender_procedural_routed_out": 1,
     "tender_procedural_section_ids": [
-      "26 There shall be no change of original equipment manufacturer for this lot.",
       "CH-000004"
     ],
-    "tender_span_routed_out": 0,
-    "tender_span_section_ids": [],
+    "tender_span_routed_out": 1,
+    "tender_span_section_ids": [
+      "26 There shall be no change of original equipment manufacturer for this lot."
+    ],
     "routed_out_section_ids": [
       "26 There shall be no change of original equipment manufacturer for this lot.",
       "CH-000004"
