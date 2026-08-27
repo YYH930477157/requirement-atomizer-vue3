@@ -307,6 +307,99 @@ class ConservationTrackSplitTests(unittest.TestCase):
             }
             self.assertTrue({"230", "5"} & number_tokens, blocking)
 
+    def _seed_duplicate_table_blocks(self, out: Path, *, delegatable_first: bool) -> dict:
+        """两条款内表格块字节级相同，其一（T1）全部 a_track 可委托、另一（T2）含 b_track 单元。
+
+        ``delegatable_first`` 控制两个表格块在条款块序列中的先后位置。
+        """
+        first_table, second_table = ("T1", "T2") if delegatable_first else ("T2", "T1")
+        blocks = [
+            {"block_id": "P1", "type": "paragraph", "section_path": ["6"],
+             "text": PROSE, "order": 1},
+            {"block_id": first_table, "type": "table", "section_path": ["6"],
+             "text": TABLE_FLAT, "order": 2},
+            {"block_id": second_table, "type": "table", "section_path": ["6"],
+             "text": TABLE_FLAT, "order": 3},
+        ]
+        section = {
+            "section_id": "6 TECHNICAL DATA",
+            "section_path": ["6 TECHNICAL DATA"],
+            "heading": "6 TECHNICAL DATA",
+            "text": f"{PROSE}\n{TABLE_FLAT}\n{TABLE_FLAT}",
+            "block_ids": [row["block_id"] for row in blocks],
+        }
+        _write_jsonl(out / "blocks.jsonl", blocks)
+        _write_jsonl(out / "table_items.jsonl", [
+            {"item_id": "TBLI-1", "table_id": "TBL-000001",
+             "table_block_id": "T1", "leaf_role": "row", "row_index": 1,
+             "text": "230 | 5", "section_path": ["6"]},
+            {"item_id": "TBLI-2", "table_id": "TBL-000002",
+             "table_block_id": "T2", "leaf_role": "row", "row_index": 1,
+             "text": "230 | 5", "section_path": ["6"]},
+        ])
+        units = [
+            _prose_unit(),
+            _cell_unit("UNIT-C230", "230", block_id="T1"),
+            _cell_unit("UNIT-C5", "5", block_id="T1"),
+            _cell_unit("UNIT-D230", "230", block_id="T2"),
+            _cell_unit("UNIT-D5", "5", block_id="T2"),
+        ]
+        decisions = [
+            _decision("UNIT-P1-S000", "b_track"),
+            _decision("UNIT-C230", "a_track"),
+            _decision("UNIT-C5", "a_track"),
+            _decision("UNIT-D230", "b_track"),
+            _decision("UNIT-D5", "b_track"),
+        ]
+        _write_jsonl(out / "extraction_units.jsonl", units)
+        _write_jsonl(out / "unit_routing_decisions.jsonl", decisions)
+        _write_jsonl(out / "table_cell_dispositions.jsonl", [
+            {"schema": "table-cell-disposition/v2", "cell_id": "C230",
+             "table_id": "TBL-000001", "table_block_id": "T1",
+             "text": "230", "role": "context", "disposition": "context"},
+            {"schema": "table-cell-disposition/v2", "cell_id": "C5",
+             "table_id": "TBL-000001", "table_block_id": "T1",
+             "text": "5", "role": "context", "disposition": "context"},
+            {"schema": "table-cell-disposition/v2", "cell_id": "D230",
+             "table_id": "TBL-000002", "table_block_id": "T2",
+             "text": "230", "role": "context", "disposition": "context"},
+            {"schema": "table-cell-disposition/v2", "cell_id": "D5",
+             "table_id": "TBL-000002", "table_block_id": "T2",
+             "text": "5", "role": "context", "disposition": "context"},
+        ])
+        return section
+
+    def _assert_duplicate_table_delegation(self, *, delegatable_first: bool) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            section = self._seed_duplicate_table_blocks(
+                out, delegatable_first=delegatable_first)
+            blocks = [
+                json.loads(line) for line in
+                (out / "blocks.jsonl").read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            report = fe.conservation_report(
+                [section], [_item()], blocks=blocks, out_dir=out)
+            delegated = report["checks"]["preservation"]["delegated_to_cell_conservation"]
+            self.assertEqual([row["block_id"] for row in delegated], ["T1"])
+            # 非委托块（T2）的同文本内容必须仍在基线：其数字照常记 preservation 账
+            # （replace-all 会把两次出现一并剥掉，变成无 cell 守恒兜底的静默丢账）。
+            blocking = report["checks"]["preservation"]["blocking_losses"]
+            number_tokens = {
+                str(row.get("token")) for row in blocking
+                if row.get("kind") == "number"
+            }
+            self.assertIn("230", number_tokens)
+            self.assertIn("5", number_tokens)
+
+    def test_duplicate_table_text_delegatable_block_first(self) -> None:
+        self._assert_duplicate_table_delegation(delegatable_first=True)
+
+    def test_duplicate_table_text_retained_block_first(self) -> None:
+        """剔除次数与块顺序无关（count 感知，非首个出现位置替换）。"""
+        self._assert_duplicate_table_delegation(delegatable_first=False)
+
 
 if __name__ == "__main__":
     unittest.main()

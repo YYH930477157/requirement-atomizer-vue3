@@ -342,6 +342,29 @@ class SentenceProceduralAnchorTests(unittest.TestCase):
         block = {"type": "heading", "text": "1. METER TECHNICAL SPECIFICATION"}
         self.assertEqual(classify_tender_region(block), "tender_technical")
 
+    # --- 2026-08-27 审查修复（tender-region-filter-v4）--------------------------
+
+    def test_compliance_statement_to_technical_specification_routes_instructions(self):
+        """锚点自带 technical 词面：句子锚点须先于 _TECHNICAL_RE（原顺序下永远死锚点）。"""
+        block = {
+            "type": "heading",
+            "text": (
+                "14. The bidder shall furnish a compliance statement to the "
+                "technical specification"
+            ),
+        }
+        self.assertEqual(classify_tender_region(block), "tender_instructions")
+
+    def test_multilevel_numbered_factory_certificates_exact_routes_instructions(self):
+        """多级编号剥号须在标点归一之前：精确锚点不再残留 "2 factory certificates"。"""
+        block = {"type": "heading", "text": "5.2 FACTORY CERTIFICATES"}
+        self.assertEqual(classify_tender_region(block), "tender_instructions")
+
+    def test_multilevel_numbered_chinese_technical_title_stays_technical(self):
+        """多级编号的中文技术标题剥号后仍判 technical（安全方向回归钉）。"""
+        block = {"type": "heading", "text": "1.2 技术规范"}
+        self.assertEqual(classify_tender_region(block), "tender_technical")
+
 
 class TenderRegionSpanTests(unittest.TestCase):
     """招标程序性区域跨度继承（不改 apply_tender_regions / A9-2 默认关）。"""

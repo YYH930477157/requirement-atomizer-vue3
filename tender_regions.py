@@ -15,7 +15,13 @@ import os
 import re
 from typing import Any
 
-TENDER_REGION_FILTER_VERSION = "tender-region-filter-v3"
+TENDER_REGION_FILTER_VERSION = "tender-region-filter-v4"
+# v3 → v4（2026-08-27 审查修复）：
+# 1) classify_tender_region 里句子形锚点先于 _TECHNICAL_RE——"compliance statement
+#    to the technical specification" 自带 technical 词面，原顺序下永远死在技术跨度
+#    （锚点从未生效且反向标成 technical）；
+# 2) _normalize_title 先剥前导条款编号再做标点归一——原顺序把 "5.2" 的点号替换成
+#    空格后才剥编号，多级编号标题（"5.2 Factory Certificates"）精确锚点永不命中。
 
 # --- 程序性章节词表（non_product_reference）-------------------------------------
 # A-1 收窄（2026-08-07）：qualification/evaluation/assessment/scoring 这类泛词在
@@ -94,8 +100,9 @@ _COMMERCIAL_RE = re.compile(
 # 2026-08-24：SBD 真跑中大量投标人/采购程序义务以 numbered sentence heading 出现，
 # 既不命中章节词表，又常落在 tender_technical 跨度内（如 "Technical Brochures"
 # 锚点之后）。只用窄整句/短语锚定，禁止单词级宽词（delivery/warranty 单字会误伤
-# 技术语境）。匹配前剥离前导条款编号（与 functional_extract 前置样板一致）。
-_CLAUSE_NUMBER_PREFIX = re.compile(r"^\d+(?:\.\d+)*\s+")
+# 技术语境）。匹配前剥离前导条款编号（与 functional_extract 前置样板一致）；
+# 编号在**原始文本**上剥离，兼容 "13." / "5.2" / "5.2." 三种点号形态。
+_CLAUSE_NUMBER_PREFIX = re.compile(r"^\d+(?:\.\d+)*\.?\s+")
 
 _SENTENCE_INSTRUCTIONS_RE = re.compile(
     r"(?:"
@@ -124,10 +131,10 @@ def tender_region_filter_enabled() -> bool:
 
 
 def _normalize_title(text: str) -> str:
-    collapsed = re.sub(
-        r"\s+", " ", re.sub(r"[^\w\s]", " ", text or "").lower(),
+    stripped = _CLAUSE_NUMBER_PREFIX.sub("", (text or "").strip(), count=1)
+    return re.sub(
+        r"\s+", " ", re.sub(r"[^\w\s]", " ", stripped.lower()),
     ).strip()
-    return _CLAUSE_NUMBER_PREFIX.sub("", collapsed, count=1)
 
 
 def _sentence_procedural_region(text: str) -> str | None:
@@ -177,11 +184,14 @@ def classify_tender_region(block: dict[str, Any]) -> str | None:
     text = _normalize_title(str(block.get("text") or ""))
     if not text:
         return None
-    if _TECHNICAL_RE.search(text):
-        return "tender_technical"
+    # 句子形锚点先于 _TECHNICAL_RE：升格正文句常引用技术规范词面（"compliance
+    # statement to the technical specification"），词序颠倒会让窄锚点永远死在
+    # 技术跨度里。A-1 的"技术章节优先"只针对 _INSTRUCTIONS_RE 宽词表，顺序不变。
     sentence_region = _sentence_procedural_region(text)
     if sentence_region is not None:
         return sentence_region
+    if _TECHNICAL_RE.search(text):
+        return "tender_technical"
     if _INSTRUCTIONS_RE.search(text):
         return "tender_instructions"
     if _COMMERCIAL_RE.search(text):
