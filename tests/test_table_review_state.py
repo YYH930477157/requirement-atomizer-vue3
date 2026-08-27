@@ -60,7 +60,7 @@ class TableReviewStateTests(unittest.TestCase):
 
             payload = build_table_review_payload(analysis)
 
-            self.assertEqual(payload["schema"], "table-review-view/v1")
+            self.assertEqual(payload["schema"], "table-review-view/v2")
             self.assertEqual(len(payload["tables"]), 1)
             table = payload["tables"][0]
             self.assertEqual(table["table_id"], "TBL-000001")
@@ -155,9 +155,16 @@ class TableReviewStateTests(unittest.TestCase):
             )
             self.assertEqual(updated["decision_source"], "claim_authority")
             self.assertEqual(updated["disposition"], "excluded")
-            self.assertTrue(
+            self.assertFalse(
                 governed_artifact_path(
-                    analysis, "table_review_states.jsonl", category="state"
+                    analysis, "table_review_states.jsonl", category="state",
+                    for_write=False,
+                ).is_file()
+            )
+            self.assertFalse(
+                governed_artifact_path(
+                    analysis, "table_review_events.jsonl", category="state",
+                    for_write=False,
                 ).is_file()
             )
 
@@ -317,6 +324,12 @@ class TableReviewStateTests(unittest.TestCase):
             self.assertFalse(second["partial"])
             self.assertEqual(second["structure_review_status"], "ready")
             self.assertEqual(delegated.call_count, 3)
+            self.assertFalse(
+                governed_artifact_path(
+                    analysis, "table_review_states.jsonl", category="state",
+                    for_write=False,
+                ).is_file()
+            )
 
     def test_api_get_and_post_use_table_review_contract(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -527,14 +540,12 @@ class TableReviewStateTests(unittest.TestCase):
             self.assertEqual(result["structure_review_status"], "ready")
             self.assertIn("recompute_error", result)
             self.assertIn("OmissionConflictError", result["recompute_error"])
-            # 持久化 state 同样诚实记录 recompute_error（不再只进 HTTP 响应）
-            states = read_jsonl(
+            self.assertFalse(
                 governed_artifact_path(
-                    analysis, "table_review_states.jsonl", category="state"
-                )
+                    analysis, "table_review_states.jsonl", category="state",
+                    for_write=False,
+                ).is_file()
             )
-            self.assertTrue(states)
-            self.assertIn("recompute_error", states[-1])
 
 
     def test_build_payload_raises_base_migration_required_for_stale_base(self) -> None:
@@ -574,7 +585,7 @@ class TableReviewStateTests(unittest.TestCase):
             self.assertEqual(responses[0][1]["error"], "base_migration_required")
 
     def test_recompute_recovery_clears_error_on_success(self) -> None:
-        """Kimi #3 跟进 #1b：启动维护重试 ready+recompute_error 的表，成功即清除错误。"""
+        """Historical ready+recompute_error rows still retry; the old file is not rewritten."""
         from table_review_state import run_table_review_recompute_recovery
         with tempfile.TemporaryDirectory() as tmp:
             analysis, _cells, _dispositions = _seed(Path(tmp))
@@ -601,10 +612,10 @@ class TableReviewStateTests(unittest.TestCase):
             self.assertEqual(result["recovered"], 1)
             self.assertEqual(result["still_failing"], 0)
             states = read_jsonl(states_path)
-            self.assertNotIn("recompute_error", states[-1])
+            self.assertIn("recompute_error", states[-1])
 
     def test_recompute_recovery_keeps_error_when_still_failing(self) -> None:
-        """Kimi #3 跟进 #1b：重试仍失败时保留 recompute_error（更新错误串），等下次启动再试。"""
+        """Retry still reports still_failing; historical recompute_error bytes stay put."""
         from table_review_state import run_table_review_recompute_recovery
         with tempfile.TemporaryDirectory() as tmp:
             analysis, _cells, _dispositions = _seed(Path(tmp))
@@ -630,8 +641,164 @@ class TableReviewStateTests(unittest.TestCase):
             self.assertEqual(result["recovered"], 0)
             self.assertEqual(result["still_failing"], 1)
             states = read_jsonl(states_path)
-            self.assertEqual(
-                states[-1]["recompute_error"], "OmissionConflictError: still running"
+            self.assertEqual(states[-1]["recompute_error"], "old: prior failure")
+
+
+    def test_decision_does_not_create_or_grow_table_review_state_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            analysis, _cells, dispositions = _seed(Path(tmp))
+            fingerprint = table_evidence_fingerprint("TBL-000001", dispositions)
+            review_cell = next(row for row in dispositions if row["disposition"] == "review")
+            states_path = governed_artifact_path(
+                analysis, "table_review_states.jsonl", category="state",
+                for_write=True,
+            )
+            events_path = governed_artifact_path(
+                analysis, "table_review_events.jsonl", category="state",
+                for_write=True,
+            )
+            write_jsonl(states_path, [{
+                "schema": "table-review-state/v1",
+                "table_id": "TBL-000001",
+                "structure_review_status": "ready",
+                "actor": "legacy",
+            }])
+            write_jsonl(events_path, [{
+                "schema": "table-review-event/v1",
+                "table_id": "TBL-000001",
+                "actor": "legacy",
+            }])
+            before_states = states_path.read_bytes()
+            before_events = events_path.read_bytes()
+            authority = {
+                review_cell["cell_id"]: {
+                    "status": "confirmed_excluded",
+                    "claim_id": "CLM-0000000000000001",
+                    "decision_id": "CSCD-0000000000000001",
+                    "prior_structural_reason": "ambiguous_table_structure",
+                }
+            }
+            with patch(
+                "table_review_state._delegate_claim_cell_decision",
+                return_value={"ok": True, "status": "confirmed_excluded"},
+            ), patch(
+                "table_review_state._current_claim_projection",
+                side_effect=[{}, authority],
+            ):
+                apply_table_review_decision(
+                    analysis,
+                    table_id="TBL-000001",
+                    expected_evidence_fingerprint=fingerprint,
+                    role_mapping={
+                        review_cell["cell_id"]: {
+                            "role": "row_header",
+                            "disposition": "context",
+                        }
+                    },
+                    actor="reviewer",
+                    reason="Confirmed",
+                )
+            self.assertEqual(states_path.read_bytes(), before_states)
+            self.assertEqual(events_path.read_bytes(), before_events)
+
+    def test_legacy_table_review_states_do_not_override_claim_projection_view(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            analysis, _cells, dispositions = _seed(Path(tmp))
+            review_cell = next(row for row in dispositions if row["disposition"] == "review")
+            write_jsonl(
+                governed_artifact_path(
+                    analysis, "table_review_states.jsonl", category="state"
+                ),
+                [{
+                    "schema": "table-review-state/v1",
+                    "table_id": "TBL-000001",
+                    "structure_review_status": "ready",
+                    "actor": "legacy-stale-ready",
+                }],
+            )
+            get_handler = object.__new__(api_server.RequirementAPIHandler)
+            get_handler.path = "/table-reviews"
+            get_handler.headers = {}
+            get_handler.allowed_origins = set()
+            get_handler.local_token = ""
+            get_handler.output_dir = analysis
+            get_handler.package_root = Path(tmp)
+            get_handler._refresh_analysis_root = lambda: None
+            responses = []
+            get_handler.send_json = lambda body, status=200: responses.append(
+                (status, body)
+            )
+            get_handler.do_GET()
+            self.assertEqual(responses[0][0], 200)
+            table = responses[0][1]["tables"][0]
+            self.assertEqual(table["schema"] if "schema" in table else responses[0][1]["schema"],
+                             "table-review-view/v2")
+            self.assertEqual(table["structure_review_status"], "pending")
+            pending_cell = next(
+                cell for cell in table["cells"]
+                if cell["cell_id"] == review_cell["cell_id"]
+            )
+            self.assertEqual(pending_cell["disposition"], "review")
+
+    def test_partial_claim_delegate_failure_keeps_completed_remaining_semantics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            analysis, cells, dispositions = _seed(Path(tmp))
+            review_ids = [str(cell["cell_id"]) for cell in cells[:2]]
+            for row in dispositions:
+                if row["cell_id"] in review_ids:
+                    row.update({
+                        "disposition": "review",
+                        "confidence": "low",
+                        "evidence": ["ambiguous_structure_cell"],
+                        "linked_leaf_ids": [],
+                        "structure_review_status": "pending",
+                    })
+            write_jsonl(
+                governed_artifact_path(analysis, "table_cell_dispositions.jsonl"),
+                dispositions,
+            )
+            authority: dict[str, dict] = {}
+
+            def delegate(_root: Path, *, cell_id: str, **_kwargs):
+                if cell_id == review_ids[1]:
+                    raise TimeoutError("synthetic second-cell failure")
+                authority[cell_id] = {
+                    "status": "confirmed_excluded",
+                    "claim_id": f"CLM-{cell_id}",
+                    "decision_id": f"CSCD-{cell_id}",
+                    "prior_structural_reason": "ambiguous_table_structure",
+                }
+                return {"ok": True, "status": "confirmed_excluded"}
+
+            with patch(
+                "table_review_state._delegate_claim_cell_decision",
+                side_effect=delegate,
+            ), patch(
+                "table_review_state._current_claim_projection",
+                side_effect=lambda _root: dict(authority),
+            ):
+                initial = build_table_review_payload(analysis)["tables"][0]
+                result = apply_table_review_decision(
+                    analysis,
+                    table_id=initial["table_id"],
+                    expected_evidence_fingerprint=initial["evidence_fingerprint"],
+                    role_mapping={
+                        cell_id: {"role": "unknown", "disposition": "excluded"}
+                        for cell_id in review_ids
+                    },
+                    actor="reviewer",
+                    reason="Partial batch",
+                )
+            self.assertTrue(result["partial"])
+            self.assertEqual(result["completed_cell_ids"], [review_ids[0]])
+            self.assertEqual(result["remaining_cell_ids"], [review_ids[1]])
+            self.assertIn("decision_error", result)
+            self.assertEqual(result["decision_error"]["type"], "TimeoutError")
+            self.assertFalse(
+                governed_artifact_path(
+                    analysis, "table_review_states.jsonl", category="state",
+                    for_write=False,
+                ).is_file()
             )
 
 

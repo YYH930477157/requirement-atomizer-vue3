@@ -451,7 +451,7 @@ describe("review workspace shell", () => {
         return {
           ok: true,
           json: async () => ({
-            schema: "table-review-view/v1",
+            schema: "table-review-view/v2",
             tables: [
               {
                 table_id: "TBL-PENDING",
@@ -564,7 +564,7 @@ describe("review workspace shell", () => {
         return {
           ok: true,
           json: async () => ({
-            schema: "table-review-view/v1",
+            schema: "table-review-view/v2",
             tables: [{
               table_id: "TBL-PARTIAL",
               title: "Auxiliary output",

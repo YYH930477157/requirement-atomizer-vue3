@@ -1,4 +1,12 @@
-"""Table-level structural review state and optimistic-concurrency writes."""
+"""Table-level structural review view and decision entry.
+
+v2 onward: terminal table/cell status authority is the claim projection
+(``load_table_claim_authority_projection``). Historical rows in
+``table_review_states.jsonl`` / ``table_review_events.jsonl`` are read-only
+and ignored by GET /table-reviews; this module no longer writes them.
+``table_geometry_conflicts.jsonl`` remains a writable overlay (no claim
+subject yet).
+"""
 from __future__ import annotations
 
 import hashlib
@@ -24,10 +32,10 @@ from table_claim_authority import (
 from table_dispositions import DISPOSITIONS, validate_disposition_conservation
 
 
-TABLE_REVIEW_VIEW_SCHEMA = "table-review-view/v1"
+TABLE_REVIEW_VIEW_SCHEMA = "table-review-view/v2"
 TABLE_REVIEW_STATE_SCHEMA = "table-review-state/v1"
 TABLE_REVIEW_EVENT_SCHEMA = "table-review-event/v1"
-TABLE_REVIEW_DECISION_VERSION = "table-review-decision-v1"
+TABLE_REVIEW_DECISION_VERSION = "table-review-decision-v2"
 TABLE_REVIEW_STATES = "table_review_states.jsonl"
 TABLE_REVIEW_EVENTS = "table_review_events.jsonl"
 TABLE_REVIEW_LOCK = "table_review_states.lock"
@@ -247,7 +255,12 @@ def clear_table_geometry_conflicts(out_dir: Path, table_id: str) -> bool:
 
 
 def build_table_review_payload(out_dir: Path) -> dict[str, Any]:
-    """Build the read-only table review view from governed artifacts."""
+    """Build the read-only table review view from claim projection + geometry overlay.
+
+    ``table_review_states.jsonl`` is never consulted: table pending/ready is
+    derived from claim-projected dispositions (any review cell or geometry
+    overlay → pending; all cells terminal → ready).
+    """
     root = Path(out_dir).expanduser().resolve()
     blocks = _artifact_rows(root, "blocks.jsonl")
     cells = _artifact_rows(root, "table_cell_items.jsonl")
@@ -617,11 +630,10 @@ def _run_table_recompute(
 
 
 def run_table_review_recompute_recovery(root: Path) -> dict[str, Any]:
-    """启动维护：扫描 ready+recompute_error 的表幂等重试 recompute（Kimi #3 跟进 #1b）。
+    """Scan historical ready+recompute_error rows and retry recompute.
 
-    recompute_confirmed_table_requirements 按 changed cell 替换需求、是幂等的，故失败留下的
-    ready+recompute_error 表可在启动 / claim-maintenance 时整体重试：成功则清除 recompute_error，
-    仍失败则保留（更新错误串）等下次。全程持 _table_review_lock。
+    Historical table_review_states.jsonl is read-only: retries still run
+    (recompute is idempotent) but this function never rewrites that file.
     """
     root = Path(root).expanduser().resolve()
     states_path = governed_artifact_path(root, TABLE_REVIEW_STATES, category="state")
@@ -630,7 +642,7 @@ def run_table_review_recompute_recovery(root: Path) -> dict[str, Any]:
     with _table_review_lock(root):
         states = read_jsonl(states_path)
         pending = [
-            (i, row) for i, row in enumerate(states)
+            row for row in states
             if str(row.get("structure_review_status") or "") == "ready"
             and row.get("recompute_error")
         ]
@@ -642,8 +654,7 @@ def run_table_review_recompute_recovery(root: Path) -> dict[str, Any]:
         all_dispositions = project_table_dispositions(raw_dispositions, cells, projection)
         recovered = 0
         still_failing = 0
-        changed = False
-        for index, row in pending:
+        for row in pending:
             table_id = str(row.get("table_id") or "")
             if not table_id:
                 continue
@@ -665,15 +676,8 @@ def run_table_review_recompute_recovery(root: Path) -> dict[str, Any]:
             )
             if recompute_error:
                 still_failing += 1
-                if states[index].get("recompute_error") != recompute_error:
-                    states[index]["recompute_error"] = recompute_error
-                    changed = True
             else:
                 recovered += 1
-                states[index].pop("recompute_error", None)
-                changed = True
-        if changed:
-            _atomic_write_jsonl(states_path, states)
     return {
         "ok": True,
         "attempted": len(pending),
@@ -884,9 +888,9 @@ def apply_table_review_decision(
                 conflict_records.pop(table_id, None)
             _write_geometry_conflicts(root, conflict_records)
 
-        # 下游传播（recompute + fold）持 _table_review_lock + extraction_operation_lock（Kimi 高危 #3）。
-        # recompute 在持久化 state 前跑、失败把 recompute_error 写入 state/events（持久化记录诚实）；
-        # 启动维护 run_table_review_recompute_recovery 会扫描 ready+recompute_error 的表自动重试。
+        # 下游传播（recompute + fold）持 _table_review_lock + extraction_operation_lock。
+        # recompute_error 只回 HTTP/返回值；不再双写 table_review_states/events。
+        # 启动维护仍可扫描历史 ready+recompute_error 行重试，但不改写旧文件。
         if status == "ready":
             recomputed_artifacts, recompute_error = _run_table_recompute(
                 root,
@@ -934,26 +938,7 @@ def apply_table_review_decision(
                 "message": str(decision_error),
                 "retryable": isinstance(decision_error, (OSError, TimeoutError)),
             }
-        states_path = governed_artifact_path(
-            root, TABLE_REVIEW_STATES, category="state"
-        )
-        states = read_jsonl(states_path)
-        states_by_table = {
-            str(row.get("table_id") or ""): row for row in states
-        }
-        states_by_table[table_id] = state
-        _atomic_write_jsonl(
-            states_path,
-            [states_by_table[key] for key in sorted(states_by_table)],
-        )
-        events_path = governed_artifact_path(
-            root, TABLE_REVIEW_EVENTS, category="state"
-        )
-        events = read_jsonl(events_path)
-        events.append({
-            "schema": TABLE_REVIEW_EVENT_SCHEMA,
-            **state,
-        })
-        _atomic_write_jsonl(events_path, events)
+        # Authority is the claim projection. Do not write table_review_states
+        # or table_review_events — historical rows stay on disk read-only.
 
     return {**state, "claim_results": claim_results}
