@@ -1,0 +1,174 @@
+{
+  "id": "procedural_technical_mixed",
+  "notes": [
+    "同文档并存程序性义务（bidder/tenderer）与产品义务（meter/device）。",
+    "义务主体信号正反例——当前路由仍按标题/词表，不看主体（CLAUDE.md 2026-08-27 诊断 2）。",
+    "manufacturer 为歧义主体：宁漏勿错不得判程序性。"
+  ],
+  "blocks": [
+    {
+      "block_id": "BLK-BID-H",
+      "order": 1,
+      "type": "heading",
+      "text": "1.10 Bid Opening",
+      "raw_text": "1.10 Bid Opening",
+      "section_path": ["1.10 Bid Opening"],
+      "noise": false,
+      "doc_region": "body"
+    },
+    {
+      "block_id": "BLK-BID-P",
+      "order": 2,
+      "type": "paragraph",
+      "text": "The bidder shall attend the public bid opening.",
+      "raw_text": "The bidder shall attend the public bid opening.",
+      "section_path": ["1.10 Bid Opening"],
+      "noise": false,
+      "doc_region": "body"
+    },
+    {
+      "block_id": "BLK-TAX-H",
+      "order": 3,
+      "type": "heading",
+      "text": "11 Valid Tax Clearance Certificate",
+      "raw_text": "11 Valid Tax Clearance Certificate",
+      "section_path": ["11 Valid Tax Clearance Certificate"],
+      "noise": false,
+      "doc_region": "body"
+    },
+    {
+      "block_id": "BLK-TAX-P",
+      "order": 4,
+      "type": "paragraph",
+      "text": "The tenderer shall submit a valid tax clearance certificate.",
+      "raw_text": "The tenderer shall submit a valid tax clearance certificate.",
+      "section_path": ["11 Valid Tax Clearance Certificate"],
+      "noise": false,
+      "doc_region": "body"
+    },
+    {
+      "block_id": "BLK-EVT-H",
+      "order": 5,
+      "type": "heading",
+      "text": "8 Event recording",
+      "raw_text": "8 Event recording",
+      "section_path": ["8 Event recording"],
+      "noise": false,
+      "doc_region": "body"
+    },
+    {
+      "block_id": "BLK-EVT-P",
+      "order": 6,
+      "type": "paragraph",
+      "text": "The meter shall record power-down events.",
+      "raw_text": "The meter shall record power-down events.",
+      "section_path": ["8 Event recording"],
+      "noise": false,
+      "doc_region": "body"
+    },
+    {
+      "block_id": "BLK-RET-H",
+      "order": 7,
+      "type": "heading",
+      "text": "9 Retention period",
+      "raw_text": "9 Retention period",
+      "section_path": ["9 Retention period"],
+      "noise": false,
+      "doc_region": "body"
+    },
+    {
+      "block_id": "BLK-RET-P",
+      "order": 8,
+      "type": "paragraph",
+      "text": "The device shall retain event records for 90 days.",
+      "raw_text": "The device shall retain event records for 90 days.",
+      "section_path": ["9 Retention period"],
+      "noise": false,
+      "doc_region": "body"
+    },
+    {
+      "block_id": "BLK-MFG-H",
+      "order": 9,
+      "type": "heading",
+      "text": "12 Spare parts",
+      "raw_text": "12 Spare parts",
+      "section_path": ["12 Spare parts"],
+      "noise": false,
+      "doc_region": "body"
+    },
+    {
+      "block_id": "BLK-MFG-P",
+      "order": 10,
+      "type": "paragraph",
+      "text": "The manufacturer shall provide spare parts for ten years.",
+      "raw_text": "The manufacturer shall provide spare parts for ten years.",
+      "section_path": ["12 Spare parts"],
+      "noise": false,
+      "doc_region": "body"
+    },
+    {
+      "block_id": "BLK-MIX-H",
+      "order": 11,
+      "type": "heading",
+      "text": "6 TECHNICAL DATA REQUIREMENTS TABLE",
+      "raw_text": "6 TECHNICAL DATA REQUIREMENTS TABLE",
+      "section_path": ["6 TECHNICAL DATA REQUIREMENTS TABLE"],
+      "noise": false,
+      "doc_region": "body"
+    },
+    {
+      "block_id": "BLK-MIX-P",
+      "order": 12,
+      "type": "paragraph",
+      "text": "The bidder shall submit factory certificates for each lot.",
+      "raw_text": "The bidder shall submit factory certificates for each lot.",
+      "section_path": ["6 TECHNICAL DATA REQUIREMENTS TABLE"],
+      "noise": false,
+      "doc_region": "body"
+    }
+  ],
+  "chunks": [
+    {
+      "chunk_id": "CH-BID",
+      "section_path": ["1.10 Bid Opening"],
+      "heading": "1.10 Bid Opening",
+      "text": "The bidder shall attend the public bid opening.",
+      "block_ids": ["BLK-BID-H", "BLK-BID-P"]
+    },
+    {
+      "chunk_id": "CH-TAX",
+      "section_path": ["11 Valid Tax Clearance Certificate"],
+      "heading": "11 Valid Tax Clearance Certificate",
+      "text": "The tenderer shall submit a valid tax clearance certificate.",
+      "block_ids": ["BLK-TAX-H", "BLK-TAX-P"]
+    },
+    {
+      "chunk_id": "CH-EVT",
+      "section_path": ["8 Event recording"],
+      "heading": "8 Event recording",
+      "text": "The meter shall record power-down events.",
+      "block_ids": ["BLK-EVT-H", "BLK-EVT-P"]
+    },
+    {
+      "chunk_id": "CH-RET",
+      "section_path": ["9 Retention period"],
+      "heading": "9 Retention period",
+      "text": "The device shall retain event records for 90 days.",
+      "block_ids": ["BLK-RET-H", "BLK-RET-P"]
+    },
+    {
+      "chunk_id": "CH-MFG",
+      "section_path": ["12 Spare parts"],
+      "heading": "12 Spare parts",
+      "text": "The manufacturer shall provide spare parts for ten years.",
+      "block_ids": ["BLK-MFG-H", "BLK-MFG-P"]
+    },
+    {
+      "chunk_id": "CH-MIX",
+      "section_path": ["6 TECHNICAL DATA REQUIREMENTS TABLE"],
+      "heading": "6 TECHNICAL DATA REQUIREMENTS TABLE",
+      "text": "The bidder shall submit factory certificates for each lot.",
+      "block_ids": ["BLK-MIX-H", "BLK-MIX-P"]
+    }
+  ]
+}

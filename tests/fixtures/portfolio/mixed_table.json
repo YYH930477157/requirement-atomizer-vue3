@@ -1,0 +1,41 @@
+{
+  "id": "mixed_table",
+  "notes": [
+    "混合表格：技术数据表（数字/单位密集）与散文义务同节。",
+    "复刻 CLAUDE.md 2026-08-26 section 6 形态——表格数字进入 B 轨 preservation 基线（已知缺陷）。"
+  ],
+  "section_path": ["6 TECHNICAL DATA REQUIREMENTS TABLE"],
+  "heading": "6 TECHNICAL DATA REQUIREMENTS TABLE",
+  "prose_block": {
+    "block_id": "BLK-MT-P",
+    "order": 3,
+    "type": "paragraph",
+    "text": "The meter shall operate at the rated voltage listed in the table.",
+    "raw_text": "The meter shall operate at the rated voltage listed in the table.",
+    "section_path": ["6 TECHNICAL DATA REQUIREMENTS TABLE"],
+    "noise": false,
+    "doc_region": "body"
+  },
+  "heading_block": {
+    "block_id": "BLK-MT-H",
+    "order": 1,
+    "type": "heading",
+    "text": "6 TECHNICAL DATA REQUIREMENTS TABLE",
+    "raw_text": "6 TECHNICAL DATA REQUIREMENTS TABLE",
+    "section_path": ["6 TECHNICAL DATA REQUIREMENTS TABLE"],
+    "noise": false,
+    "doc_region": "body"
+  },
+  "table": {
+    "table_id": "TBL-000001",
+    "block_id": "BLK-MT-T",
+    "order": 2,
+    "table_title": "Rated values",
+    "matrix": [
+      ["Parameter", "Value", "Unit"],
+      ["Rated voltage", "230", "V"],
+      ["Rated current", "5", "A"],
+      ["Frequency", "50", "Hz"]
+    ]
+  }
+}

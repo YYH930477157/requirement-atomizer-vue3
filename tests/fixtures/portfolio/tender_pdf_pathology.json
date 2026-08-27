@@ -1,0 +1,186 @@
+{
+  "id": "tender_pdf_pathology",
+  "notes": [
+    "合成中性语料。复刻 2026-08-26/27 招标 PDF 四类解析病理，无客户词面。",
+    "(i) 正文义务句升格 heading — CLAUDE.md 2026-08-26",
+    "(ii) 块流吞下一章 heading — CLAUDE.md 2026-08-27 P3 result3",
+    "(iii) 两 chunk 共享 section_path 首段（撞名）— CLAUDE.md 2026-08-17e / 2026-08-27",
+    "(iv) 无自身标题的 chunk 节 — CLAUDE.md 2026-08-26 CH 形态"
+  ],
+  "blocks": [
+    {
+      "block_id": "BLK-OEM-H",
+      "order": 1,
+      "type": "heading",
+      "text": "26 There shall be no change of original equipment manufacturer for this lot.",
+      "raw_text": "26 There shall be no change of original equipment manufacturer for this lot.",
+      "section_path": ["26 There shall be no change of original equipment manufacturer for this lot."],
+      "noise": false,
+      "doc_region": "body"
+    },
+    {
+      "block_id": "BLK-OEM-P",
+      "order": 2,
+      "type": "paragraph",
+      "text": "The listed supplier remains the original equipment manufacturer.",
+      "raw_text": "The listed supplier remains the original equipment manufacturer.",
+      "section_path": ["26 There shall be no change of original equipment manufacturer for this lot."],
+      "noise": false,
+      "doc_region": "body"
+    },
+    {
+      "block_id": "BLK-DEL-H",
+      "order": 3,
+      "type": "heading",
+      "text": "2.2 Delivery Schedule",
+      "raw_text": "2.2 Delivery Schedule",
+      "section_path": ["2.2 Delivery Schedule"],
+      "noise": false,
+      "doc_region": "body"
+    },
+    {
+      "block_id": "BLK-DEL-P",
+      "order": 4,
+      "type": "paragraph",
+      "text": "The delivery period is two months from receipt of the purchase order.",
+      "raw_text": "The delivery period is two months from receipt of the purchase order.",
+      "section_path": ["2.2 Delivery Schedule"],
+      "noise": false,
+      "doc_region": "body"
+    },
+    {
+      "block_id": "BLK-SWALLOW-H",
+      "order": 5,
+      "type": "heading",
+      "text": "2.3 STATEMENT OF REQUIREMENTS (TECHNICAL)",
+      "raw_text": "2.3 STATEMENT OF REQUIREMENTS (TECHNICAL)",
+      "section_path": ["2.2 Delivery Schedule"],
+      "noise": false,
+      "doc_region": "body"
+    },
+    {
+      "block_id": "BLK-TECH-H",
+      "order": 6,
+      "type": "heading",
+      "text": "2.3 STATEMENT OF REQUIREMENTS (TECHNICAL)",
+      "raw_text": "2.3 STATEMENT OF REQUIREMENTS (TECHNICAL)",
+      "section_path": ["2.3 STATEMENT OF REQUIREMENTS (TECHNICAL)"],
+      "noise": false,
+      "doc_region": "body"
+    },
+    {
+      "block_id": "BLK-TECH-P",
+      "order": 7,
+      "type": "paragraph",
+      "text": "The meter shall record voltage on all phases.",
+      "raw_text": "The meter shall record voltage on all phases.",
+      "section_path": ["2.3 STATEMENT OF REQUIREMENTS (TECHNICAL)"],
+      "noise": false,
+      "doc_region": "body"
+    },
+    {
+      "block_id": "BLK-COL-A-H",
+      "order": 8,
+      "type": "heading",
+      "text": "2 20 Control of",
+      "raw_text": "2 20 Control of",
+      "section_path": ["2 20 Control of"],
+      "noise": false,
+      "doc_region": "body"
+    },
+    {
+      "block_id": "BLK-COL-A-P",
+      "order": 9,
+      "type": "paragraph",
+      "text": "The meter shall control disconnection of the supply.",
+      "raw_text": "The meter shall control disconnection of the supply.",
+      "section_path": ["2 20 Control of"],
+      "noise": false,
+      "doc_region": "body"
+    },
+    {
+      "block_id": "BLK-COL-B-H",
+      "order": 10,
+      "type": "heading",
+      "text": "2 20 Control of",
+      "raw_text": "2 20 Control of",
+      "section_path": ["2 20 Control of"],
+      "noise": false,
+      "doc_region": "body"
+    },
+    {
+      "block_id": "BLK-COL-B-P",
+      "order": 11,
+      "type": "paragraph",
+      "text": "The device shall retain a tamper event record.",
+      "raw_text": "The device shall retain a tamper event record.",
+      "section_path": ["2 20 Control of"],
+      "noise": false,
+      "doc_region": "body"
+    },
+    {
+      "block_id": "BLK-CHUNK-H",
+      "order": 12,
+      "type": "heading",
+      "text": "1.1 Preparation of Bids",
+      "raw_text": "1.1 Preparation of Bids",
+      "section_path": [],
+      "noise": false,
+      "doc_region": "body"
+    },
+    {
+      "block_id": "BLK-CHUNK-P",
+      "order": 13,
+      "type": "paragraph",
+      "text": "The bidder shall complete the bid submission sheet.",
+      "raw_text": "The bidder shall complete the bid submission sheet.",
+      "section_path": [],
+      "noise": false,
+      "doc_region": "body"
+    }
+  ],
+  "chunks": [
+    {
+      "chunk_id": "CH-OEM",
+      "section_path": ["26 There shall be no change of original equipment manufacturer for this lot."],
+      "heading": "26 There shall be no change of original equipment manufacturer for this lot.",
+      "text": "26 There shall be no change of original equipment manufacturer for this lot. The listed supplier remains the original equipment manufacturer.",
+      "block_ids": ["BLK-OEM-H", "BLK-OEM-P"]
+    },
+    {
+      "chunk_id": "CH-DEL",
+      "section_path": ["2.2 Delivery Schedule"],
+      "heading": "2.2 Delivery Schedule",
+      "text": "The delivery period is two months from receipt of the purchase order.",
+      "block_ids": ["BLK-DEL-H", "BLK-DEL-P", "BLK-SWALLOW-H"]
+    },
+    {
+      "chunk_id": "CH-TECH",
+      "section_path": ["2.3 STATEMENT OF REQUIREMENTS (TECHNICAL)"],
+      "heading": "2.3 STATEMENT OF REQUIREMENTS (TECHNICAL)",
+      "text": "The meter shall record voltage on all phases.",
+      "block_ids": ["BLK-TECH-H", "BLK-TECH-P"]
+    },
+    {
+      "chunk_id": "CH-COL-A",
+      "section_path": ["2 20 Control of"],
+      "heading": "2 20 Control of",
+      "text": "The meter shall control disconnection of the supply.",
+      "block_ids": ["BLK-COL-A-H", "BLK-COL-A-P"]
+    },
+    {
+      "chunk_id": "CH-COL-B",
+      "section_path": ["2 20 Control of"],
+      "heading": "2 20 Control of",
+      "text": "The device shall retain a tamper event record.",
+      "block_ids": ["BLK-COL-B-H", "BLK-COL-B-P"]
+    },
+    {
+      "chunk_id": "CH-000004",
+      "section_path": [],
+      "heading": "",
+      "text": "The bidder shall complete the bid submission sheet.",
+      "block_ids": ["BLK-CHUNK-H", "BLK-CHUNK-P"]
+    }
+  ]
+}
