@@ -15,6 +15,8 @@ from unit_router import (
     route_document,
     route_unit,
     route_units,
+    unit_has_product_subject,
+    unit_has_procedural_subject,
 )
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -219,6 +221,35 @@ class UnitRouterRuleTests(unittest.TestCase):
             "There shall be no change of Original Equipment Manufacturer for this tender.",
         ))
         self.assertFalse(decision["procedural_subject"])
+
+    def test_meter_before_modal_is_product_subject(self) -> None:
+        hit, word = unit_has_product_subject(
+            "The meter shall have a guaranteed life span of 15 years.")
+        self.assertTrue(hit)
+        self.assertEqual(word.lower(), "meter")
+
+    def test_certificate_is_not_product_subject(self) -> None:
+        hit, _word = unit_has_product_subject(
+            "The tax clearance certificate shall be valid for the bid.")
+        self.assertFalse(hit)
+
+    def test_equipment_after_modal_is_not_product_subject(self) -> None:
+        hit, _word = unit_has_product_subject(
+            "There shall be no change of Original Equipment Manufacturer "
+            "for this tender.")
+        self.assertFalse(hit)
+
+    def test_product_subject_requires_modal(self) -> None:
+        hit, _word = unit_has_product_subject("The meter logs events.")
+        self.assertFalse(hit)
+        self.assertFalse(unit_has_procedural_subject(
+            "The tax clearance certificate shall be valid.")[0])
+
+    def test_unit_price_is_not_product_subject(self) -> None:
+        """修饰语 unit price：主语不确定，不判产品。"""
+        hit, _word = unit_has_product_subject(
+            "The unit price must be to two decimal places.")
+        self.assertFalse(hit)
 
 
 class UnitRouterDocumentTests(unittest.TestCase):

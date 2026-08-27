@@ -79,11 +79,14 @@ FUNCTIONAL_EXTRACT_GUARDS_VERSION = "functional-extract-guards-v6"
 # WS-A（2026-08-27）：基线按单元类型分轨——a_track/context 表格单元出 narrative
 # preservation，改记 delegated_to_cell_conservation；义务单元只从散文与
 # b_track/mixed 表格取。v3 → v4。
+# R1（同日返工）：委托粒度从单元 source_text 子串替换改为块粒度——某表格块上
+# 全部 table_row/table_cell 均为 a_track/context 才剔除该块完整 block.text
+# （行渲染文本对不上条款扁平 text 时不再静默失败）；部分委托整块保留。
 FUNCTIONAL_CONSERVATION_MODEL_VERSION = "functional-conservation-obligation-evidence-v4"
 # §17 unit 级路由接线（2026-08-17）：clause_family 策略下表格主导条款路由出 B 轨输入
 # 与守恒基线（表格内容归 A 轨/上下文，phase2 探针实证其混入 B 轨是守恒失败根因之一）。
 # 接线版本只进 clause_family 缓存指纹维度（legacy 指纹逐字节不变）；路由判据演进时 bump。
-FUNCTIONAL_UNIT_ROUTING_VERSION = "functional-unit-routing-v6"  # v6（2026-08-27，WS-B）：节级 tender 判定改为义务主体+跨度聚合；节级词表独立分支退役。v5（2026-08-27，P3）：逐标题路由分支补 technical 反向否决 + P2 路由键并入 tender_region_filter 版本。v4：句子形程序性 heading 窄锚点 + v3 跨度继承/前置样板编号剥离
+FUNCTIONAL_UNIT_ROUTING_VERSION = "functional-unit-routing-v6"  # v6（2026-08-27，WS-B）：节级 tender 判定改为义务主体+跨度聚合。R2 返工：标题词表先验（own title 程序性且非产品主语）；跨度改为非产品主语即可（不再要求无模态）；technical 否决改为 own title/path（块内吞进的下一章 technical heading 不否决程序性残骸）。v5（2026-08-27，P3）：逐标题路由分支补 technical 反向否决 + P2 路由键并入 tender_region_filter 版本。v4：句子形程序性 heading 窄锚点 + v3 跨度继承/前置样板编号剥离
 FUNCTIONAL_REQUIREMENTS_FILENAME = "functional_requirements.json"
 FUNCTIONAL_EXTRACT_CACHE = "functional_extract_cache.jsonl"
 
@@ -1280,16 +1283,43 @@ def _table_blocks_missing_dispositions(
     return set(table_block_ids) - covered
 
 
+def _conservation_blocks_by_id(
+    out_path: Path,
+    blocks: Sequence[dict[str, Any]] | None,
+) -> dict[str, dict[str, Any]]:
+    """守恒委托用块索引：优先调用方块流，缺席则读 pipeline blocks.jsonl。"""
+    if blocks:
+        return {
+            str(block.get("block_id")): block
+            for block in blocks
+            if str(block.get("block_id") or "")
+        }
+    from io_utils import read_jsonl
+    from result_package import governed_artifact_path
+
+    path = governed_artifact_path(
+        out_path, "blocks.jsonl", category="pipeline", for_write=False,
+    )
+    if not path.is_file():
+        return {}
+    return {
+        str(block.get("block_id")): block
+        for block in read_jsonl(path)
+        if str(block.get("block_id") or "")
+    }
+
+
 def _conservation_baseline_sections(
     sections: Sequence[dict[str, Any]],
     *,
     out_dir: Path | str | None = None,
     blocks: Sequence[dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """按单元类型构建守恒基线条款（义务/preservation 用）与委托审计清单。
+    """按块粒度构建守恒基线条款（义务/preservation 用）与委托审计清单。
 
-    无 out_dir / 单元不可得 / 无法核对 dispositions 的表格块：退回原条款全文
-    （宁多记账，不静默少记账）。只改返回副本的 ``text``，不改调用方条款对象。
+    某表格块上的全部 table_row/table_cell 均为 a_track/context 时，剔除该块
+    完整 ``block.text``（条款文本的逐字组成部分）。部分委托 / dispositions
+    缺席 / 单元不可得：整块保留在基线（宁多记账）。无 out_dir 退回条款全文。
     """
     if out_dir is None:
         return [dict(section) for section in sections], []
@@ -1302,28 +1332,26 @@ def _conservation_baseline_sections(
     if not units:
         return [dict(section) for section in sections], []
 
+    blocks_by_id = _conservation_blocks_by_id(out_path, blocks)
+    if not blocks_by_id:
+        return [dict(section) for section in sections], []
+
     table_block_ids = {
-        str(block.get("block_id"))
-        for block in (blocks or [])
-        if str(block.get("block_id") or "")
-        and str(block.get("type") or "") == "table"
+        bid for bid, block in blocks_by_id.items()
+        if str(block.get("type") or "") == "table"
     }
     fallback_blocks = _table_blocks_missing_dispositions(out_path, table_block_ids)
-    if blocks is None:
-        # 无块流则无法标定表格块：只委托 dispositions 已覆盖块上的表格单元。
-        from result_package import governed_artifact_path
-        disp = governed_artifact_path(
-            out_path, "table_cell_dispositions.jsonl",
-            category="pipeline", for_write=False,
-        )
-        if not disp.is_file():
-            return [dict(section) for section in sections], []
-        fallback_blocks = set()
 
-    units_by_block: dict[str, list[dict[str, Any]]] = {}
+    units_by_block: dict[str, dict[str, dict[str, Any]]] = {}
     for unit in units:
+        kind = str(unit.get("unit_kind") or "")
+        if kind not in _CONSERVATION_TABLE_UNIT_KINDS:
+            continue
+        uid = str(unit.get("unit_id") or "")
+        if not uid:
+            continue
         for block_id in (unit.get("source_block_ids") or []):
-            units_by_block.setdefault(str(block_id), []).append(unit)
+            units_by_block.setdefault(str(block_id), {})[uid] = unit
 
     delegated: list[dict[str, Any]] = []
     adjusted: list[dict[str, Any]] = []
@@ -1331,50 +1359,43 @@ def _conservation_baseline_sections(
         section_bids = [
             str(bid) for bid in (section.get("block_ids") or []) if str(bid)
         ]
-        seen: dict[str, dict[str, Any]] = {}
-        for bid in section_bids:
-            for unit in units_by_block.get(bid, []):
-                uid = str(unit.get("unit_id") or "")
-                if uid:
-                    seen[uid] = unit
         text = str(section.get("text") or "")
-        for unit in seen.values():
-            kind = str(unit.get("unit_kind") or "")
-            if kind not in _CONSERVATION_TABLE_UNIT_KINDS:
+        for bid in section_bids:
+            block = blocks_by_id.get(bid)
+            if block is None or str(block.get("type") or "") != "table":
                 continue
-            unit_blocks = [
-                str(bid) for bid in (unit.get("source_block_ids") or []) if str(bid)
-            ]
-            if any(bid in fallback_blocks for bid in unit_blocks):
+            if bid in fallback_blocks:
                 continue
-            if blocks is None and not unit_blocks:
+            table_units = list(units_by_block.get(bid, {}).values())
+            if not table_units:
                 continue
-            if blocks is None:
-                from result_package import governed_artifact_path
-                from io_utils import read_jsonl
-                disp_path = governed_artifact_path(
-                    out_path, "table_cell_dispositions.jsonl",
-                    category="pipeline", for_write=False,
-                )
-                covered = {
-                    str(row.get("table_block_id") or "")
-                    for row in read_jsonl(disp_path)
-                    if row.get("table_block_id")
-                }
-                if not any(bid in covered for bid in unit_blocks):
-                    continue
-            route = str(route_by_unit.get(str(unit.get("unit_id") or ""), "") or "")
-            if route not in _CONSERVATION_DELEGATE_ROUTES:
+            details: list[dict[str, str]] = []
+            fully_delegable = True
+            for unit in sorted(
+                table_units, key=lambda row: str(row.get("unit_id") or "")
+            ):
+                route = str(
+                    route_by_unit.get(str(unit.get("unit_id") or ""), "") or "")
+                if route not in _CONSERVATION_DELEGATE_ROUTES:
+                    fully_delegable = False
+                    break
+                details.append({
+                    "unit_id": str(unit.get("unit_id") or ""),
+                    "unit_kind": str(unit.get("unit_kind") or ""),
+                    "route": route,
+                })
+            if not fully_delegable:
                 continue
-            unit_text = str(unit.get("source_text") or "").strip()
-            if unit_text and unit_text in text:
-                text = text.replace(unit_text, " ")
+            block_text = str(block.get("text") or "").strip()
+            if block_text and block_text not in text:
+                continue
+            if block_text:
+                text = text.replace(block_text, " ")
             delegated.append({
-                "unit_id": str(unit.get("unit_id") or ""),
-                "block_ids": unit_blocks,
-                "unit_kind": kind,
-                "route": route,
-                "reason": "a_track_or_context_table_unit_delegated_to_cell_conservation",
+                "block_id": bid,
+                "block_ids": [bid],
+                "units": details,
+                "reason": "table_block_fully_delegated_to_cell_conservation",
             })
         copy = dict(section)
         copy["text"] = text
@@ -1400,8 +1421,9 @@ def conservation_report(
     但语义随模型升级：``duplicate_assignments`` 现在指"重复需求组涉及的块"（多消费合法，
     只有义务句+叙述双重命中才判重），不再是"被多条需求声明的块"。
 
-    WS-A：``out_dir`` 在场时义务/preservation 基线按单元分轨；缺席则沿用条款全文
-    （既有直调测试与 legacy 路径签名兼容）。
+    WS-A：``out_dir`` 在场时义务/preservation 基线按表格块分轨（整块 a_track/
+    context 才剔除 block.text）；缺席则沿用条款全文（既有直调测试与 legacy
+    路径签名兼容）。
     """
     from merged_consistency import match_source_quote_blocks
 
@@ -2158,6 +2180,12 @@ def _title_is_tender_procedural(title: str) -> bool:
     )
 
 
+def _title_is_tender_technical(title: str) -> bool:
+    from tender_regions import classify_tender_region
+
+    return classify_tender_region({"type": "heading", "text": title}) == "tender_technical"
+
+
 def _section_is_tender_procedural(
     section: dict[str, Any],
     blocks_by_id: dict[str, dict[str, Any]] | None = None,
@@ -2165,8 +2193,8 @@ def _section_is_tender_procedural(
     """【已退役独立权威】旧节级词表判定，仅作辅助证据/测试对照。
 
     WS-B（2026-08-27，architecture-convergence-plan）：条款是否路由出 B 轨改由
-    ``_section_tender_aggregate_route_out`` 聚合（义务主体 + 程序性跨度 +
-    technical 否决）。本函数不再被 ``apply_unit_routing`` 调用。
+    ``_section_tender_aggregate_route_out`` 聚合。own title 词表判据作为义务
+    单元第三条先验，不再是独立整节权威。本函数不再被 ``apply_unit_routing`` 调用。
     """
     if any(_title_is_tender_procedural(title) for title in _section_own_tender_titles(section)):
         if not _section_has_tender_technical_title(section, blocks_by_id):
@@ -2235,19 +2263,38 @@ def _unit_is_obligation_bearing(
     return False
 
 
+def _section_own_title_is_tender_procedural(section: dict[str, Any]) -> bool:
+    """条款自身标题（heading/id/path）经既有词表判为程序性——标题先验，不是独立权威。"""
+    return any(
+        _title_is_tender_procedural(title)
+        for title in _section_own_tender_titles(section)
+    )
+
+
 def _unit_satisfies_tender_procedural(
     unit: dict[str, Any],
     decision: dict[str, Any] | None,
     span_by_block: dict[str, str],
+    *,
+    title_procedural: bool = False,
 ) -> bool:
     if (decision or {}).get("procedural_subject"):
         return True
-    # 有义务模态但不是程序性主体 = 产品/歧义义务。跨度不得吞掉
-    # （15 GUARANTEED LIFE SPAN 的 15 年寿命/故障率句）。
-    if _has_obligation_modal(str(unit.get("source_text") or "")):
-        return False
+    text = str(unit.get("source_text") or "")
+    from unit_router import unit_has_product_subject
+
+    product, _word = unit_has_product_subject(text)
+    # 标题先验：own title 程序性 + 该单元不是产品主语（税清 certificate shall
+    # 等程序性残骸）。产品主语句即使落在程序性标题下也保留。
+    if title_procedural and not product:
+        return True
+    # 跨度：块在程序性区域内且该单元不是产品主语。产品主语句即使落在
+    # ITB 跨度内也保留（15 GUARANTEED LIFE SPAN）。无产品主语的程序性残骸
+    # （certificate shall / variation should）允许跨度召回。
     block_ids = [str(bid) for bid in (unit.get("source_block_ids") or []) if str(bid)]
     if not block_ids:
+        return False
+    if product:
         return False
     return all(
         span_by_block.get(bid) in _TENDER_PROCEDURAL_REGIONS for bid in block_ids
@@ -2261,11 +2308,21 @@ def _section_tender_aggregate_route_out(
     span_by_block: dict[str, str],
     blocks_by_id: dict[str, dict[str, Any]] | None,
 ) -> tuple[bool, str]:
-    """WS-B 聚合：路由出 iff 全部义务承载单元为 procedural_subject 或在程序跨度内，
-    且无 technical 硬信号。无义务单元时只走跨度回退（不恢复已退役的节级词表分支）。
+    """WS-B 聚合：路由出 iff 全部义务承载单元满足程序性，且无 technical 硬信号。
+
+    单元程序性三条：procedural_subject；无模态且块在程序跨度内；own title
+    词表程序性且该单元不是产品主语。无义务单元时只走跨度回退。
     """
-    if _section_has_tender_technical_title(section, blocks_by_id):
+    # technical 否决用条款自身标题/路径（heading/id/path），不用块内吞进的
+    # 下一章 heading——否则 delivery period / supply history 这类程序性残骸
+    # 会被块流吞进的 "technical specification" 句子标题整节留下。
+    # 技术章 1/6/7/8/9/11/21 的 own title 仍命中 tender_technical，保护不变。
+    if any(
+        _title_is_tender_technical(title)
+        for title in _section_own_tender_titles(section)
+    ):
         return False, ""
+    title_procedural = _section_own_title_is_tender_procedural(section)
     section_bids = {
         str(bid) for bid in (section.get("block_ids") or []) if str(bid)
     }
@@ -2282,7 +2339,7 @@ def _section_tender_aggregate_route_out(
         if not all(
             _unit_satisfies_tender_procedural(
                 unit, decisions_by_unit.get(str(unit.get("unit_id") or "")),
-                span_by_block,
+                span_by_block, title_procedural=title_procedural,
             )
             for unit in bearing
         ):
@@ -2291,7 +2348,7 @@ def _section_tender_aggregate_route_out(
             (decisions_by_unit.get(str(unit.get("unit_id") or "")) or {}).get(
                 "procedural_subject")
             for unit in bearing
-        ):
+        ) or title_procedural:
             return True, "tender_procedural"
         return True, "tender_span"
     if _section_is_tender_span_procedural(section, span_by_block, blocks_by_id):
@@ -2445,7 +2502,7 @@ def apply_unit_routing(
             # （单独计数，与表格路由区分审计）。
             front_matter.append(section)
             continue
-        # WS-B：节级词表独立分支退役；路由出 = 义务主体/跨度聚合 + technical 否决。
+        # WS-B：路由出 = 义务主体/标题先验/跨度聚合 + technical 否决。
         tender_out, tender_bucket = _section_tender_aggregate_route_out(
             section, units, decisions_by_unit, span_by_block, blocks_by_id)
         if tender_out:

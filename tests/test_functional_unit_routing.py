@@ -869,6 +869,202 @@ class ApplyUnitRoutingTests(unittest.TestCase):
                 "15 GUARANTEED LIFE SPAN",
                 meta.get("tender_span_section_ids", []))
 
+    def test_title_prior_routes_certificate_subject_out(self) -> None:
+        """R2：标题词表程序性 + 非产品主语（certificate shall）→ 路由出。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            _seed_out(out)
+            cert_text = "The tax clearance certificate shall be valid for the bid."
+            extra_unit = {
+                "schema": "extraction-unit/v1",
+                "unit_id": "UNIT-TAX-CERT",
+                "unit_kind": "clause_segment",
+                "source_text": cert_text,
+                "source_text_hash": "sha256:" + __import__("hashlib").sha256(
+                    cert_text.encode("utf-8")).hexdigest(),
+                "clause_path": ["tax"],
+                "source_block_ids": ["P-TAX-CERT"],
+                "roles": ["requirement_candidate"],
+                "context_refs": [],
+                "planner_version": EXTRACTION_UNIT_PLANNER_VERSION,
+                "locator": {"source_type": "block_sentence",
+                            "source_id": "P-TAX-CERT#0"},
+            }
+            units = [json.loads(line) for line in
+                     (out / "extraction_units.jsonl").read_text(
+                         encoding="utf-8").splitlines() if line.strip()]
+            _write_jsonl(out / "extraction_units.jsonl", units + [extra_unit])
+            (out / "unit_routing_decisions.jsonl").unlink(missing_ok=True)
+            blocks = _blocks_jsonl() + [
+                {"block_id": "H-TAX-CERT", "type": "heading",
+                 "text": "11 Valid Tax Clearance Certificate", "order": 50},
+                {"block_id": "P-TAX-CERT", "type": "paragraph",
+                 "text": cert_text, "order": 51},
+            ]
+            sections = fe.load_clauses(out) + [{
+                "section_id": "11 Valid Tax Clearance Certificate",
+                "section_path": ["11 Valid Tax Clearance Certificate"],
+                "heading": "11 Valid Tax Clearance Certificate",
+                "text": cert_text,
+                "block_ids": ["H-TAX-CERT", "P-TAX-CERT"],
+            }]
+            kept, meta = fe.apply_unit_routing(sections, blocks=blocks, out_dir=out)
+            self.assertNotIn(
+                "11 Valid Tax Clearance Certificate", {s["section_id"] for s in kept})
+            self.assertIn(
+                "11 Valid Tax Clearance Certificate",
+                meta.get("tender_procedural_section_ids", []))
+
+    def test_title_prior_product_subject_keeps_section(self) -> None:
+        """R2 反例：程序性标题下的产品主语句不得路由出。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            _seed_out(out)
+            meter_text = "The meter shall attach a tax clearance certificate."
+            extra_unit = {
+                "schema": "extraction-unit/v1",
+                "unit_id": "UNIT-TAX-METER",
+                "unit_kind": "clause_segment",
+                "source_text": meter_text,
+                "source_text_hash": "sha256:" + __import__("hashlib").sha256(
+                    meter_text.encode("utf-8")).hexdigest(),
+                "clause_path": ["tax"],
+                "source_block_ids": ["P-TAX-METER"],
+                "roles": ["requirement_candidate"],
+                "context_refs": [],
+                "planner_version": EXTRACTION_UNIT_PLANNER_VERSION,
+                "locator": {"source_type": "block_sentence",
+                            "source_id": "P-TAX-METER#0"},
+            }
+            units = [json.loads(line) for line in
+                     (out / "extraction_units.jsonl").read_text(
+                         encoding="utf-8").splitlines() if line.strip()]
+            _write_jsonl(out / "extraction_units.jsonl", units + [extra_unit])
+            (out / "unit_routing_decisions.jsonl").unlink(missing_ok=True)
+            blocks = _blocks_jsonl() + [
+                {"block_id": "H-TAX-METER", "type": "heading",
+                 "text": "11 Valid Tax Clearance Certificate", "order": 52},
+                {"block_id": "P-TAX-METER", "type": "paragraph",
+                 "text": meter_text, "order": 53},
+            ]
+            sections = fe.load_clauses(out) + [{
+                "section_id": "11 Valid Tax Clearance Certificate",
+                "section_path": ["11 Valid Tax Clearance Certificate"],
+                "heading": "11 Valid Tax Clearance Certificate",
+                "text": meter_text,
+                "block_ids": ["H-TAX-METER", "P-TAX-METER"],
+            }]
+            kept, meta = fe.apply_unit_routing(sections, blocks=blocks, out_dir=out)
+            self.assertIn(
+                "11 Valid Tax Clearance Certificate", {s["section_id"] for s in kept})
+            self.assertNotIn(
+                "11 Valid Tax Clearance Certificate",
+                meta.get("tender_procedural_section_ids", []))
+
+    def test_swallowed_technical_heading_does_not_block_own_procedural_title(self) -> None:
+        """块流吞进的 technical heading 不得否决自身程序性标题（供货历史残骸）。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            _seed_out(out)
+            hist_text = (
+                "The manufacturer shall submit supply history for the past five years."
+            )
+            extra_unit = {
+                "schema": "extraction-unit/v1",
+                "unit_id": "UNIT-HIST",
+                "unit_kind": "clause_segment",
+                "source_text": hist_text,
+                "source_text_hash": "sha256:" + __import__("hashlib").sha256(
+                    hist_text.encode("utf-8")).hexdigest(),
+                "clause_path": ["hist"],
+                "source_block_ids": ["P-HIST"],
+                "roles": ["requirement_candidate"],
+                "context_refs": [],
+                "planner_version": EXTRACTION_UNIT_PLANNER_VERSION,
+                "locator": {"source_type": "block_sentence",
+                            "source_id": "P-HIST#0"},
+            }
+            units = [json.loads(line) for line in
+                     (out / "extraction_units.jsonl").read_text(
+                         encoding="utf-8").splitlines() if line.strip()]
+            _write_jsonl(out / "extraction_units.jsonl", units + [extra_unit])
+            (out / "unit_routing_decisions.jsonl").unlink(missing_ok=True)
+            blocks = _blocks_jsonl() + [
+                {"block_id": "H-HIST", "type": "heading",
+                 "text": "22 Manufacturer's supply history for the past five years",
+                 "order": 60},
+                {"block_id": "P-HIST", "type": "paragraph",
+                 "text": hist_text, "order": 61},
+                {"block_id": "H-SWALLOW", "type": "heading",
+                 "text": "23 Compliance statement to the technical specification",
+                 "order": 62},
+            ]
+            sections = fe.load_clauses(out) + [{
+                "section_id": "22 Manufacturer's supply history for the past five years",
+                "section_path": [
+                    "22 Manufacturer's supply history for the past five years"
+                ],
+                "heading": "22 Manufacturer's supply history for the past five years",
+                "text": hist_text,
+                "block_ids": ["H-HIST", "P-HIST", "H-SWALLOW"],
+            }]
+            kept, meta = fe.apply_unit_routing(sections, blocks=blocks, out_dir=out)
+            self.assertNotIn(
+                "22 Manufacturer's supply history for the past five years",
+                {s["section_id"] for s in kept})
+            routed = set(meta.get("tender_procedural_section_ids") or []) | set(
+                meta.get("tender_span_section_ids") or [])
+            self.assertIn(
+                "22 Manufacturer's supply history for the past five years", routed)
+
+    def test_life_span_title_is_not_procedural_prior(self) -> None:
+        """15 GUARANTEED LIFE SPAN 标题不在程序性词表，产品句保留。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            _seed_out(out)
+            meter_text = (
+                "The meter shall have a guaranteed life span of 15 years "
+                "and a failure rate not exceeding 3%."
+            )
+            extra_unit = {
+                "schema": "extraction-unit/v1",
+                "unit_id": "UNIT-LIFE-PRIOR",
+                "unit_kind": "clause_segment",
+                "source_text": meter_text,
+                "source_text_hash": "sha256:" + __import__("hashlib").sha256(
+                    meter_text.encode("utf-8")).hexdigest(),
+                "clause_path": ["life"],
+                "source_block_ids": ["P-LIFE-PRIOR"],
+                "roles": ["requirement_candidate"],
+                "context_refs": [],
+                "planner_version": EXTRACTION_UNIT_PLANNER_VERSION,
+                "locator": {"source_type": "block_sentence",
+                            "source_id": "P-LIFE-PRIOR#0"},
+            }
+            units = [json.loads(line) for line in
+                     (out / "extraction_units.jsonl").read_text(
+                         encoding="utf-8").splitlines() if line.strip()]
+            _write_jsonl(out / "extraction_units.jsonl", units + [extra_unit])
+            (out / "unit_routing_decisions.jsonl").unlink(missing_ok=True)
+            blocks = _blocks_jsonl() + [
+                {"block_id": "H-LIFE-PRIOR", "type": "heading",
+                 "text": "15 GUARANTEED LIFE SPAN", "order": 54},
+                {"block_id": "P-LIFE-PRIOR", "type": "paragraph",
+                 "text": meter_text, "order": 55},
+            ]
+            sections = fe.load_clauses(out) + [{
+                "section_id": "15 GUARANTEED LIFE SPAN",
+                "section_path": ["15 GUARANTEED LIFE SPAN"],
+                "heading": "15 GUARANTEED LIFE SPAN",
+                "text": meter_text,
+                "block_ids": ["H-LIFE-PRIOR", "P-LIFE-PRIOR"],
+            }]
+            kept, meta = fe.apply_unit_routing(sections, blocks=blocks, out_dir=out)
+            self.assertIn("15 GUARANTEED LIFE SPAN", {s["section_id"] for s in kept})
+            self.assertNotIn(
+                "15 GUARANTEED LIFE SPAN",
+                meta.get("tender_procedural_section_ids", []))
+
 
 class RunIntegrationTests(unittest.TestCase):
     def test_legacy_strategy_untouched(self) -> None:

@@ -146,13 +146,16 @@ class ConservationTrackSplitTests(unittest.TestCase):
                 [_mixed_section()], [_item()],
                 blocks=_blocks(), out_dir=out)
             delegated = report["checks"]["preservation"]["delegated_to_cell_conservation"]
-            self.assertGreaterEqual(len(delegated), 2)
+            self.assertEqual(len(delegated), 1)
+            self.assertEqual(delegated[0]["block_id"], "T1")
+            self.assertEqual(
+                delegated[0]["reason"],
+                "table_block_fully_delegated_to_cell_conservation",
+            )
+            self.assertGreaterEqual(len(delegated[0]["units"]), 2)
             self.assertTrue(all(
-                row["reason"]
-                == "a_track_or_context_table_unit_delegated_to_cell_conservation"
-                and row["unit_id"]
-                and row["block_ids"]
-                for row in delegated
+                row["unit_id"] and row["route"] in ("a_track", "context")
+                for row in delegated[0]["units"]
             ))
             blocking = report["checks"]["preservation"]["blocking_losses"]
             number_tokens = {
@@ -177,11 +180,13 @@ class ConservationTrackSplitTests(unittest.TestCase):
             row = report["checks"]["preservation"]["delegated_to_cell_conservation"][0]
             self.assertEqual(
                 set(row),
-                {"unit_id", "block_ids", "unit_kind", "route", "reason"},
+                {"block_id", "block_ids", "units", "reason"},
             )
-            self.assertEqual(row["unit_kind"], "table_cell")
-            self.assertIn(row["route"], ("a_track", "context"))
+            self.assertEqual(row["block_id"], "T1")
             self.assertEqual(row["block_ids"], ["T1"])
+            self.assertTrue(row["units"])
+            self.assertEqual(row["units"][0]["unit_kind"], "table_cell")
+            self.assertIn(row["units"][0]["route"], ("a_track", "context"))
 
     def test_missing_dispositions_keeps_table_in_baseline(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -227,6 +232,80 @@ class ConservationTrackSplitTests(unittest.TestCase):
                 report["checks"]["preservation"]["delegated_to_cell_conservation"],
                 [],
             )
+
+    def test_block_granularity_when_unit_text_not_in_section(self) -> None:
+        """行渲染 source_text 对不上条款扁平 text 时，仍按块 text 剔除数字。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            _seed(out, dispositions=True)
+            units = [
+                json.loads(line) for line in
+                (out / "extraction_units.jsonl").read_text(
+                    encoding="utf-8").splitlines() if line.strip()
+            ]
+            for unit in units:
+                if unit.get("unit_kind") == "table_cell":
+                    unit["source_text"] = (
+                        f"column_1=6.1 | Specification={unit['source_text']}"
+                    )
+            _write_jsonl(out / "extraction_units.jsonl", units)
+            report = fe.conservation_report(
+                [_mixed_section()], [_item()],
+                blocks=_blocks(), out_dir=out)
+            delegated = report["checks"]["preservation"]["delegated_to_cell_conservation"]
+            self.assertEqual(len(delegated), 1)
+            self.assertEqual(delegated[0]["block_id"], "T1")
+            blocking = report["checks"]["preservation"]["blocking_losses"]
+            number_tokens = {
+                str(row.get("token")) for row in blocking
+                if row.get("kind") == "number"
+            }
+            self.assertNotIn("230", number_tokens)
+            self.assertNotIn("5", number_tokens)
+
+    def test_partial_table_block_stays_in_baseline(self) -> None:
+        """同块混有 b_track 表格单元 → 整块保留（宁多记账）。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            _write_jsonl(out / "blocks.jsonl", _blocks())
+            _write_jsonl(out / "table_items.jsonl", [{
+                "item_id": "TBLI-1", "table_id": "TBL-000001",
+                "table_block_id": "T1", "leaf_role": "row", "row_index": 1,
+                "text": "230 | 5", "section_path": ["6"],
+            }])
+            units = [
+                _prose_unit(),
+                _cell_unit("UNIT-C230", "230"),
+                _cell_unit("UNIT-C5", "5"),
+            ]
+            decisions = [
+                _decision("UNIT-P1-S000", "b_track"),
+                _decision("UNIT-C230", "a_track"),
+                _decision("UNIT-C5", "b_track"),
+            ]
+            _write_jsonl(out / "extraction_units.jsonl", units)
+            _write_jsonl(out / "unit_routing_decisions.jsonl", decisions)
+            _write_jsonl(out / "table_cell_dispositions.jsonl", [
+                {"schema": "table-cell-disposition/v2", "cell_id": "C230",
+                 "table_id": "TBL-000001", "table_block_id": "T1",
+                 "text": "230", "role": "context", "disposition": "context"},
+                {"schema": "table-cell-disposition/v2", "cell_id": "C5",
+                 "table_id": "TBL-000001", "table_block_id": "T1",
+                 "text": "5", "role": "context", "disposition": "context"},
+            ])
+            report = fe.conservation_report(
+                [_mixed_section()], [_item()],
+                blocks=_blocks(), out_dir=out)
+            self.assertEqual(
+                report["checks"]["preservation"]["delegated_to_cell_conservation"],
+                [],
+            )
+            blocking = report["checks"]["preservation"]["blocking_losses"]
+            number_tokens = {
+                str(row.get("token")) for row in blocking
+                if row.get("kind") == "number"
+            }
+            self.assertTrue({"230", "5"} & number_tokens, blocking)
 
 
 if __name__ == "__main__":
