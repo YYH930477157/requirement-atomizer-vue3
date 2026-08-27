@@ -31,7 +31,9 @@ class WriteSummaryGuidanceTests(unittest.TestCase):
             text = path.read_text(encoding="utf-8")
 
         self.assertIn("功能需求", text)
+        self.assertIn("核对成文交付物", text)
         self.assertIn("软件需求列表-成文.xlsx", text)
+        self.assertNotIn("核对称文交付物", text)
         self.assertNotIn("Review `atomic_requirements.jsonl` first.", text)
         self.assertNotIn("llm_tasks.jsonl", text)
 

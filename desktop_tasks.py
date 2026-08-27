@@ -2899,6 +2899,7 @@ def build_output_summary(out_dir: Path) -> dict[str, Any]:
     summary: dict[str, Any] = {
         "counts": {
             "requirements": len(fre_items),
+            "functional_requirements": len(fre_items),
             "analysis_rows": len(analysis_items),
             "reviews": len(reviews),
             "review_states": len(states),

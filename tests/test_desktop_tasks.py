@@ -3120,6 +3120,7 @@ class OutputSummaryProductTests(unittest.TestCase):
             summary = build_output_summary(out)
 
         self.assertEqual(summary["counts"]["requirements"], 2)
+        self.assertEqual(summary["counts"]["functional_requirements"], 2)
         self.assertEqual(summary["counts"]["analysis_rows"], 1)
         self.assertEqual(summary["execution_status"], "ok")
         self.assertNotIn("missing", summary)
@@ -3148,6 +3149,7 @@ class OutputSummaryProductTests(unittest.TestCase):
             summary = build_output_summary(out)
 
         self.assertEqual(summary["counts"]["requirements"], 0)
+        self.assertEqual(summary["counts"]["functional_requirements"], 0)
         self.assertEqual(summary["atom_diagnostics"]["requirements"], 3)
         self.assertEqual(summary["atom_diagnostics"]["type_counts"]["functional"], 2)
         self.assertEqual(summary["atom_diagnostics"]["type_counts"]["security"], 1)
