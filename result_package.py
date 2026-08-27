@@ -148,6 +148,12 @@ _ARTIFACTS = {
             "pipeline/unit_routing_decisions.jsonl",
             legacy_path="unit_routing_decisions.jsonl",
         ),
+        # Phase 2 shadow：确定性大纲验证报告，不进执行链
+        _artifact(
+            "document_outline",
+            "pipeline/document_outline.json",
+            legacy_path="document_outline.json",
+        ),
         _artifact(
             "routing_gaps",
             "pipeline/routing_gaps.jsonl",

@@ -10,6 +10,7 @@ ratomizer atomize <input.docx|input.xlsx|input.pdf> --out DIR [--kb FILE]... [--
 ratomizer review --out DIR [--review-pipeline FILE] [--domain-pack FILE] [--kb FILE]... [--limit N] [--llm-route stub|openai_compatible] [--review-scope targeted|all] [--quiet | --verbose]
 ratomizer export --out DIR --format md|csv [--status all|accepted|expert_pending|candidate]
 ratomizer compose --out DIR [--quiet | --verbose]
+ratomizer outline --out DIR
 ratomizer analyze --out DIR [--template FILE.xlsx] [--llm-route stub|openai_compatible] [--quiet | --verbose]
 ratomizer claim-shadow-acceptance --input RUN_SET.json [--output REPORT.json]
 ratomizer claim-shadow-review-packet --input RUN_SET.json --output-dir DIR
@@ -320,6 +321,8 @@ completed. The thin tool wrapper can delegate to the existing targeted extractor
 external caller explicitly enables LLM execution. `recheck:<req_id>` is exposed as a tool
 contract but is not selected by the rule priority and is skipped in zero-LLM mode because the
 existing semantic recheck has no standalone deterministic publisher.
+
+`outline` is a shadow diagnostic: it reads `blocks.jsonl` from `--out` and writes governed `document_outline.json` (`document-outline-v1`). It does not change extraction, routing, or conservation. Missing `blocks.jsonl` is an input error (exit 2). The success envelope includes `outline` (verdict counts plus version).
 
 `analyze` runs the requirements analysis agent over a reviewed output directory (requires `ai_requirements.jsonl` produced by AI extraction; missing input is an input error, exit 2 semantics via error envelope). It writes `software_requirements.xlsx`, `engineering_analysis.json`, `hardware_items.md`, and `co_design_items.md`. An explicit `--template` path must exist.
 
