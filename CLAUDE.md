@@ -1,5 +1,34 @@
 # CLAUDE.md — Requirement Atomizer 项目上下文
 
+## 重大更新（2026-08-27）——路由审查三修：血统进阶段戳（P1/P2）+ 逐标题 technical 否决（P3）
+
+> 37 提交大盘审查（`8389e1d..26d6649`）发现的缺口修复：chain 阶段血统不含路由版本
+> （v3 产物在 v4 代码下续跑被静默复用，违反"血统如实"仓规）、tender_regions 词表
+> 版本不进路由缓存键（改词表只有人工 bump 接线版本才失效）、逐标题路由分支缺
+> technical 反向否决（ITB 下挂技术小节被祖先路径的程序性命中整节路由出）。
+
+- **P1 血统进戳**：新增 `functional_extract.routing_lineage_versions()`（接线/规划器/
+  路由器/tender 词表四版本）单源供两处消费——`extraction_fingerprint` 的
+  `unit_routing_key`（JSONL 缓存层，原三版本）与 `desktop_tasks.stage_producer
+  ("functional-extract")`（chain 阶段复用层，原只有功能/prompt/护栏/守恒四版本）。
+  路由决定哪些条款进产物，两层任一缺席都让旧路由产物被静默复用。
+  `RATOMIZER_CONTEXT_PACK_STRATEGY`（路由唯一接线条件）同步进阶段 LLM env 指纹。
+- **P2 词表版本进键**：`TENDER_REGION_FILTER_VERSION` 并入 `_unit_routing_key`
+  （clause_family 键空间，legacy 指纹不变）——词表演进自动失效，不再依赖人工
+  bump 接线版本。f73aaf1"不 bump 并入 v4 语义"依赖同日合并窗口的运气，自此关闭。
+- **P3 逐标题否决**：`_section_is_tender_procedural` 自身标题分支过
+  `_section_has_tender_technical_title`（含块内 heading）——与块内分支（f73aaf1）、
+  跨度分支对称。v4 句子锚点语义不变（其测试形状的句子标题是顶层路径元素，无
+  technical 祖先；真出现嵌套技术祖先时按宁漏勿错保留）。
+- **版本**：`FUNCTIONAL_UNIT_ROUTING_VERSION` v4→v5；`unit_router` docstring 的
+  "shadow 无副作用"过时表述修正（路由自 78d3d83 起被 apply_unit_routing 真实消费；
+  summary 的 `shadow_mode` 字段保留——本义即"route_units 自身无副作用"，两测试钉死）。
+- **缓存影响**：v5 + 键增 tender 版本 → clause_family 抽取缓存与 functional-extract
+  阶段台账一次性失效重跑（守恒结果不变，属诚实重算）；legacy 策略零影响。
+- **测试**：`test_technical_title_under_procedural_ancestor_path_is_kept`（P3 正例）、
+  `test_pure_procedural_own_title_still_routes_out`（P3 反例）、路由键四版本断言、
+  producer 含路由血统断言、策略 env 变化 → 阶段指纹变化断言。
+
 ## 重大更新（2026-08-26）——句子形程序性标题窄锚点路由 v4（合并 `97408a3`）
 
 > v3 跨度路由后 result3 仍有一批"解析器把正文句升格成 heading"的程序性条款

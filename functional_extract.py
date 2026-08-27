@@ -80,7 +80,7 @@ FUNCTIONAL_CONSERVATION_MODEL_VERSION = "functional-conservation-obligation-evid
 # §17 unit 级路由接线（2026-08-17）：clause_family 策略下表格主导条款路由出 B 轨输入
 # 与守恒基线（表格内容归 A 轨/上下文，phase2 探针实证其混入 B 轨是守恒失败根因之一）。
 # 接线版本只进 clause_family 缓存指纹维度（legacy 指纹逐字节不变）；路由判据演进时 bump。
-FUNCTIONAL_UNIT_ROUTING_VERSION = "functional-unit-routing-v4"  # v4（2026-08-24）：句子形程序性 heading 窄锚点（classify_tender_region 补锚，重置 technical 跨度误继承）+ v3 跨度继承/前置样板编号剥离
+FUNCTIONAL_UNIT_ROUTING_VERSION = "functional-unit-routing-v5"  # v5（2026-08-27，P3）：逐标题路由分支补 technical 反向否决（与块内/跨度分支对称——程序性祖先路径 + 技术自身标题的条款不再整节路由出，宁漏勿错）+ P2 路由键并入 tender_region_filter 版本（词表演进自动失效）。v4（2026-08-24）：句子形程序性 heading 窄锚点（classify_tender_region 补锚，重置 technical 跨度误继承）+ v3 跨度继承/前置样板编号剥离
 FUNCTIONAL_REQUIREMENTS_FILENAME = "functional_requirements.json"
 FUNCTIONAL_EXTRACT_CACHE = "functional_extract_cache.jsonl"
 
@@ -223,16 +223,31 @@ def extraction_fingerprint(
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
-def _unit_routing_key() -> str:
-    """unit 路由判据的身份键（接线版本 | 规划器版本 | 路由器版本）。"""
+def routing_lineage_versions() -> dict[str, str]:
+    """路由判据血统版本（stage producer 与抽取缓存键同源，P1/P2 2026-08-27）。
+
+    路由直接决定**哪些条款进产物**——判据版本必须同时进两级指纹：
+    ``extraction_fingerprint`` 的 unit_routing_key（JSONL 缓存层）与
+    ``desktop_tasks.stage_producer("functional-extract")``（chain 阶段复用层），
+    任一缺席都会让旧路由下的产物在新判据代码下被静默复用。
+    """
     from extraction_units import EXTRACTION_UNIT_PLANNER_VERSION
+    from tender_regions import TENDER_REGION_FILTER_VERSION
     from unit_router import UNIT_ROUTER_VERSION
 
-    return "|".join((
-        FUNCTIONAL_UNIT_ROUTING_VERSION,
-        EXTRACTION_UNIT_PLANNER_VERSION,
-        UNIT_ROUTER_VERSION,
-    ))
+    return {
+        "functional_unit_routing": FUNCTIONAL_UNIT_ROUTING_VERSION,
+        "extraction_unit_planner": EXTRACTION_UNIT_PLANNER_VERSION,
+        "unit_router": UNIT_ROUTER_VERSION,
+        # P2：路由判定大量消费 tender_regions 词表（逐标题/跨度/句子锚点）——
+        # 词表版本不进键则改词表只有人工 bump FUNCTIONAL_UNIT_ROUTING_VERSION 才失效。
+        "tender_region_filter": TENDER_REGION_FILTER_VERSION,
+    }
+
+
+def _unit_routing_key() -> str:
+    """unit 路由判据的身份键（接线/规划器/路由器/招标区域词表四版本）。"""
+    return "|".join(routing_lineage_versions().values())
 
 
 # ---------------------------------------------------------------------------
@@ -2004,9 +2019,17 @@ def _section_is_tender_procedural(
     section: dict[str, Any],
     blocks_by_id: dict[str, dict[str, Any]] | None = None,
 ) -> bool:
-    """条款标题/路径是否为招标程序性章节（开标、税清、保函、商务附件）。"""
+    """条款标题/路径是否为招标程序性章节（开标、税清、保函、商务附件）。
+
+    自身标题分支带 technical 反向否决（P3，2026-08-27，与块内/跨度分支对称）：
+    标题/路径（含块内 heading）同时出现 tender_technical 分类 → 保守保留——
+    "Instructions to Bidders" 下挂技术小节的常见形态里，程序性命中来自祖先路径
+    元素而条款自身是技术内容，整节路由出 = 内容静默出守恒基线；多留程序性条款
+    仅付评审成本（宁漏勿错）。
+    """
     if any(_title_is_tender_procedural(title) for title in _section_own_tender_titles(section)):
-        return True
+        if not _section_has_tender_technical_title(section, blocks_by_id):
+            return True
     if not any(
         _title_is_tender_procedural(title)
         for title in _section_block_heading_titles(section, blocks_by_id)

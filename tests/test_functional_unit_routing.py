@@ -403,6 +403,63 @@ class ApplyUnitRoutingTests(unittest.TestCase):
                 "1 METER TECHNICAL SPECIFICATION (in span)",
                 meta.get("tender_span_section_ids", []))
 
+    def test_technical_title_under_procedural_ancestor_path_is_kept(self) -> None:
+        """P3（2026-08-27）：程序性命中来自祖先路径元素、条款自身是技术章 → 保留。
+
+        ITB 下挂技术小节是招标文档常见形态：section_path[0]="Instructions to Bidders"
+        命中程序性词表，而自身 heading="6 TECHNICAL DATA OF THE METER" 是技术内容——
+        旧逐标题分支 any() 命中即整节路由出（内容静默出守恒基线）。修复后与块内/
+        跨度分支对称：自身标题（含块内 heading）出现 tender_technical → 保守保留。
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            _seed_out(out)
+            blocks = _blocks_jsonl() + [
+                {"block_id": "H-ITB", "type": "heading",
+                 "text": "Instructions to Bidders", "order": 1},
+                {"block_id": "S-TECH-NEST", "type": "heading",
+                 "text": "6 TECHNICAL DATA OF THE METER", "order": 2},
+                {"block_id": "P-TECH-NEST", "type": "paragraph",
+                 "text": "The meter shall log load profile data.", "order": 3},
+            ]
+            sections = fe.load_clauses(out) + [{
+                "section_id": "6 TECHNICAL DATA OF THE METER",
+                "section_path": ["Instructions to Bidders", "6 TECHNICAL DATA OF THE METER"],
+                "heading": "6 TECHNICAL DATA OF THE METER",
+                "text": "The meter shall log load profile data.",
+                "block_ids": ["S-TECH-NEST", "P-TECH-NEST"],
+            }]
+            kept, meta = fe.apply_unit_routing(sections, blocks=blocks, out_dir=out)
+            kept_ids = {s["section_id"] for s in kept}
+            self.assertIn("6 TECHNICAL DATA OF THE METER", kept_ids)
+            self.assertNotIn(
+                "6 TECHNICAL DATA OF THE METER",
+                meta.get("tender_procedural_section_ids", []))
+
+    def test_pure_procedural_own_title_still_routes_out(self) -> None:
+        """P3 反例：自身标题程序性且无任何 technical 信号 → 仍逐标题路由出（v4 语义不变）。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            _seed_out(out)
+            blocks = _blocks_jsonl() + [
+                {"block_id": "H-ITB2", "type": "heading",
+                 "text": "Instructions to Bidders", "order": 1},
+                {"block_id": "P-BID", "type": "paragraph",
+                 "text": "The Bidder shall submit the bid security.", "order": 2},
+            ]
+            sections = fe.load_clauses(out) + [{
+                "section_id": "Instructions to Bidders",
+                "section_path": ["Instructions to Bidders"],
+                "heading": "Instructions to Bidders",
+                "text": "The Bidder shall submit the bid security.",
+                "block_ids": ["H-ITB2", "P-BID"],
+            }]
+            kept, meta = fe.apply_unit_routing(sections, blocks=blocks, out_dir=out)
+            self.assertNotIn("Instructions to Bidders", {s["section_id"] for s in kept})
+            self.assertIn(
+                "Instructions to Bidders",
+                meta.get("tender_procedural_section_ids", []))
+
     def test_clause_crossing_span_boundary_is_kept(self) -> None:
         """条款块跨越跨度边界（部分在外）→ 保留。"""
         with tempfile.TemporaryDirectory() as tmp:
@@ -681,6 +738,12 @@ class FingerprintScopingTests(unittest.TestCase):
         self.assertIn(fe.FUNCTIONAL_UNIT_ROUTING_VERSION, key)
         self.assertIn(EXTRACTION_UNIT_PLANNER_VERSION, key)
         self.assertIn(UNIT_ROUTER_VERSION, key)
+        # P2（2026-08-27）：路由判定消费 tender_regions 词表（逐标题/跨度/句子锚点）
+        # ——词表版本必须进键，否则改词表只有人工 bump 接线版本才失效。
+        from tender_regions import TENDER_REGION_FILTER_VERSION
+        self.assertIn(TENDER_REGION_FILTER_VERSION, key)
+        # P1：血统版本单源供 stage producer 与缓存键共用，两侧不漂移
+        self.assertEqual("|".join(fe.routing_lineage_versions().values()), key)
 
 
 class ReextractParityTests(unittest.TestCase):

@@ -1116,13 +1116,16 @@ def stage_producer(stage: str, *, out_dir: Path | None = None,
                 *producer_lineage_versions().values(),
             ))
         elif stage == "functional-extract":
-            # 版本戳覆盖影响产物的全部代码层：功能/prompt/护栏/守恒模型四版本任一 bump，
-            # 旧 functional-extract 阶段缓存即失效（同 ai-extract lineage 纪律）。
+            # 版本戳覆盖影响产物的全部代码层：功能/prompt/护栏/守恒模型 + 路由判据血统
+            # （路由决定哪些条款进产物——不进戳则路由 bump 后 chain 续跑静默复用旧路由
+            # 产物，P1 2026-08-27）。路由版本与 extraction_fingerprint 的 unit_routing_key
+            # 同源（functional_extract.routing_lineage_versions）。
             from functional_extract import (
                 FUNCTIONAL_CONSERVATION_MODEL_VERSION,
                 FUNCTIONAL_EXTRACT_GUARDS_VERSION,
                 FUNCTIONAL_EXTRACT_PROMPT_VERSION,
                 FUNCTIONAL_EXTRACT_VERSION,
+                routing_lineage_versions,
             )
             producer = "+".join((
                 producer,
@@ -1130,6 +1133,7 @@ def stage_producer(stage: str, *, out_dir: Path | None = None,
                 FUNCTIONAL_EXTRACT_PROMPT_VERSION,
                 FUNCTIONAL_EXTRACT_GUARDS_VERSION,
                 FUNCTIONAL_CONSERVATION_MODEL_VERSION,
+                *routing_lineage_versions().values(),
             ))
         elif stage == "atomize":
             # PDF text repair changes blocks consumed by every downstream stage. Include both
@@ -1499,6 +1503,10 @@ def stage_input_fingerprint(out_dir: Path, stage: str, *, route: str | None = No
             # WS2 直抽开关切换改变链形态（ai-extract/functional-synthesis ↔ functional-extract）
             # 与 requirements-analysis/clarification-report 的输入依据 → 开关状态必须进指纹
             "RATOMIZER_FUNCTIONAL_EXTRACT",
+            # 策略是单元路由的唯一接线条件（legacy 不路由、clause_family 路由）——
+            # 翻转策略即改变产物输入集 → 必须进指纹（stage_config 的 resolved 值之外
+            # 再钉原始 env，缺省/显式设置不共键，P1 2026-08-27）
+            "RATOMIZER_CONTEXT_PACK_STRATEGY",
         )},
         "requirements_analysis_enrich": (
             requirements_analysis_enrichment_enabled()

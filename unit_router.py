@@ -1,8 +1,10 @@
-"""确定性 Unit Router（quality-first 方案 §7，M2 Shadow Mode）。
+"""确定性 Unit Router（quality-first 方案 §7）。
 
 对 ExtractionUnit 逐单元输出路由决策：a_track / b_track / mixed / context / review。
-第一版零 LLM、零执行变化——只产 ``unit_routing_decisions.jsonl`` governed 产物，
-不改变任何既有阶段；用于回放对比（M2 shadow）与后续 quality-first 主执行（M4）。
+零 LLM。本模块的 ``route_units``/``route_document`` 是纯路由计算（不改写单元内容、
+自身无执行副作用，summary 的 ``shadow_mode`` 即此义）；自 2026-08-17（78d3d83）起
+路由结果已被 ``functional_extract.apply_unit_routing`` **真实消费**——clause_family
+策略下表格主导/招标程序性条款据此路由出 B 轨输入与守恒基线，不再只是回放对比。
 
 硬信号（§7.3/§7.4，全部确定性可审计）：
 - A 硬：合法 COSEM class_id（cosem_object_model.CLASS_NAME_TO_ID 白名单）、格式合法
@@ -272,7 +274,8 @@ def route_units(units: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict
 
 
 def route_document(out_dir, *, plan_if_missing: bool = True) -> dict[str, Any]:
-    """Shadow 入口：规划（如缺）→ 路由 → 写 governed 产物。不改变执行链。"""
+    """规划（如缺）→ 路由 → 写 governed 产物。本函数自身无执行副作用；
+    消费方 functional_extract.apply_unit_routing 据此决定 B 轨输入与守恒基线。"""
     units = load_extraction_units(out_dir)
     if not units and plan_if_missing:
         plan_extraction_units(out_dir)

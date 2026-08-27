@@ -227,6 +227,28 @@ class FingerprintDisciplineTests(unittest.TestCase):
              fe.FUNCTIONAL_CONSERVATION_MODEL_VERSION),
             registered,
         )
+        # P1（2026-08-27）：路由判据血统进 stage producer——路由决定哪些条款进产物，
+        # 不进戳则路由 bump 后 chain 续跑静默复用旧路由产物（与缓存键同源不漂移）。
+        for version in fe.routing_lineage_versions().values():
+            self.assertIn(version, producer)
+
+    def test_context_strategy_env_changes_stage_fingerprint(self) -> None:
+        """P1：策略是单元路由的唯一接线条件——翻转策略必须使阶段指纹失效。"""
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            _write_min_corpus(out)
+            base_env = {k: v for k, v in os.environ.items()
+                        if k != "RATOMIZER_CONTEXT_PACK_STRATEGY"}
+            with mock.patch.dict(os.environ, base_env, clear=True):
+                unset = desktop_tasks.stage_input_fingerprint(out, "functional-extract")
+            with mock.patch.dict(
+                os.environ,
+                {**base_env, "RATOMIZER_CONTEXT_PACK_STRATEGY": "clause_family"},
+                clear=True,
+            ):
+                clause_family = desktop_tasks.stage_input_fingerprint(
+                    out, "functional-extract")
+            self.assertNotEqual(unset, clause_family)
 
     def test_entry_switch_env_changes_stage_fingerprint(self) -> None:
         with tempfile.TemporaryDirectory() as td:
