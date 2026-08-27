@@ -241,8 +241,12 @@ class DesktopTaskTests(unittest.TestCase):
         self.assertEqual(payload["kind"], "pipeline")
         self.assertEqual(payload["manifest"]["counts"]["atomic_requirements"], 2)
         self.assertEqual(payload["review"]["reviews"], 2)
-        self.assertEqual(payload["summary"]["counts"]["requirements"], 2)
+        self.assertEqual(payload["summary"]["counts"]["requirements"], 0)
+        self.assertEqual(payload["summary"]["atom_diagnostics"]["requirements"], 2)
+        self.assertEqual(payload["summary"]["atom_diagnostics"]["type_counts"]["functional"], 1)
         self.assertEqual(payload["summary"]["status_counts"]["accepted"], 1)
+        self.assertNotIn("type_counts", payload["summary"])
+        self.assertNotIn("confidence_counts", payload["summary"])
         atomize.assert_called_once()
         review.assert_called_once_with(out_dir.resolve(), route=None, scope=None, llm_review_limit=0, progress_callback=ANY, kb_paths=None, domain_pack_path=desktop_tasks.DEFAULT_DOMAIN_PACK_PATH)
 
@@ -3084,6 +3088,74 @@ class FunctionalExtractCompletionScopeTests(unittest.TestCase):
                 package["active_attempt"]["requested_stages"],
                 ["atomize", "ai-extract", "functional-synthesis"],
             )
+
+
+class OutputSummaryProductTests(unittest.TestCase):
+    """碎原子退出人读主指标：summary 以 FRE/分析行为产品，atoms 只进诊断。"""
+
+    def test_functional_only_dir_is_healthy_without_atoms(self) -> None:
+        from desktop_tasks import build_output_summary
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            (out / "functional_requirements.json").write_text(
+                json.dumps({
+                    "items": [
+                        {"functional_requirement_id": "FRE-1", "objective": "keep voltage"},
+                        {"functional_requirement_id": "FRE-2", "objective": "log events"},
+                    ],
+                    "execution_status": "ok",
+                }),
+                encoding="utf-8",
+            )
+            (out / "engineering_analysis.json").write_text(
+                json.dumps({
+                    "items": [
+                        {"requirement_id": "AN-1", "ownership": "software"},
+                    ],
+                }),
+                encoding="utf-8",
+            )
+
+            summary = build_output_summary(out)
+
+        self.assertEqual(summary["counts"]["requirements"], 2)
+        self.assertEqual(summary["counts"]["analysis_rows"], 1)
+        self.assertEqual(summary["execution_status"], "ok")
+        self.assertNotIn("missing", summary)
+        self.assertNotIn("error", summary)
+        self.assertEqual(summary["atom_diagnostics"]["requirements"], 0)
+        self.assertEqual(summary["atom_diagnostics"]["type_counts"], {})
+        self.assertEqual(
+            summary["atom_diagnostics"]["confidence_counts"],
+            {"high": 0, "medium": 0, "low": 0},
+        )
+
+    def test_atoms_counts_live_in_diagnostics_not_primary(self) -> None:
+        from desktop_tasks import build_output_summary
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            write_jsonl(
+                out / "atomic_requirements.jsonl",
+                [
+                    {"stable_req_id": "SREQ-1", "requirement_type": "functional", "confidence": 0.95},
+                    {"stable_req_id": "SREQ-2", "requirement_type": "security", "confidence": 0.72},
+                    {"stable_req_id": "SREQ-3", "requirement_type": "functional", "confidence": 0.4},
+                ],
+            )
+
+            summary = build_output_summary(out)
+
+        self.assertEqual(summary["counts"]["requirements"], 0)
+        self.assertEqual(summary["atom_diagnostics"]["requirements"], 3)
+        self.assertEqual(summary["atom_diagnostics"]["type_counts"]["functional"], 2)
+        self.assertEqual(summary["atom_diagnostics"]["type_counts"]["security"], 1)
+        self.assertEqual(summary["atom_diagnostics"]["confidence_counts"]["high"], 1)
+        self.assertEqual(summary["atom_diagnostics"]["confidence_counts"]["medium"], 1)
+        self.assertEqual(summary["atom_diagnostics"]["confidence_counts"]["low"], 1)
+        self.assertNotIn("type_counts", summary)
+        self.assertNotIn("confidence_counts", summary)
 
 
 if __name__ == "__main__":

@@ -2819,17 +2819,70 @@ def full_translation_task(out_dir: Path, route: str | None = None) -> dict[str, 
 
 
 
+def _read_jsonl_dual(out_dir: Path, filename: str, *, category: str = "pipeline") -> list[dict[str, Any]]:
+    """Read a JSONL artifact from governed path first, then the analysis root."""
+    candidates = [
+        governed_artifact_path(out_dir, filename, category=category, for_write=False),
+        out_dir / filename,
+    ]
+    seen: set[Path] = set()
+    for path in candidates:
+        resolved = path.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        if path.is_file():
+            return read_jsonl(path)
+    return []
+
+
+def _read_json_dual(out_dir: Path, filename: str, *, category: str = "pipeline") -> dict[str, Any]:
+    candidates = [
+        governed_artifact_path(out_dir, filename, category=category, for_write=False),
+        out_dir / filename,
+    ]
+    seen: set[Path] = set()
+    for path in candidates:
+        resolved = path.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        if not path.is_file():
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        return payload if isinstance(payload, dict) else {}
+    return {}
+
+
 def build_output_summary(out_dir: Path) -> dict[str, Any]:
+    """Product-facing run summary: FRE / analysis rows first; atoms are diagnostics.
+
+    Direct-extract result directories may have no ``atomic_requirements.jsonl``.
+    That is not a missing-product failure — atoms are A-track diagnostics.
+    """
     out_dir = out_dir.expanduser().resolve()
-    requirements = read_jsonl(out_dir / "atomic_requirements.jsonl")
-    reviews = read_jsonl(out_dir / "llm_review_results.jsonl")
+    from functional_extract import _payload_execution_status
+    from requirements_analysis_rules import _read_functional_requirements_payload
+
+    fre_payload = _read_functional_requirements_payload(out_dir)
+    fre_items = [item for item in (fre_payload.get("items") or []) if isinstance(item, dict)]
+    analysis_payload = _read_json_dual(out_dir, "engineering_analysis.json")
+    analysis_items = [
+        item for item in (analysis_payload.get("items") or []) if isinstance(item, dict)
+    ]
+
+    atoms = _read_jsonl_dual(out_dir, "atomic_requirements.jsonl")
+    reviews = _read_jsonl_dual(out_dir, "llm_review_results.jsonl")
     states = read_jsonl(
-        governed_artifact_path(out_dir, "review_states.jsonl", category="state")
+        governed_artifact_path(out_dir, "review_states.jsonl", category="state", for_write=False)
     )
     status_counts: dict[str, int] = {}
     type_counts: dict[str, int] = {}
     confidence_counts = {"high": 0, "medium": 0, "low": 0}
-    for row in requirements:
+    for row in atoms:
         requirement_type = str(row.get("requirement_type") or row.get("type") or "unknown")
         type_counts[requirement_type] = type_counts.get(requirement_type, 0) + 1
         confidence = row.get("confidence")
@@ -2843,17 +2896,26 @@ def build_output_summary(out_dir: Path) -> dict[str, Any]:
     for state in states:
         status = str(state.get("status") or "unknown")
         status_counts[status] = status_counts.get(status, 0) + 1
-    return {
+    summary: dict[str, Any] = {
         "counts": {
-            "requirements": len(requirements),
+            "requirements": len(fre_items),
+            "analysis_rows": len(analysis_items),
             "reviews": len(reviews),
             "review_states": len(states),
         },
         "status_counts": status_counts,
-        "type_counts": type_counts,
-        "confidence_counts": confidence_counts,
+        "atom_diagnostics": {
+            "requirements": len(atoms),
+            "reviews": len(reviews),
+            "review_states": len(states),
+            "type_counts": type_counts,
+            "confidence_counts": confidence_counts,
+        },
         "run_manifest": read_run_manifest(out_dir),
     }
+    if fre_payload:
+        summary["execution_status"] = _payload_execution_status(fre_payload)
+    return summary
 
 
 def orchestrate_task(
