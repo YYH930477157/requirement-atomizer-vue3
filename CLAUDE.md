@@ -18,8 +18,9 @@
   bump 接线版本。f73aaf1"不 bump 并入 v4 语义"依赖同日合并窗口的运气，自此关闭。
 - **P3 逐标题否决**：`_section_is_tender_procedural` 自身标题分支过
   `_section_has_tender_technical_title`（含块内 heading）——与块内分支（f73aaf1）、
-  跨度分支对称。v4 句子锚点语义不变（其测试形状的句子标题是顶层路径元素，无
-  technical 祖先；真出现嵌套技术祖先时按宁漏勿错保留）。
+  跨度分支对称。v4 句子锚点语义不变（result3 实测有 +1 边界节保留，见回放实测条）
+  （其测试形状的句子标题是顶层路径元素，无 technical 祖先；真出现嵌套技术祖先时
+  按宁漏勿错保留）。
 - **版本**：`FUNCTIONAL_UNIT_ROUTING_VERSION` v4→v5；`unit_router` docstring 的
   "shadow 无副作用"过时表述修正（路由自 78d3d83 起被 apply_unit_routing 真实消费；
   summary 的 `shadow_mode` 字段保留——本义即"route_units 自身无副作用"，两测试钉死）。
@@ -28,6 +29,15 @@
 - **测试**：`test_technical_title_under_procedural_ancestor_path_is_kept`（P3 正例）、
   `test_pure_procedural_own_title_still_routes_out`（P3 反例）、路由键四版本断言、
   producer 含路由血统断言、策略 env 变化 → 阶段指纹变化断言。
+- **result3 回放实测（v5，合并后本机补验）**：P3 的 technical 否决在 result3 真实
+  语料上有一处实际影响——sections_extracted 92→93（procedural 39→38），多保留的
+  一节是「3 Any conflict of interest... / 2.2 Delivery Schedule」：该 chunk 块流吞进
+  了下一章 heading「2.3 STATEMENT OF REQUIREMENTS (TECHNICAL)」触发 technical 否决
+  被保守保留。守恒影响 uncovered 39 / preservation 50 / duplicates 0 全部不变，仅
+  binding mismatch 36→38（+2）——这是宁漏勿错的预期代价而非缺陷；技术章
+  1/6/7/8/9/11/21 保留状态与 v4 完全一致。本机 main 全量 4037 OK（skipped=20）、
+  golden 6/6 零漂移——对方机器的 4 个 golden 失败确认为其本地 out/ 基线过期，
+  与代码无关。
 
 ## 重大更新（2026-08-26）——句子形程序性标题窄锚点路由 v4（合并 `97408a3`）
 
