@@ -546,6 +546,15 @@ class TableReviewStateTests(unittest.TestCase):
                     for_write=False,
                 ).is_file()
             )
+            pending = read_jsonl(
+                governed_artifact_path(
+                    analysis, "table_recompute_pending.jsonl", category="state",
+                    for_write=False,
+                )
+            )
+            self.assertEqual(len(pending), 1)
+            self.assertEqual(pending[0]["table_id"], "TBL-000001")
+            self.assertIn("OmissionConflictError", pending[0]["recompute_error"])
 
 
     def test_build_payload_raises_base_migration_required_for_stale_base(self) -> None:
@@ -800,6 +809,154 @@ class TableReviewStateTests(unittest.TestCase):
                     for_write=False,
                 ).is_file()
             )
+
+    def test_recompute_failure_writes_pending_work_order_then_recovery_clears_it(self) -> None:
+        from table_review_state import run_table_review_recompute_recovery
+
+        with tempfile.TemporaryDirectory() as tmp:
+            analysis, _cells, dispositions = _seed(Path(tmp))
+            write_jsonl(analysis / "ai_requirements.jsonl", [])
+            fingerprint = table_evidence_fingerprint("TBL-000001", dispositions)
+            review_cell = next(row for row in dispositions if row["disposition"] == "review")
+            authority = {
+                review_cell["cell_id"]: {
+                    "status": "promoted",
+                    "claim_id": "CLM-0000000000000001",
+                    "override_id": "CSO-0000000000000001",
+                    "prior_structural_reason": "ambiguous_table_structure",
+                }
+            }
+            pending_path = governed_artifact_path(
+                analysis, "table_recompute_pending.jsonl", category="state",
+                for_write=False,
+            )
+            states_path = governed_artifact_path(
+                analysis, "table_review_states.jsonl", category="state",
+                for_write=False,
+            )
+            with patch(
+                "table_review_state._delegate_claim_cell_decision",
+                return_value={"ok": True, "status": "rebuilt"},
+            ), patch(
+                "table_review_state._current_claim_projection",
+                side_effect=[{}, authority],
+            ), patch(
+                "table_recompute.recompute_confirmed_table_requirements",
+                side_effect=OSError("disk full"),
+            ):
+                result = apply_table_review_decision(
+                    analysis,
+                    table_id="TBL-000001",
+                    expected_evidence_fingerprint=fingerprint,
+                    role_mapping={
+                        review_cell["cell_id"]: {
+                            "role": "data",
+                            "disposition": "target",
+                        }
+                    },
+                    actor="reviewer",
+                    reason="Confirmed",
+                )
+            self.assertIn("recompute_error", result)
+            self.assertIn("OSError", result["recompute_error"])
+            pending = read_jsonl(pending_path)
+            self.assertEqual(len(pending), 1)
+            self.assertEqual(pending[0]["schema"], "table-recompute-pending/v1")
+            self.assertEqual(pending[0]["table_id"], "TBL-000001")
+            self.assertIn("OSError", pending[0]["recompute_error"])
+            self.assertFalse(states_path.is_file())
+
+            recovered = run_table_review_recompute_recovery(analysis)
+            self.assertEqual(recovered["attempted"], 1)
+            self.assertEqual(recovered["recovered"], 1)
+            self.assertEqual(recovered["still_failing"], 0)
+            self.assertEqual(read_jsonl(pending_path), [])
+            self.assertFalse(states_path.is_file())
+
+    def test_legacy_recompute_error_tombstone_skips_second_recovery(self) -> None:
+        from table_review_state import run_table_review_recompute_recovery
+
+        with tempfile.TemporaryDirectory() as tmp:
+            analysis, _cells, _dispositions = _seed(Path(tmp))
+            states_path = governed_artifact_path(
+                analysis, "table_review_states.jsonl", category="state"
+            )
+            write_jsonl(states_path, [{
+                "schema": "table-review-state/v1",
+                "table_id": "TBL-000001",
+                "structure_review_status": "ready",
+                "recompute_error": "OmissionConflictError: another extraction running",
+                "evidence_fingerprint": "x",
+                "recorded_at": "2026-01-01T00:00:00+00:00",
+            }])
+            before = states_path.read_bytes()
+            with patch(
+                "table_review_state._run_table_recompute",
+                return_value=(
+                    ["table_cell_dispositions.jsonl", "ai_requirements.jsonl"],
+                    "",
+                ),
+            ):
+                first = run_table_review_recompute_recovery(analysis)
+            self.assertEqual(first["attempted"], 1)
+            self.assertEqual(first["recovered"], 1)
+            pending = read_jsonl(
+                governed_artifact_path(
+                    analysis, "table_recompute_pending.jsonl", category="state",
+                    for_write=False,
+                )
+            )
+            self.assertEqual(len(pending), 1)
+            self.assertTrue(pending[0].get("legacy_recovered"))
+            self.assertEqual(pending[0]["table_id"], "TBL-000001")
+            self.assertEqual(states_path.read_bytes(), before)
+
+            second = run_table_review_recompute_recovery(analysis)
+            self.assertEqual(second["attempted"], 0)
+            self.assertEqual(second["recovered"], 0)
+            self.assertEqual(states_path.read_bytes(), before)
+
+    def test_legacy_recompute_retry_failure_upserts_new_ledger(self) -> None:
+        from table_review_state import run_table_review_recompute_recovery
+
+        with tempfile.TemporaryDirectory() as tmp:
+            analysis, _cells, _dispositions = _seed(Path(tmp))
+            states_path = governed_artifact_path(
+                analysis, "table_review_states.jsonl", category="state"
+            )
+            write_jsonl(states_path, [{
+                "schema": "table-review-state/v1",
+                "table_id": "TBL-000001",
+                "structure_review_status": "ready",
+                "recompute_error": "old: prior failure",
+                "evidence_fingerprint": "x",
+                "recorded_at": "2026-01-01T00:00:00+00:00",
+            }])
+            before = states_path.read_bytes()
+            with patch(
+                "table_review_state._run_table_recompute",
+                return_value=(
+                    ["table_cell_dispositions.jsonl"],
+                    "OmissionConflictError: still running",
+                ),
+            ):
+                result = run_table_review_recompute_recovery(analysis)
+            self.assertEqual(result["attempted"], 1)
+            self.assertEqual(result["still_failing"], 1)
+            self.assertEqual(states_path.read_bytes(), before)
+            pending = read_jsonl(
+                governed_artifact_path(
+                    analysis, "table_recompute_pending.jsonl", category="state",
+                    for_write=False,
+                )
+            )
+            self.assertEqual(len(pending), 1)
+            self.assertEqual(pending[0]["table_id"], "TBL-000001")
+            self.assertEqual(
+                pending[0]["recompute_error"],
+                "OmissionConflictError: still running",
+            )
+            self.assertFalse(pending[0].get("legacy_recovered"))
 
 
 if __name__ == "__main__":

@@ -190,6 +190,12 @@ _ARTIFACTS = {
         _artifact("review_states", "state/review_states.jsonl", legacy_path="review_states.jsonl"),
         _artifact("review_state_events", "state/review_state_events.jsonl", legacy_path="review_state_events.jsonl"),
         _artifact("ai_review_states", "state/ai_review_states.jsonl", legacy_path="ai_review_states.jsonl"),
+        # Table B-track recompute work orders (not review authority).
+        _artifact(
+            "table_recompute_pending",
+            "state/table_recompute_pending.jsonl",
+            legacy_path="table_recompute_pending.jsonl",
+        ),
         _artifact("extract_cache", "cache/ai_extract_cache.jsonl", legacy_path="ai_extract_cache.jsonl"),
         _artifact(
             "summary_md",
@@ -280,6 +286,7 @@ _LEGACY_SENTINELS -= {"run.log", "run_manifest.lock", "llm_trace.jsonl"}
 _STATE_FILENAMES = {
     "review_states.jsonl", "review_state_events.jsonl", "review_states.lock",
     "table_review_states.jsonl", "table_review_events.jsonl", "table_review_states.lock",
+    "table_recompute_pending.jsonl",
     "ai_review_states.jsonl", "ai_review_states.lock", "ai_supplements.jsonl",
     "clarification_answers.jsonl", "clarification_answers.lock",
     "clarification_check_states.jsonl", "clarification_check_states.lock",

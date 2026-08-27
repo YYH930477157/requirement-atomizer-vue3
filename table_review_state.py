@@ -5,7 +5,8 @@ v2 onward: terminal table/cell status authority is the claim projection
 ``table_review_states.jsonl`` / ``table_review_events.jsonl`` are read-only
 and ignored by GET /table-reviews; this module no longer writes them.
 ``table_geometry_conflicts.jsonl`` remains a writable overlay (no claim
-subject yet).
+subject yet). Failed B-track recompute is a work order in
+``table_recompute_pending.jsonl`` (not review authority).
 """
 from __future__ import annotations
 
@@ -46,6 +47,8 @@ TABLE_REVIEW_LOCK = "table_review_states.lock"
 # no new writeback shape — and clears the record once the table is resolved.
 TABLE_GEOMETRY_CONFLICTS = "table_geometry_conflicts.jsonl"
 TABLE_GEOMETRY_CONFLICT_SCHEMA = "table-geometry-conflict/v1"
+TABLE_RECOMPUTE_PENDING = "table_recompute_pending.jsonl"
+TABLE_RECOMPUTE_PENDING_SCHEMA = "table-recompute-pending/v1"
 
 _VALID_ROLES = {
     "title",
@@ -178,6 +181,72 @@ def _write_geometry_conflicts(root: Path, records: dict[str, dict[str, Any]]) ->
     path = governed_artifact_path(root, TABLE_GEOMETRY_CONFLICTS, category="state")
     rows = [records[table_id] for table_id in sorted(records)]
     _atomic_write_jsonl(path, rows)
+
+
+def _load_recompute_pending(root: Path) -> dict[str, dict[str, Any]]:
+    """Read the recompute work-order ledger. Missing file = no pending work."""
+    path = governed_artifact_path(
+        root, TABLE_RECOMPUTE_PENDING, category="state", for_write=False
+    )
+    if not path.is_file():
+        return {}
+    records: dict[str, dict[str, Any]] = {}
+    for row in read_jsonl(path):
+        table_id = str(row.get("table_id") or "")
+        if table_id:
+            records[table_id] = row
+    return records
+
+
+def _write_recompute_pending(root: Path, records: dict[str, dict[str, Any]]) -> None:
+    path = governed_artifact_path(root, TABLE_RECOMPUTE_PENDING, category="state")
+    rows = [records[table_id] for table_id in sorted(records)]
+    _atomic_write_jsonl(path, rows)
+
+
+def _record_recompute_pending(root: Path, table_id: str, error: str) -> None:
+    """Upsert a failing work order. Caller must hold ``_table_review_lock``."""
+    table_id = str(table_id or "").strip()
+    if not table_id or not error:
+        return
+    records = _load_recompute_pending(root)
+    records[table_id] = {
+        "schema": TABLE_RECOMPUTE_PENDING_SCHEMA,
+        "table_id": table_id,
+        "recompute_error": str(error),
+        "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+    _write_recompute_pending(root, records)
+
+
+def _clear_recompute_pending(root: Path, table_id: str) -> None:
+    """Drop a pending work order; keep a legacy tombstone if present."""
+    table_id = str(table_id or "").strip()
+    if not table_id:
+        return
+    records = _load_recompute_pending(root)
+    existing = records.get(table_id)
+    if existing is None:
+        return
+    if existing.get("legacy_recovered"):
+        return
+    records.pop(table_id, None)
+    _write_recompute_pending(root, records)
+
+
+def _record_legacy_recompute_tombstone(root: Path, table_id: str) -> None:
+    """Mark a historical ready+recompute_error row as recovered (do not retry)."""
+    table_id = str(table_id or "").strip()
+    if not table_id:
+        return
+    records = _load_recompute_pending(root)
+    records[table_id] = {
+        "schema": TABLE_RECOMPUTE_PENDING_SCHEMA,
+        "table_id": table_id,
+        "legacy_recovered": True,
+        "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+    _write_recompute_pending(root, records)
 
 
 def record_table_geometry_conflicts(
@@ -584,9 +653,9 @@ def _run_table_recompute(
 ) -> tuple[list[str], str]:
     """表级 recompute + effective fold，持 extraction_operation_lock（Kimi 高危 #3）。
 
-    返回 (recomputed_artifacts, recompute_error)；recompute_error == "" 即成功。抽出来供
-    apply_table_review_decision 与启动维护 run_table_review_recompute_recovery 复用——后者扫描
-    ready+recompute_error 的表自动重试，使 recompute_error 不再是无重试的死端。
+    返回 (recomputed_artifacts, recompute_error)；recompute_error == "" 即成功。
+    失败 upsert ``table_recompute_pending.jsonl``，成功清除该表待办（保留
+    legacy tombstone）。调用方须持 ``_table_review_lock``。
     extraction_operation_lock 撞上主抽取时抛 OmissionConflictError(ValueError)，记为可重试错误。
     """
     recomputed_artifacts = ["table_cell_dispositions.jsonl"]
@@ -626,27 +695,57 @@ def _run_table_recompute(
                 )
     except (OSError, TimeoutError, ValueError) as exc:
         recompute_error = f"{type(exc).__name__}: {exc}"
+    if recompute_error:
+        _record_recompute_pending(root, table_id, recompute_error)
+    else:
+        _clear_recompute_pending(root, table_id)
     return recomputed_artifacts, recompute_error
 
 
-def run_table_review_recompute_recovery(root: Path) -> dict[str, Any]:
-    """Scan historical ready+recompute_error rows and retry recompute.
+def _legacy_recompute_error_rows(root: Path) -> list[dict[str, Any]]:
+    states_path = governed_artifact_path(
+        root, TABLE_REVIEW_STATES, category="state", for_write=False
+    )
+    if not states_path.is_file():
+        return []
+    return [
+        row for row in read_jsonl(states_path)
+        if str(row.get("structure_review_status") or "") == "ready"
+        and row.get("recompute_error")
+        and str(row.get("table_id") or "")
+    ]
 
-    Historical table_review_states.jsonl is read-only: retries still run
-    (recompute is idempotent) but this function never rewrites that file.
+
+def run_table_review_recompute_recovery(root: Path) -> dict[str, Any]:
+    """Retry failed table recomputes from the work-order ledger + historical rows.
+
+    New decisions persist failures in ``table_recompute_pending.jsonl``. Historical
+    ``table_review_states.jsonl`` ready+recompute_error rows stay read-only: success
+    writes a ``legacy_recovered`` tombstone so the next scan skips them; failure
+    upserts the new ledger. The historical file is never rewritten.
     """
     root = Path(root).expanduser().resolve()
-    states_path = governed_artifact_path(root, TABLE_REVIEW_STATES, category="state")
-    if not states_path.is_file():
-        return {"ok": True, "attempted": 0, "recovered": 0, "still_failing": 0}
     with _table_review_lock(root):
-        states = read_jsonl(states_path)
-        pending = [
-            row for row in states
-            if str(row.get("structure_review_status") or "") == "ready"
-            and row.get("recompute_error")
-        ]
-        if not pending:
+        ledger = _load_recompute_pending(root)
+        tombstoned = {
+            table_id
+            for table_id, row in ledger.items()
+            if row.get("legacy_recovered")
+        }
+        jobs: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for table_id, row in sorted(ledger.items()):
+            if table_id in tombstoned or row.get("legacy_recovered"):
+                continue
+            jobs.append(("ledger", table_id))
+            seen.add(table_id)
+        for row in _legacy_recompute_error_rows(root):
+            table_id = str(row.get("table_id") or "")
+            if table_id in tombstoned or table_id in seen:
+                continue
+            jobs.append(("legacy", table_id))
+            seen.add(table_id)
+        if not jobs:
             return {"ok": True, "attempted": 0, "recovered": 0, "still_failing": 0}
         cells = _artifact_rows(root, "table_cell_items.jsonl")
         raw_dispositions = _artifact_rows(root, "table_cell_dispositions.jsonl")
@@ -654,10 +753,7 @@ def run_table_review_recompute_recovery(root: Path) -> dict[str, Any]:
         all_dispositions = project_table_dispositions(raw_dispositions, cells, projection)
         recovered = 0
         still_failing = 0
-        for row in pending:
-            table_id = str(row.get("table_id") or "")
-            if not table_id:
-                continue
+        for source, table_id in jobs:
             table_dispositions = [
                 disposition for disposition in all_dispositions
                 if str(disposition.get("table_id") or "") == table_id
@@ -676,11 +772,14 @@ def run_table_review_recompute_recovery(root: Path) -> dict[str, Any]:
             )
             if recompute_error:
                 still_failing += 1
+                _record_recompute_pending(root, table_id, recompute_error)
             else:
                 recovered += 1
+                if source == "legacy":
+                    _record_legacy_recompute_tombstone(root, table_id)
     return {
         "ok": True,
-        "attempted": len(pending),
+        "attempted": len(jobs),
         "recovered": recovered,
         "still_failing": still_failing,
     }
@@ -889,8 +988,7 @@ def apply_table_review_decision(
             _write_geometry_conflicts(root, conflict_records)
 
         # 下游传播（recompute + fold）持 _table_review_lock + extraction_operation_lock。
-        # recompute_error 只回 HTTP/返回值；不再双写 table_review_states/events。
-        # 启动维护仍可扫描历史 ready+recompute_error 行重试，但不改写旧文件。
+        # 失败落 table_recompute_pending 工单（Kimi #3）；不写 table_review_states/events。
         if status == "ready":
             recomputed_artifacts, recompute_error = _run_table_recompute(
                 root,
