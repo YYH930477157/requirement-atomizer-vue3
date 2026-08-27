@@ -345,8 +345,9 @@ def build_outline_report(
                     })
                     if verdict == "confirmed":
                         verdict = "suspect"
-            # 降格句 / 目录项 / 被吞并 heading 不进入大纲编号基线（它们不是合法大纲节点）。
-            if verdict not in {"demoted_body_sentence", "toc_entry"} and block_id not in swallowed_ids:
+            # 只有非法大纲节点不进编号基线。被吞并 heading 仍是文档真实标题，
+            # 编号属于真实序列；剔除会人为制造断裂、冤枉下游为 suspect。
+            if verdict not in {"demoted_body_sentence", "toc_entry"}:
                 previous_number = number
 
         if block_id in swallowed_ids:

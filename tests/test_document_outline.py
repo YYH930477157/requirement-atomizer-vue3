@@ -226,6 +226,38 @@ class NumberSequenceTests(unittest.TestCase):
         self.assertEqual(row["verdict"], "suspect")
         self.assertTrue(any(item["kind"] == "number_sequence_regression" for item in row["evidence"]))
 
+    def test_swallowed_heading_number_stays_in_baseline(self) -> None:
+        blocks = [
+            _heading("H-22", "2.2 Delivery Schedule"),
+            _paragraph("P-1", "Delivery is two months.", section_path=["2.2 Delivery Schedule"]),
+            _heading(
+                "H-23",
+                "2.3 STATEMENT OF REQUIREMENTS (TECHNICAL)",
+                section_path=["2.3 STATEMENT OF REQUIREMENTS (TECHNICAL)"],
+            ),
+            _heading("H-24", "2.4 Operating conditions"),
+        ]
+        sections = [{
+            "section_id": "2.2 Delivery Schedule",
+            "source_block_ids": ["H-22", "P-1", "H-23"],
+        }, {
+            "section_id": "2.4 Operating conditions",
+            "source_block_ids": ["H-24"],
+        }]
+        report = build_outline_report(blocks, sections=sections)
+        self.assertEqual(
+            {item["block_id"] for item in report["swallowed_headings"]},
+            {"H-23"},
+        )
+        self.assertEqual(_by_id(report, "H-23")["verdict"], "confirmed")
+        self.assertEqual(_by_id(report, "H-24")["verdict"], "confirmed")
+        self.assertFalse(
+            any(
+                item["kind"].startswith("number_sequence_")
+                for item in _by_id(report, "H-24")["evidence"]
+            )
+        )
+
     def test_legal_child_and_sibling_stay_confirmed(self) -> None:
         blocks = [
             _heading("H-1", "1 Scope"),
@@ -250,13 +282,14 @@ class PortfolioFixtureTests(unittest.TestCase):
             any("STATEMENT OF REQUIREMENTS" in item["text"] for item in report["swallowed_headings"])
         )
         caps = _by_id(report, "BLK-TECH-H")
-        self.assertEqual(caps["verdict"], "confirmed")
+        self.assertNotEqual(caps["verdict"], "demoted_body_sentence")
         self.assertTrue(any(item["kind"] == "all_caps_title" for item in caps["evidence"]))
+        self.assertTrue(any(item["kind"] == "number_sequence_regression" for item in caps["evidence"]))
         self.assertEqual(_by_id(report, "BLK-DEL-H")["verdict"], "confirmed")
         self.assertEqual(report["summary"]["heading_count"], 7)
         self.assertEqual(report["summary"]["demoted_body_sentence"], 1)
-        self.assertEqual(report["summary"]["confirmed"], 5)
-        self.assertEqual(report["summary"]["suspect"], 1)
+        self.assertEqual(report["summary"]["confirmed"], 4)
+        self.assertEqual(report["summary"]["suspect"], 2)
         self.assertEqual(report["summary"]["swallowed_heading_count"], 2)
         self.assertEqual(report["summary"]["swallow_detection_basis"], "block_section_path")
 
