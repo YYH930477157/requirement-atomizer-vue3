@@ -82,7 +82,9 @@ FUNCTIONAL_EXTRACT_GUARDS_VERSION = "functional-extract-guards-v6"
 # R1（同日返工）：委托粒度从单元 source_text 子串替换改为块粒度——某表格块上
 # 全部 table_row/table_cell 均为 a_track/context 才剔除该块完整 block.text
 # （行渲染文本对不上条款扁平 text 时不再静默失败）；部分委托整块保留。
-FUNCTIONAL_CONSERVATION_MODEL_VERSION = "functional-conservation-obligation-evidence-v4"
+# v4 → v5（2026-08-27 审查修复）：同文本多表格块按委托块数剔除出现位置——
+# replace-all 会把字节级相同的非委托块一并剥出基线（无 cell 守恒兜底的静默丢账）。
+FUNCTIONAL_CONSERVATION_MODEL_VERSION = "functional-conservation-obligation-evidence-v5"
 # §17 unit 级路由接线（2026-08-17）：clause_family 策略下表格主导条款路由出 B 轨输入
 # 与守恒基线（表格内容归 A 轨/上下文，phase2 探针实证其混入 B 轨是守恒失败根因之一）。
 # 接线版本只进 clause_family 缓存指纹维度（legacy 指纹逐字节不变）；路由判据演进时 bump。
@@ -1318,8 +1320,10 @@ def _conservation_baseline_sections(
     """按块粒度构建守恒基线条款（义务/preservation 用）与委托审计清单。
 
     某表格块上的全部 table_row/table_cell 均为 a_track/context 时，剔除该块
-    完整 ``block.text``（条款文本的逐字组成部分）。部分委托 / dispositions
-    缺席 / 单元不可得：整块保留在基线（宁多记账）。无 out_dir 退回条款全文。
+    完整 ``block.text``（条款文本的逐字组成部分）。字节级相同的多表格块按
+    **委托块数**剔除出现位置——非委托块的同文本内容必须留在基线。部分委托 /
+    dispositions 缺席 / 单元不可得：整块保留在基线（宁多记账）。无 out_dir
+    退回条款全文。
     """
     if out_dir is None:
         return [dict(section) for section in sections], []
@@ -1360,6 +1364,7 @@ def _conservation_baseline_sections(
             str(bid) for bid in (section.get("block_ids") or []) if str(bid)
         ]
         text = str(section.get("text") or "")
+        removal_counts: dict[str, int] = {}
         for bid in section_bids:
             block = blocks_by_id.get(bid)
             if block is None or str(block.get("type") or "") != "table":
@@ -1390,13 +1395,17 @@ def _conservation_baseline_sections(
             if block_text and block_text not in text:
                 continue
             if block_text:
-                text = text.replace(block_text, " ")
+                removal_counts[block_text] = removal_counts.get(block_text, 0) + 1
             delegated.append({
                 "block_id": bid,
                 "block_ids": [bid],
                 "units": details,
                 "reason": "table_block_fully_delegated_to_cell_conservation",
             })
+        for block_text, count in removal_counts.items():
+            # count 感知剔除：同文本的另一个非委托表格块（或正文里的同文片段）
+            # 的出现位置必须保留，否则其数字在无 cell 守恒兜底的情况下静默出账。
+            text = text.replace(block_text, " ", count)
         copy = dict(section)
         copy["text"] = text
         adjusted.append(copy)

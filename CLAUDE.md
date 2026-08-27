@@ -1,5 +1,61 @@
 # CLAUDE.md — Requirement Atomizer 项目上下文
 
+## 重大更新（2026-08-27e）——代码审查修复五项：守恒委托 replace-all + tender 死锚点/剥号顺序 + recompute 恢复收敛（分支 `codex/review-fixes-20260827`，未合并）
+
+> 对 28 提交大盘（`a0d17c2..0a31721`，2026-08-27d）审查发现的问题修复；
+> 方向判定：架构收敛 Phase 1/2 质量整体合格，以下为局部缺陷。
+
+- **F1[MEDIUM] 守恒委托 replace-all**：`_conservation_baseline_sections` 剔除
+  委托表格块用 `text.replace(block_text, " ")` 全量替换——同一条款内两个字节级
+  相同的表格块只有一个可委托时，另一个的出现位置也被剥出基线（无 cell 守恒
+  兜底、无审计痕，违反"委托内容必须有兜底或审计痕"纪律）。改为**按委托块数
+  出现次数感知剔除**（`replace(..., count)`，块顺序无关；guard 改对原始条款
+  文本判定，修复了同文本双委托块第二个被 `not in text` 误跳过的次生病）。
+  `FUNCTIONAL_CONSERVATION_MODEL_VERSION` v4→v5（registry/指纹/producer 四处
+  同步；v4 当日刚 bump，增量失效成本≈0）。新增双顺序回归测试
+  `test_duplicate_table_text_*`。
+- **F2[LOW] compliance statement 死锚点**：`classify_tender_region` 里
+  `_TECHNICAL_RE` 先于句子锚点，"compliance statement to the technical
+  specification" 自带 technical 词面 → 永远判 tender_technical（锚点从未生效
+  且方向相反）。句子形锚点（窄整句/短语级）改为先于 `_TECHNICAL_RE`；A-1 的
+  "技术章节优先"语义只针对 `_INSTRUCTIONS_RE` 宽词表，顺序不变（既有
+  qualification/type/acceptance tests 钉子全绿）。
+- **F3[LOW] 剥号顺序**：`_normalize_title` 先做标点归一（点号→空格）再剥条款
+  编号，多级编号（"5.2 Factory Certificates"）剥成 "2 factory certificates"
+  → 精确锚点永不命中。改为在**原始文本**上剥号，前缀正则扩为
+  `^\d+(?:\.\d+)*\.?\s+` 兼容 "13."/"5.2"/"5.2." 三种形态（单级 "N. Title"
+  原正则剥不掉，旧代码靠点号已变空格才碰巧工作）。副产安全方向改善：多级
+  编号中文技术标题（"1.2 技术规范"）现可正确判 technical。
+  F2+F3：`TENDER_REGION_FILTER_VERSION` v3→v4（经 routing_lineage_versions
+  自动进 clause_family 缓存键与阶段 producer；持久化路由决策行不含 tender
+  派生态，无需 bump `UNIT_ROUTER_VERSION`）。
+- **F4[Minor] 恢复循环重复记账**：`run_table_review_recompute_recovery` 失败
+  分支在 `_run_table_recompute` 内部已 upsert 账本后再调一次
+  `_record_recompute_pending`（同内容整文件重写 ×N）——删除外层重复调用；
+  `test_legacy_recompute_retry_failure_upserts_new_ledger` 相应改为真实失败
+  路径（patch `table_recompute.recompute_confirmed_table_requirements` 抛错）
+  并新增调用计数钉 `test_recovery_failure_records_pending_ledger_exactly_once`。
+- **F5[Minor] 双行两轮收敛**：同表兼有账本失败行与 legacy ready+recompute_error
+  行时按 ledger 作业执行，成功后未写 `legacy_recovered` tombstone → 下一轮
+  恢复对 legacy 行再付一次幂等重算。成功分支改为 source==legacy **或** 该表
+  存在 legacy 错误行即落 tombstone；新增
+  `test_ledger_job_success_also_tombstones_legacy_error_row`（两轮收敛钉）。
+- **F6[Cosmetic]**：`test_recompute_recovery_clears_error_on_success` 更名
+  `test_recompute_recovery_success_leaves_legacy_error_file_untouched`（新语义
+  下旧文件保留错误、tombstone 落新账本）。
+- **审查观察项（未修，记录在案）**：产品主语检测仅英文 token（中文产品句无
+  rescue，非回归）；"模态词前最后一个词"漏修饰语主语句；`tools/shadow_run.py`
+  回退路径守恒不传 out_dir（比生产严）；`_table_blocks_missing_dispositions`
+  只查行存在不查 schema/版本；`delegated` 审计清单 200 条截断无总数标注；
+  summary.md 正文残留 Atomic requirement 计数/质量段（atoms 退出 §3.4 范围外，
+  刻意不动）。
+- **验证**：worktree 全量 **4116 OK（skipped=8 环境性：worktree 无 out/ 的
+  golden 跳过等）**；聚焦 conservation/tender/table 三套 76 OK、路由钉
+  （unit_routing/regression_portfolio/unit_router）77 OK；py_compile +
+  `git diff --check` 干净。不触 atomize 产物链（golden 预期零漂移，合并后
+  主检出复验）。缓存影响：clause_family 抽取缓存与 functional-extract 阶段
+  台账一次性失效重跑（v4/v3 均为当日版本，增量成本≈0；legacy 指纹不变）。
+
 ## 重大更新（2026-08-27d）——Phase 2 第二批：table 停双写 + atoms 退出交付物（合并 `4c772bd`/`f377f94`）
 
 > 依据 `docs/review-queue-convergence-design-2026-08-27.md`（§3.3 C 表 / §3.4 冻结 /

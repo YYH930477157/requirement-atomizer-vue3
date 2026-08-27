@@ -739,8 +739,15 @@ def run_table_review_recompute_recovery(root: Path) -> dict[str, Any]:
                 continue
             jobs.append(("ledger", table_id))
             seen.add(table_id)
-        for row in _legacy_recompute_error_rows(root):
-            table_id = str(row.get("table_id") or "")
+        legacy_error_tables = {
+            table_id
+            for table_id in (
+                str(row.get("table_id") or "")
+                for row in _legacy_recompute_error_rows(root)
+            )
+            if table_id
+        }
+        for table_id in sorted(legacy_error_tables):
             if table_id in tombstoned or table_id in seen:
                 continue
             jobs.append(("legacy", table_id))
@@ -771,11 +778,13 @@ def run_table_review_recompute_recovery(root: Path) -> dict[str, Any]:
                 changed_cell_ids=changed_cell_ids,
             )
             if recompute_error:
+                # _run_table_recompute 失败路径已 upsert 账本，这里只计数。
                 still_failing += 1
-                _record_recompute_pending(root, table_id, recompute_error)
             else:
                 recovered += 1
-                if source == "legacy":
+                if source == "legacy" or table_id in legacy_error_tables:
+                    # 同表兼有账本失败行与 legacy 错误行时，账本作业成功也要落
+                    # tombstone，否则 legacy 行下轮恢复会再付一次幂等重算。
                     _record_legacy_recompute_tombstone(root, table_id)
     return {
         "ok": True,

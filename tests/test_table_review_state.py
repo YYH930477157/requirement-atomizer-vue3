@@ -593,8 +593,13 @@ class TableReviewStateTests(unittest.TestCase):
             self.assertEqual(responses[0][0], 503)
             self.assertEqual(responses[0][1]["error"], "base_migration_required")
 
-    def test_recompute_recovery_clears_error_on_success(self) -> None:
-        """Historical ready+recompute_error rows still retry; the old file is not rewritten."""
+    def test_recompute_recovery_success_leaves_legacy_error_file_untouched(self) -> None:
+        """Historical ready+recompute_error rows still retry; the old file is not rewritten.
+
+        成功的落点是 ``table_recompute_pending.jsonl`` 的 ``legacy_recovered``
+        tombstone（详见 ``test_legacy_recompute_error_tombstone_skips_second_recovery``），
+        旧文件里的 recompute_error 原样保留。
+        """
         from table_review_state import run_table_review_recompute_recovery
         with tempfile.TemporaryDirectory() as tmp:
             analysis, _cells, _dispositions = _seed(Path(tmp))
@@ -917,6 +922,7 @@ class TableReviewStateTests(unittest.TestCase):
             self.assertEqual(states_path.read_bytes(), before)
 
     def test_legacy_recompute_retry_failure_upserts_new_ledger(self) -> None:
+        """真实失败路径（不 mock _run_table_recompute）验证账本 upsert 仍在。"""
         from table_review_state import run_table_review_recompute_recovery
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -934,11 +940,8 @@ class TableReviewStateTests(unittest.TestCase):
             }])
             before = states_path.read_bytes()
             with patch(
-                "table_review_state._run_table_recompute",
-                return_value=(
-                    ["table_cell_dispositions.jsonl"],
-                    "OmissionConflictError: still running",
-                ),
+                "table_recompute.recompute_confirmed_table_requirements",
+                side_effect=ValueError("OmissionConflictError: still running"),
             ):
                 result = run_table_review_recompute_recovery(analysis)
             self.assertEqual(result["attempted"], 1)
@@ -954,9 +957,90 @@ class TableReviewStateTests(unittest.TestCase):
             self.assertEqual(pending[0]["table_id"], "TBL-000001")
             self.assertEqual(
                 pending[0]["recompute_error"],
-                "OmissionConflictError: still running",
+                "ValueError: OmissionConflictError: still running",
             )
             self.assertFalse(pending[0].get("legacy_recovered"))
+
+    def test_recovery_failure_records_pending_ledger_exactly_once(self) -> None:
+        """恢复循环不再重复记账：失败只经 _run_table_recompute 内部路径落一次账本。"""
+        import table_review_state
+        from table_review_state import run_table_review_recompute_recovery
+
+        with tempfile.TemporaryDirectory() as tmp:
+            analysis, _cells, _dispositions = _seed(Path(tmp))
+            states_path = governed_artifact_path(
+                analysis, "table_review_states.jsonl", category="state"
+            )
+            write_jsonl(states_path, [{
+                "schema": "table-review-state/v1",
+                "table_id": "TBL-000001",
+                "structure_review_status": "ready",
+                "recompute_error": "old: prior failure",
+                "evidence_fingerprint": "x",
+                "recorded_at": "2026-01-01T00:00:00+00:00",
+            }])
+            calls: list[str] = []
+            real = table_review_state._record_recompute_pending
+
+            def counting(root, table_id, error):
+                calls.append(str(table_id))
+                return real(root, table_id, error)
+
+            with patch(
+                "table_recompute.recompute_confirmed_table_requirements",
+                side_effect=ValueError("boom"),
+            ), patch(
+                "table_review_state._record_recompute_pending",
+                side_effect=counting,
+            ):
+                result = run_table_review_recompute_recovery(analysis)
+            self.assertEqual(result["still_failing"], 1)
+            self.assertEqual(calls, ["TBL-000001"])
+
+    def test_ledger_job_success_also_tombstones_legacy_error_row(self) -> None:
+        """同表兼有账本失败行与 legacy 错误行：账本作业成功当轮即落 tombstone。
+
+        不写 tombstone 时 legacy 行下一轮恢复会再付一次幂等重算才收敛。
+        """
+        from table_review_state import (
+            _record_recompute_pending,
+            run_table_review_recompute_recovery,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            analysis, _cells, _dispositions = _seed(Path(tmp))
+            _record_recompute_pending(analysis, "TBL-000001", "ValueError: first failure")
+            states_path = governed_artifact_path(
+                analysis, "table_review_states.jsonl", category="state"
+            )
+            write_jsonl(states_path, [{
+                "schema": "table-review-state/v1",
+                "table_id": "TBL-000001",
+                "structure_review_status": "ready",
+                "recompute_error": "old: prior failure",
+                "evidence_fingerprint": "x",
+                "recorded_at": "2026-01-01T00:00:00+00:00",
+            }])
+            with patch(
+                "table_review_state._run_table_recompute",
+                return_value=(["table_cell_dispositions.jsonl"], ""),
+            ):
+                first = run_table_review_recompute_recovery(analysis)
+            self.assertEqual(first["attempted"], 1)
+            self.assertEqual(first["recovered"], 1)
+            pending = read_jsonl(
+                governed_artifact_path(
+                    analysis, "table_recompute_pending.jsonl", category="state",
+                    for_write=False,
+                )
+            )
+            self.assertEqual(len(pending), 1)
+            self.assertTrue(pending[0].get("legacy_recovered"))
+            self.assertEqual(pending[0]["table_id"], "TBL-000001")
+
+            second = run_table_review_recompute_recovery(analysis)
+            self.assertEqual(second["attempted"], 0)
+            self.assertEqual(second["recovered"], 0)
 
 
 if __name__ == "__main__":
