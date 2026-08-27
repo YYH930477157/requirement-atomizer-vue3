@@ -39,7 +39,7 @@ from extraction_units import (
 )
 from io_utils import read_jsonl
 
-UNIT_ROUTER_VERSION = "unit-router-v3"
+UNIT_ROUTER_VERSION = "unit-router-v4"  # v4（2026-08-27，WS-B）：句级 procedural_subject 信号进决策载荷
 UNIT_ROUTING_DECISION_SCHEMA = "unit-routing-decision/v1"
 UNIT_ROUTING_DECISIONS_FILENAME = "unit_routing_decisions.jsonl"
 UNIT_ROUTING_SUMMARY_SCHEMA = "unit-routing-summary/v1"
@@ -60,6 +60,18 @@ EVIDENCE_KINDS = (
     "modal",                # 规范性义务模态（B 硬）
     "normative_pattern",    # 表结构层强 normative 模式（B 硬）
     "weak_signal",          # sentence_shape/colon_spec 弱信号（→ review）
+    "procedural_subject",   # 无歧义程序性义务主体（bidder/tenderer/…，宁漏勿错）
+)
+
+# 义务主体：只认无歧义程序性主语。supplier/manufacturer/contractor 与产品主语一律不判。
+# 主体词必须出现在同一句模态词之前（"There shall … for this tender" 不命中）。
+_PROCEDURAL_SUBJECT_RE = re.compile(
+    r"\b(?:bidders?|tenderers?|bids?|tenders?|employers?|purchasers?)\b",
+    re.IGNORECASE,
+)
+_SUBJECT_MODAL_RE = re.compile(
+    r"\b(?:shall|must|will|may|should)\b|必须|应|须|宜",
+    re.IGNORECASE,
 )
 
 _ATTRIBUTE_RE = re.compile(r"\b(?:attribute|attr|method)\s*(?:no\.?\s*)?(\d{1,3})\b",
@@ -73,6 +85,28 @@ _COSEM_HEADER_RE = re.compile(
 
 def _evidence(kind: str, value: Any) -> dict[str, str]:
     return {"kind": kind, "value": str(value) if value is not None else ""}
+
+
+def unit_has_procedural_subject(text: str) -> tuple[bool, str]:
+    """句级程序性义务主体（确定性）。返回 (命中, 命中词)。
+
+    只在无歧义程序性主语（bidder/tenderer/bid/tender/employer/purchaser）出现在
+    **同一句模态词之前**时为真。manufacturer/supplier/contractor/meter 等一律不判。
+    """
+    from functional_drilldown import _SENTENCE_SPLIT_RE
+
+    for part in _SENTENCE_SPLIT_RE.split(text or ""):
+        sentence = part.strip()
+        if not sentence:
+            continue
+        modal = _SUBJECT_MODAL_RE.search(sentence)
+        if modal is None:
+            continue
+        prefix = sentence[:modal.start()]
+        match = _PROCEDURAL_SUBJECT_RE.search(prefix)
+        if match:
+            return True, match.group(0)
+    return False, ""
 
 
 def _a_signals(unit: dict[str, Any]) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
@@ -166,6 +200,10 @@ def route_unit(unit: dict[str, Any]) -> dict[str, Any]:
     a_evidence, a_hard = _a_signals(unit)
     b_evidence, b_hard, weak = _b_signals(unit)
     evidence = a_evidence + b_evidence
+    text = str(unit.get("source_text") or "")
+    procedural, procedural_word = unit_has_procedural_subject(text)
+    if procedural:
+        evidence.append(_evidence("procedural_subject", procedural_word))
     roles = {str(role) for role in unit.get("roles") or []}
     kind = str(unit.get("unit_kind") or "")
 
@@ -245,6 +283,7 @@ def route_unit(unit: dict[str, Any]) -> dict[str, Any]:
         "router_version": UNIT_ROUTER_VERSION,
         "planner_version": str(unit.get("planner_version") or EXTRACTION_UNIT_PLANNER_VERSION),
         "decision_basis": "deterministic",
+        "procedural_subject": procedural,
     }
 
 

@@ -423,7 +423,8 @@ def functional_targeted_reextract(
     # 全量重算（幂等）：UID 按全量 sections 的条款序号定位，锚/守恒对合并集重算。
     fe.assign_stable_uids(merged, sections)
     fe.assign_evidence_anchors(merged, sections)
-    conservation = fe.conservation_report(sections, merged, blocks=fe._load_blocks(root))
+    conservation = fe.conservation_report(
+        sections, merged, blocks=fe._load_blocks(root), out_dir=root)
     if conservation.get("ok") is not True:
         categories = conservation.get("failure_categories") or []
         raise FunctionalReextractUnhealthy(

@@ -96,7 +96,7 @@ class UnitRouterRuleTests(unittest.TestCase):
             headers=["Object/attribute name", "CL", "Value"]))
         self.assertEqual(decision["route"], "a_track")
         self.assertEqual(decision["rule"], "cosem_table_a_priority")
-        self.assertEqual(decision["router_version"], "unit-router-v3")
+        self.assertEqual(decision["router_version"], UNIT_ROUTER_VERSION)
 
     def test_cosem_table_b_modal_only_also_a_priority_v2(self) -> None:
         # v2：COSEM 表内只有模态（参数叙述列）无 A 信号的格同样归 A 轨
@@ -195,6 +195,30 @@ class UnitRouterRuleTests(unittest.TestCase):
         self.assertEqual(decision["source_text_hash"], unit["source_text_hash"])
         self.assertEqual(decision["router_version"], UNIT_ROUTER_VERSION)
         self.assertEqual(decision["planner_version"], EXTRACTION_UNIT_PLANNER_VERSION)
+
+    def test_bidder_sentence_marks_procedural_subject(self) -> None:
+        decision = route_unit(_unit("U-bid", "The Bidder shall submit the bid security."))
+        self.assertTrue(decision["procedural_subject"])
+        self.assertTrue(any(
+            item["kind"] == "procedural_subject" for item in decision["evidence"]))
+        self.assertEqual(decision["route"], "b_track")
+
+    def test_manufacturer_sentence_is_not_procedural_subject(self) -> None:
+        decision = route_unit(_unit(
+            "U-mfr", "The manufacturer shall change the original equipment."))
+        self.assertFalse(decision["procedural_subject"])
+        self.assertEqual(decision["route"], "b_track")
+
+    def test_meter_sentence_is_not_procedural_subject(self) -> None:
+        decision = route_unit(_unit("U-meter", "The meter shall log events."))
+        self.assertFalse(decision["procedural_subject"])
+
+    def test_tender_after_modal_is_not_procedural_subject(self) -> None:
+        decision = route_unit(_unit(
+            "U-oem",
+            "There shall be no change of Original Equipment Manufacturer for this tender.",
+        ))
+        self.assertFalse(decision["procedural_subject"])
 
 
 class UnitRouterDocumentTests(unittest.TestCase):

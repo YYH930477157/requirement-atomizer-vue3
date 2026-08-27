@@ -38,7 +38,7 @@
             "enum": [
               "obis", "class_id", "cosem_attribute", "access_mode",
               "cosem_context", "dlms_profile", "modal", "normative_pattern",
-              "weak_signal"
+              "weak_signal", "procedural_subject"
             ]
           },
           "value": {"type": "string"}
@@ -49,7 +49,8 @@
     "source_text_hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
     "router_version": {"type": "string", "minLength": 1},
     "planner_version": {"type": "string", "minLength": 1},
-    "decision_basis": {"const": "deterministic"}
+    "decision_basis": {"const": "deterministic"},
+    "procedural_subject": {"type": "boolean"}
   },
   "additionalProperties": true
 }
