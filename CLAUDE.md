@@ -1,5 +1,54 @@
 # CLAUDE.md — Requirement Atomizer 项目上下文
 
+## 重大更新（2026-08-27b）——架构收敛 Phase 1：守恒分轨 + 路由收编 + 多文档回归组合（合并 `dfbe3dd`）
+
+> 依据 `docs/architecture-convergence-plan-2026-08-27.md`（框架四错诊断：无文档结构权威 /
+> 路由判据碎裂 / 守恒不分轨 / 验证单点化）。分支 `codex/conservation-routing-framework`
+> （grok-4.6 实施三轮：主体 `5155876` → 审查返工 `c3cbf4d` → 钉子随行 `6227232`；
+> Claude 逐轮审核，含一次返工打回）。WS-C 回归组合独立分支 `codex/regression-portfolio`
+> （`3ce6723`）先并入框架分支再一并合 main。
+
+- **WS-A 守恒分轨**：`conservation_report` 新增 `out_dir` 参数——preservation 基线按
+ 表格块分轨：某表格块上**全部** table_row/table_cell 单元路由均为 a_track/context 时，
+ 从条款基线 text 剔除完整 `block.text`（块文本是条款文本逐字组成部分，块级替换可靠；
+ 初版单元 source_text 子串替换因行渲染文本对不上条款扁平文本而静默失败，返工改块粒度）。
+ 部分委托 / dispositions 缺席 / 单元不可得：整块保留（宁多记账）。委托清单
+ `delegated_to_cell_conservation` 进报告审计。**result3 诊断（诚实结论）**：section 6
+ 的 preservation blocking 50 不降——可整块委托的表（BLK-000271/273）在 clause_family
+ 下早被 all_table 路由出基线，剩余 blocking 全在带真实义务模态的 b_track/review 表上
+ （hard_b_only 证据），属既有技术表格质量课题（中期项），不是假账；未为凑数改路由器。
+- **WS-B 路由收编**：`apply_unit_routing` 的节级词表独立分支（`_section_is_tender_
+ procedural`）退役（函数保留作辅助判据/测试对照）——路由出改为
+ `_section_tender_aggregate_route_out` 单元级聚合：义务承载单元满足程序性三条件之一
+ （① 决策载荷 `procedural_subject`；② 无产品主语且全部块在程序性跨度内；③ own title
+ 经既有词表判程序性且该单元非产品主语——标题降为先验而非整节权威），全部满足才路由出；
+ **产品主语句一票保留**（`unit_has_product_subject`：产品词 meter/device/product/
+ equipment/system/DCU/apparatus/unit 是同一句模态词前最后一个词才命中，宁漏勿错）。
+ technical 否决收窄为 own title/path（块流吞进的下一章 technical heading 不再否决
+ 程序性残骸——该保护职责移交单元级产品主语）。`unit_router` v3→v4：句级
+ `procedural_subject`（bidder/tenderer/bid/tender/employer/purchaser 在同句模态词前）
+ 进决策载荷与 evidence 枚举，不改 route 本身。
+- **WS-C 多文档回归组合**：`tests/test_regression_portfolio.py` + 4 套合成中性夹具
+ （招标 PDF 四类解析病理 / 散文名词短语标准 / 同节技术表+义务 / bidder-meter 混排），
+ 12 例钉子钉 plan/route/apply/conservation 四层——替代"只看 ABNT"的单点验证
+ （ABNT golden 降级为组合中的一个成员）。合并时 3 处"已知缺陷"钉按预期方向翻转
+ （8 Event recording / 9 Retention period 产品节不再被跨度吞、90 天保留期数字回基线、
+ OEM 升格句桶重分类 procedural→span 仍路由出），其余 9 例零漂移。
+- **result3 回放（相对 v5=93 kept/39 uncovered）**：kept 95（税清/开标/OEM/供货历史
+ 残骸重新路由出，8/9 类产品节保留）；uncovered 40（+1 是 18.3 DRAWINGS 产品包装义务
+ 按宁漏勿错诚实保留）；binding 38（回 v5）；duplicates 0；技术章 1/6/7/8/9/11/21 与
+ 15 GUARANTEED LIFE SPAN（产品主语保护，此前用户裁定项就此闭合）全保留。
+ `12 Spare parts`（manufacturer 主语义务）仍路由出——供应商义务非设备功能，可辩护。
+- **版本**：`FUNCTIONAL_CONSERVATION_MODEL_VERSION` v3→v4、`UNIT_ROUTER_VERSION`
+ v3→v4、`FUNCTIONAL_UNIT_ROUTING_VERSION` v5→v6（经 routing_lineage_versions 单源进
+ clause_family 缓存键与 stage producer）；legacy 指纹逐字节不变（钉测在案）；
+ schema `unit_routing_decision` 增 evidence kind + `procedural_subject` 字段。
+ clause_family 抽取缓存与 functional-extract 阶段台账失效重跑（诚实重算）。
+- **验证**：合并后主检出全量 **4073 OK（skipped=20）**、golden **6/6 零漂移**（不触
+ atomize 产物，预期坐实）。分支上全量 4061 OK + 回归组合 12/12 + 聚焦 72 OK。
+- **Phase 2 待办（未开始）**：大纲重建（文档结构权威进 parse 层）、产品/评审队列收编、
+ SQLite 状态存储与内容寻址 DAG 指纹（Phase 3）。
+
 ## 重大更新（2026-08-27）——路由审查三修：血统进阶段戳（P1/P2）+ 逐标题 technical 否决（P3）
 
 > 37 提交大盘审查（`8389e1d..26d6649`）发现的缺口修复：chain 阶段血统不含路由版本
