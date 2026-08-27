@@ -1,14 +1,36 @@
 # CLAUDE.md — Requirement Atomizer 项目上下文
 
-## 重大更新（2026-08-27d）——atoms 退出人读交付物表述面（分支 `codex/atoms-exit-deliverable`）
+## 重大更新（2026-08-27d）——Phase 2 第二批：table 停双写 + atoms 退出交付物（合并 `4c772bd`/`f377f94`）
 
-> 依据 `docs/review-queue-convergence-design-2026-08-27.md` §3.3 C 表 + §3.4 冻结。
-> 纯产品表述，零状态迁移；atomize 仍写 `atomic_requirements.jsonl`。
+> 依据 `docs/review-queue-convergence-design-2026-08-27.md`（§3.3 C 表 / §3.4 冻结 /
+> 迁移顺序第 1 步）。两工作流并行（grok-4.6 实施、Claude 逐轮审核）：
+> `codex/table-stop-doublewrite`（三提交，一次返工打回）与
+> `codex/atoms-exit-deliverable`（两提交，一次返工打回）。
 
-- **`build_output_summary`**：主指标改为 FRE 条数 / `execution_status` / 分析行；
-  atoms 的类型/置信计数移入 `atom_diagnostics`。直抽目录无 atoms 不报缺失。
-- **`summary.md` Next Step**：改为功能需求评审 + 成文 xlsx 中文指引。
-- **Vue 空态**：不再指向 `atomic_requirements.jsonl`。「原子诊断」导航/设置未改名。
+- **table 停双写（队列收敛第 0+1 步）**：第 0 步契约测试
+  `tests/test_review_queue_contract.py` 钉住各评审状态文件的写方模块与落点路径；
+  第 1 步 `table_review_state.py` 停写 `table_review_states.jsonl` /
+  `table_review_events.jsonl`——表格评审终态单源改由 **claim 投影**导出
+  （`TABLE_REVIEW_VIEW_SCHEMA`/`TABLE_REVIEW_DECISION_VERSION` 升 v2，
+  api-client 字面同步），旧结果包只读兼容、旧文件不改写。
+- **recompute 工单账本（返工项）**：停双写后 recompute 失败原本只回 HTTP 即丢
+  （启动恢复只扫 v2 永不再产生的历史 ready+recompute_error 行）——新增 governed
+  账本 `table_recompute_pending.jsonl`（`table-recompute-pending/v1`，非评审权威，
+  result_package 登记 state/ 类目）：`_run_table_recompute` 失败 upsert、成功清行；
+  `run_table_review_recompute_recovery` 双源扫描（新账本 + 只读历史行），历史行
+  修复成功写 `legacy_recovered` tombstone 防旧包每次启动无限重试，历史文件永不改写。
+- **atoms 退出人读交付物表述面**（纯产品表述，零状态迁移；atomize 仍写
+  `atomic_requirements.jsonl`）：`build_output_summary` 主指标改为 FRE 条数 /
+  `execution_status` / 分析行，atoms 类型/置信计数移入 `atom_diagnostics`，
+  直抽目录无 atoms 不报缺失；`counts.functional_requirements` 别名点亮 App.vue
+  运行总览「功能需求」卡（此前休眠路径）；`summary.md` Next Step 改功能需求评审 +
+  成文 xlsx 指引；Vue 空态不再指向 atoms 文件。「原子诊断」导航/设置未改名。
+- **验证**：合并前临时集成 worktree 双分支合并零冲突全量 4109 OK（skipped=26
+  环境性）；合并后主检出全量 **4109 OK（skipped=20）**、golden **6/6 零漂移**
+  （两处改动均不触 atomize 产物）。分支上各自聚焦 24 例（表格）/ 127 例 +
+  UI vitest（atoms）通过。
+- **Phase 2 剩余待办**：大纲接线 Phase 2b（重切条款边界，单独立项）；队列收敛
+  第 2 步 omission+内部核对迁移；ABNT golden 降级（组合钉已转正）。
 
 ## 重大更新（2026-08-27c）——架构收敛 Phase 2 第一批：大纲权威 shadow + 评审队列收敛设计（合并 `17151a5`/`3f99adb`）
 
