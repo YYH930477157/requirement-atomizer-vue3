@@ -180,7 +180,9 @@ BASELINE_BARE_JOINS: dict[str, dict[str, int]] = {
         "ai_requirements.jsonl": 1,
     },
     "desktop_tasks.py": {
-        "ai_requirements.jsonl": 1, "atomic_requirements.jsonl": 1, "llm_review_results.jsonl": 2,
+        # 2026-08-27 atoms 退出交付物：summary 改走 governed 双路径，去掉
+        # atomic_requirements.jsonl / 一处 llm_review_results.jsonl 字面裸拼。
+        "ai_requirements.jsonl": 1, "llm_review_results.jsonl": 1,
         "llm_trace.jsonl": 1, "run_manifest.lock": 1,
     },
     "doc_annotation_export.py": {

@@ -1351,7 +1351,7 @@ const emptyRequirement: Requirement = {
   categoryCode: "",
   object: "-",
   chineseText: "当前输出目录暂无需求。",
-  originalText: "请选择文档运行抽取，或打开包含 atomic_requirements.jsonl 的输出目录。",
+  originalText: "请选择文档运行功能需求抽取，或打开已有功能需求结果目录。",
   translation: "",
   sourceDocument: "-",
   sourceLocation: "-",

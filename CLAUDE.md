@@ -1,5 +1,15 @@
 # CLAUDE.md — Requirement Atomizer 项目上下文
 
+## 重大更新（2026-08-27d）——atoms 退出人读交付物表述面（分支 `codex/atoms-exit-deliverable`）
+
+> 依据 `docs/review-queue-convergence-design-2026-08-27.md` §3.3 C 表 + §3.4 冻结。
+> 纯产品表述，零状态迁移；atomize 仍写 `atomic_requirements.jsonl`。
+
+- **`build_output_summary`**：主指标改为 FRE 条数 / `execution_status` / 分析行；
+  atoms 的类型/置信计数移入 `atom_diagnostics`。直抽目录无 atoms 不报缺失。
+- **`summary.md` Next Step**：改为功能需求评审 + 成文 xlsx 中文指引。
+- **Vue 空态**：不再指向 `atomic_requirements.jsonl`。「原子诊断」导航/设置未改名。
+
 ## 重大更新（2026-08-27c）——架构收敛 Phase 2 第一批：大纲权威 shadow + 评审队列收敛设计（合并 `17151a5`/`3f99adb`）
 
 > Phase 2 两工作流并行（grok-4.6 实施、Claude 逐轮审核）：WS-D 分支

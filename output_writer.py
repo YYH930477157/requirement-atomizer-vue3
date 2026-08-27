@@ -204,7 +204,7 @@ def write_summary(
             "",
             "## Next Step",
             "",
-            "Review `atomic_requirements.jsonl` first. Then send `llm_tasks.jsonl` to your model worker for correction, gap-finding, and enrichment while keeping `source_id` plus `source_refs` for traceability.",
+            "先在「功能需求」评审确认功能条，再核对成文交付物（`软件需求列表-成文.xlsx`）。文档批注只对照原文；碎原子不是需求产品。",
             "",
         ]
     )

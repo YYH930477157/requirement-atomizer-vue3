@@ -914,6 +914,8 @@ describe("review workspace shell", () => {
 
     expect(wrapper.find('[data-testid="row-REQ-2024-0001"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="detail-title"]').text()).toContain("未选择需求")
+    expect(wrapper.text()).toContain("请选择文档运行功能需求抽取，或打开已有功能需求结果目录。")
+    expect(wrapper.text()).not.toContain("atomic_requirements.jsonl")
   })
 
   it("opens a user-selected existing output without rerunning analysis", async () => {

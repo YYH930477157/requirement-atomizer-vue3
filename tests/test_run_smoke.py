@@ -12,8 +12,8 @@ class RunSmokeTests(unittest.TestCase):
         modules = run_smoke.load_modules(run_smoke.DEFAULT_MANIFEST)
         suite = run_smoke.build_suite(modules)
         self.assertEqual(len(modules), 90)
-        # 1790 = 1785 + 5（WP3：completion 阶段名与直抽替换权威同步）
-        self.assertEqual(suite.countTestCases(), 1790)
+        # 1792 = 1790 + 2（atoms 退出交付物：build_output_summary 产品主指标）
+        self.assertEqual(suite.countTestCases(), 1792)
 
     def test_manifest_rejects_duplicates_and_non_test_modules(self) -> None:
         for content in ("tests.test_atomize\ntests.test_atomize\n", "atomize\n"):
