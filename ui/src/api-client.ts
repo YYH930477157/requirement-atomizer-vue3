@@ -75,7 +75,7 @@ export type TableReviewTable = {
 }
 
 export type TableReviewPayload = {
-  schema: "table-review-view/v1"
+  schema: "table-review-view/v2"
   tables: TableReviewTable[]
 }
 

@@ -110,7 +110,7 @@ describe("RequirementApiClient", () => {
       .mockResolvedValueOnce({
         ok: true,
         json: async () => ({
-          schema: "table-review-view/v1",
+          schema: "table-review-view/v2",
           tables: [{ table_id: "TBL-1", structure_review_status: "pending" }],
         }),
       })
@@ -128,7 +128,7 @@ describe("RequirementApiClient", () => {
     })
 
     await expect(client.loadTableReviews()).resolves.toMatchObject({
-      schema: "table-review-view/v1",
+      schema: "table-review-view/v2",
     })
     await client.applyTableReviewAction({
       tableId: "TBL-1",
