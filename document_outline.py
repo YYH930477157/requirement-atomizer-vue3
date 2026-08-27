@@ -143,7 +143,34 @@ def _heading_blocks(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [block for block in blocks if _is_heading(block) and _block_text(block)]
 
 
-def _swallowed_headings(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _section_block_ids(section: dict[str, Any]) -> list[str]:
+    """与审核脚本同口径：source_block_ids → block_ids → source_blocks.block_id。"""
+    for key in ("source_block_ids", "block_ids"):
+        raw = section.get(key)
+        if isinstance(raw, list) and raw:
+            return [str(item) for item in raw if str(item)]
+    source_blocks = section.get("source_blocks") or []
+    ids: list[str] = []
+    for row in source_blocks:
+        if not isinstance(row, dict):
+            continue
+        block_id = str(row.get("block_id") or "")
+        if block_id:
+            ids.append(block_id)
+    return ids
+
+
+def _section_identity(section: dict[str, Any]) -> str:
+    section_id = str(section.get("section_id") or "").strip()
+    if section_id:
+        return section_id
+    path = section.get("section_path") or []
+    if isinstance(path, list) and path:
+        return " / ".join(str(part) for part in path)
+    return str(section.get("chunk_id") or "")
+
+
+def _swallowed_headings_from_paths(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
     groups: dict[tuple[str, ...], list[dict[str, Any]]] = defaultdict(list)
     for block in blocks:
         groups[tuple(_section_path(block))].append(block)
@@ -156,11 +183,60 @@ def _swallowed_headings(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 continue
             swallowed.append({
                 "block_id": str(block.get("block_id") or ""),
+                "index": index,
                 "section_path": list(path),
                 "section": " / ".join(path),
                 "text": _block_text(block),
             })
     return swallowed
+
+
+def _swallowed_headings_from_sections(
+    blocks: list[dict[str, Any]],
+    sections: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    by_id = {str(block.get("block_id") or ""): block for block in blocks}
+    swallowed: list[dict[str, Any]] = []
+    for section in sections:
+        ids = _section_block_ids(section)
+        section_id = _section_identity(section)
+        for index, block_id in enumerate(ids):
+            block = by_id.get(block_id)
+            if block is None or not _is_heading(block) or not _block_text(block):
+                continue
+            if index == 0:
+                continue
+            swallowed.append({
+                "section_id": section_id,
+                "index": index,
+                "block_id": block_id,
+                "text": _block_text(block),
+            })
+    return swallowed
+
+
+def _resolve_swallowed(
+    blocks: list[dict[str, Any]],
+    sections: list[dict[str, Any]] | None,
+) -> tuple[list[dict[str, Any]], str]:
+    if sections is not None:
+        return _swallowed_headings_from_sections(blocks, sections), "sections"
+    return _swallowed_headings_from_paths(blocks), "block_section_path"
+
+
+def _try_load_sections(out_dir: Path) -> list[dict[str, Any]] | None:
+    """惰性装配条款；失败或没有可用 block 序列时返回 None（调用方回退）。"""
+    try:
+        from functional_extract import load_clauses
+
+        sections = load_clauses(out_dir)
+    except Exception:
+        return None
+    if not isinstance(sections, list) or not sections:
+        return None
+    if not any(_section_block_ids(section) for section in sections):
+        return None
+    return sections
 
 
 def _section_id_collisions(heading_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -183,10 +259,18 @@ def _section_id_collisions(heading_rows: list[dict[str, Any]]) -> list[dict[str,
     return collisions
 
 
-def build_outline_report(blocks: list[dict[str, Any]]) -> dict[str, Any]:
-    """对 heading 块做确定性裁决，并报告吞并 heading 与 section 撞名。"""
+def build_outline_report(
+    blocks: list[dict[str, Any]],
+    *,
+    sections: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """对 heading 块做确定性裁决，并报告吞并 heading 与 section 撞名。
+
+    ``sections`` 为 ``load_clauses`` 同形条款列表时，吞并按条款 block 序列检测；
+    缺席则回退 blocks 的 ``section_path`` 分组。
+    """
     headings = _heading_blocks(blocks)
-    swallowed = _swallowed_headings(blocks)
+    swallowed, swallow_basis = _resolve_swallowed(blocks, sections)
     swallowed_ids = {item["block_id"] for item in swallowed if item.get("block_id")}
 
     first_toc_keys: dict[str, str] = {}
@@ -266,9 +350,14 @@ def build_outline_report(blocks: list[dict[str, Any]]) -> dict[str, Any]:
                 previous_number = number
 
         if block_id in swallowed_ids:
+            detail = (
+                "heading is not first in its section block sequence"
+                if swallow_basis == "sections"
+                else "heading is not first in its section_path block sequence"
+            )
             evidence.append({
                 "kind": "swallowed_heading",
-                "detail": "heading is not first in its section_path block sequence",
+                "detail": detail,
             })
 
         heading_rows.append({
@@ -290,6 +379,7 @@ def build_outline_report(blocks: list[dict[str, Any]]) -> dict[str, Any]:
         "suspect": int(counts.get("suspect", 0)),
         "swallowed_heading_count": len(swallowed),
         "section_id_collision_count": len(collisions),
+        "swallow_detection_basis": swallow_basis,
     }
     return {
         "schema": DOCUMENT_OUTLINE_SCHEMA,
@@ -316,12 +406,20 @@ def load_blocks(out_dir: Path | str) -> list[dict[str, Any]]:
 
 
 def write_outline_report(
-    out_dir: Path | str, blocks: list[dict[str, Any]] | None = None,
+    out_dir: Path | str,
+    blocks: list[dict[str, Any]] | None = None,
+    *,
+    sections: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """写 governed ``document_outline.json``（package_v1: pipeline/；legacy: 根文件）。"""
+    """写 governed ``document_outline.json``（package_v1: pipeline/；legacy: 根文件）。
+
+    未显式传入 ``sections`` 时惰性 ``load_clauses``；装配失败或条款没有 block 序列
+    则回退 blocks-only，并在 summary 里如实标注 basis。
+    """
     resolved = Path(out_dir)
     payload_blocks = list(blocks) if blocks is not None else load_blocks(resolved)
-    report = build_outline_report(payload_blocks)
+    payload_sections = sections if sections is not None else _try_load_sections(resolved)
+    report = build_outline_report(payload_blocks, sections=payload_sections)
     store = ArtifactStore(resolved, category="pipeline")
     store.write_json(DOCUMENT_OUTLINE_FILENAME, report)
     report = dict(report)

@@ -170,6 +170,7 @@ class SwallowedAndCollisionTests(unittest.TestCase):
         self.assertIn("H-SWALLOW", ids)
         self.assertNotIn("H-OWN", ids)
         self.assertEqual(_by_id(report, "H-SWALLOW")["verdict"], "confirmed")
+        self.assertEqual(report["summary"]["swallow_detection_basis"], "block_section_path")
 
     def test_first_heading_of_section_is_not_swallowed(self) -> None:
         blocks = [
@@ -178,6 +179,7 @@ class SwallowedAndCollisionTests(unittest.TestCase):
         ]
         report = build_outline_report(blocks)
         self.assertEqual(report["swallowed_headings"], [])
+        self.assertEqual(report["summary"]["swallow_detection_basis"], "block_section_path")
 
     def test_section_id_collision_above_threshold(self) -> None:
         blocks = []
@@ -256,6 +258,87 @@ class PortfolioFixtureTests(unittest.TestCase):
         self.assertEqual(report["summary"]["confirmed"], 5)
         self.assertEqual(report["summary"]["suspect"], 1)
         self.assertEqual(report["summary"]["swallowed_heading_count"], 2)
+        self.assertEqual(report["summary"]["swallow_detection_basis"], "block_section_path")
+
+
+class SectionSwallowTests(unittest.TestCase):
+    def test_mid_section_heading_is_swallowed_with_pinned_shape(self) -> None:
+        blocks = [
+            _heading("H-OWN", "2.2 Delivery Schedule"),
+            _paragraph("P-1", "Delivery is two months.", section_path=["2.2 Delivery Schedule"]),
+            _heading(
+                "H-SWALLOW",
+                "2.3 STATEMENT OF REQUIREMENTS (TECHNICAL)",
+                section_path=["2.3 STATEMENT OF REQUIREMENTS (TECHNICAL)"],
+            ),
+        ]
+        sections = [{
+            "section_id": "2.2 Delivery Schedule",
+            "source_block_ids": ["H-OWN", "P-1", "H-SWALLOW"],
+        }]
+        report = build_outline_report(blocks, sections=sections)
+        self.assertEqual(report["summary"]["swallow_detection_basis"], "sections")
+        self.assertEqual(len(report["swallowed_headings"]), 1)
+        row = report["swallowed_headings"][0]
+        self.assertEqual(row["section_id"], "2.2 Delivery Schedule")
+        self.assertEqual(row["index"], 2)
+        self.assertEqual(row["block_id"], "H-SWALLOW")
+        self.assertEqual(row["text"], "2.3 STATEMENT OF REQUIREMENTS (TECHNICAL)")
+        self.assertTrue(
+            any(item["kind"] == "swallowed_heading" for item in _by_id(report, "H-SWALLOW")["evidence"])
+        )
+
+    def test_leading_heading_in_section_is_not_swallowed(self) -> None:
+        blocks = [
+            _heading("H-1", "1 Scope"),
+            _paragraph("P-1", "This document applies.", section_path=["1 Scope"]),
+        ]
+        sections = [{
+            "section_id": "1 Scope",
+            "source_block_ids": ["H-1", "P-1"],
+        }]
+        report = build_outline_report(blocks, sections=sections)
+        self.assertEqual(report["swallowed_headings"], [])
+        self.assertEqual(report["summary"]["swallow_detection_basis"], "sections")
+
+    def test_source_blocks_fallback_field_is_accepted(self) -> None:
+        blocks = [
+            _heading("H-1", "1 Scope"),
+            _paragraph("P-1", "Body.", section_path=["1 Scope"]),
+            _heading("H-2", "2 Next", section_path=["2 Next"]),
+        ]
+        sections = [{
+            "section_id": "1 Scope",
+            "source_blocks": [
+                {"block_id": "H-1"},
+                {"block_id": "P-1"},
+                {"block_id": "H-2"},
+            ],
+        }]
+        report = build_outline_report(blocks, sections=sections)
+        self.assertEqual(report["swallowed_headings"][0]["block_id"], "H-2")
+        self.assertEqual(report["swallowed_headings"][0]["index"], 2)
+
+    def test_blocks_only_call_labels_path_fallback(self) -> None:
+        report = build_outline_report([_heading("H-1", "1 Scope")])
+        self.assertEqual(report["summary"]["swallow_detection_basis"], "block_section_path")
+
+    def test_portfolio_chunks_as_sections_catch_swallowed_heading(self) -> None:
+        spec = json.loads((FIXTURE_DIR / "tender_pdf_pathology.json").read_text(encoding="utf-8"))
+        sections = []
+        for chunk in spec["chunks"]:
+            path = [str(part) for part in (chunk.get("section_path") or [])]
+            sections.append({
+                "section_id": " / ".join(path) or str(chunk.get("chunk_id") or ""),
+                "source_block_ids": list(chunk.get("block_ids") or []),
+            })
+        report = build_outline_report(list(spec["blocks"]), sections=sections)
+        self.assertEqual(report["summary"]["swallow_detection_basis"], "sections")
+        hits = [item for item in report["swallowed_headings"] if item["block_id"] == "BLK-SWALLOW-H"]
+        self.assertEqual(len(hits), 1)
+        self.assertEqual(hits[0]["index"], 2)
+        self.assertEqual(hits[0]["section_id"], "2.2 Delivery Schedule")
+        self.assertEqual(report["summary"]["demoted_body_sentence"], 1)
 
 
 class WriteOutlineReportTests(unittest.TestCase):
@@ -277,6 +360,10 @@ class WriteOutlineReportTests(unittest.TestCase):
             loaded = json.loads(path.read_text(encoding="utf-8"))
             self.assertEqual(loaded["version"], DOCUMENT_OUTLINE_VERSION)
             self.assertEqual(report["summary"]["heading_count"], 1)
+            self.assertIn(
+                report["summary"]["swallow_detection_basis"],
+                {"sections", "block_section_path"},
+            )
 
     def test_cli_outline_command_is_registered(self) -> None:
         from cli import parse_args
