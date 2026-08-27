@@ -103,6 +103,7 @@ py-modules = [
   "cosem_object_model",
   "doc_ir",
   "doc_ir_export",
+  "document_outline",
   "domain_pack",
   "engineering_composer",
   "export_requirements",

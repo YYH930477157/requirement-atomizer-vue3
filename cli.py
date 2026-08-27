@@ -99,6 +99,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     route_units.add_argument("--no-plan", action="store_true",
                              help="Route the existing extraction_units.jsonl only; do not replan.")
 
+    outline = subparsers.add_parser(
+        "outline",
+        help="Shadow: build a deterministic document-outline report from blocks.jsonl (no pipeline change).")
+    outline.add_argument("--out", type=Path, required=True)
+
     plan = subparsers.add_parser(
         "plan",
         help="Build (and write) a PipelinePlan for this output dir; no pipeline stages run.")
@@ -218,6 +223,8 @@ def main(argv: list[str] | None = None) -> int:
             envelope = command_compose(args, started, timing_ms)
         elif args.command == "route-units":
             envelope = command_route_units(args, started, timing_ms)
+        elif args.command == "outline":
+            envelope = command_outline(args, started, timing_ms)
         elif args.command == "plan":
             envelope = command_plan(args, started, timing_ms)
         elif args.command == "analyze":
@@ -339,6 +346,19 @@ def command_route_units(args: argparse.Namespace, started: float, timing_ms: dic
     timing_ms["total"] = timing_ms["route-units"]
     envelope = success_envelope("route-units", args.out, timing_ms=timing_ms)
     envelope["routing"] = summary
+    return envelope
+
+
+def command_outline(args: argparse.Namespace, started: float, timing_ms: dict[str, int]) -> dict[str, Any]:
+    from document_outline import write_outline_report
+
+    report = write_outline_report(args.out)
+    timing_ms["outline"] = elapsed_ms(started)
+    timing_ms["total"] = timing_ms["outline"]
+    envelope = success_envelope("outline", args.out, timing_ms=timing_ms)
+    summary = dict(report.get("summary") or {})
+    summary["version"] = report.get("version")
+    envelope["outline"] = summary
     return envelope
 
 

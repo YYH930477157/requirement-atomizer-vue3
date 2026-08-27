@@ -1018,6 +1018,7 @@ class PlatformScaffoldTests(unittest.TestCase):
         self.assertIn("jsonschema>=4.23.0", dependencies)
         self.assertIn("engineering_composer", py_modules)
         self.assertIn("desktop_backend", py_modules)
+        self.assertIn("document_outline", py_modules)
         self.assertIn("llm_client", py_modules)
         for module in ("agent_eval", "agent_policy", "decide_trace"):
             self.assertIn(module, py_modules)
