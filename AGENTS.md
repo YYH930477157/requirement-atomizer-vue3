@@ -48,6 +48,7 @@ Backend (run from repo root):
 
 ```powershell
 python -m unittest discover -s tests   # NOT pytest — pytest is not installed; module-level def test_* is silently skipped. Tests MUST be unittest.TestCase.
+python tools/run_tests_parallel.py     # 并行分片（与串行 discover 等价的合并门；串行 discover 仍是权威兜底）
 ```
 
 Frontend (run from `ui/`):
