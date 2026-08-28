@@ -1,5 +1,27 @@
 # CLAUDE.md — Requirement Atomizer 项目上下文
 
+## 更新（2026-08-28b）——并行测试运行器：全量 828s → ~194s（合并 `160b2df`）
+
+> 用户痛点=全量 14 分钟太慢；裁定不删测试（4000+ 钉子是多代理工作流的审核门），
+> 改并行。分支 `codex/parallel-test-runner`（grok-4.6 实施两轮、Claude 审核一次返工）。
+
+- **`tools/run_tests_parallel.py`**：按模块分片的多进程工作队列（默认
+ `min(cpu_count,8)` worker，测试文件按大小降序入队压长尾；每模块独立
+ `python -m unittest tests.test_xxx -v` 子进程）。标准库实现，不引 pytest，
+ 不动任何现有测试。`--serial` 全串行兜底、`--pattern` 过滤、单模块 20 分钟超时。
+- **诚实聚合**：解析 `Ran N tests` + `OK|FAILED(...)`；解析不出/超时/崩溃计模块
+ 失败并完整打印 stdout+stderr。**假绿修复（审核返工）**：汇总取**末次** `Ran`
+ 行、状态行只看其后（测试正文向 stdout 打印的伪汇总不能盖过 stderr 末尾真实
+ FAILED——test_run_smoke 一族会打印子进程 unittest 输出）；解析出 OK 但子进程
+ returncode≠0 也判失败。3 个回归钉 + 合成模块契约测试共 12 例
+ （tests/test_run_tests_parallel.py）。
+- **SERIAL_MODULES 逃生口空集**：222 模块两轮并行全绿实证无跨进程冲突（无固定
+ 端口/固定路径病灶）；将来发现冲突模块实证后加名单串行兜底，禁止改测试消除冲突。
+- **实测**：worktree 并行 206s/198s/203s 三轮全绿，聚合与串行 `discover`
+ 完全一致（4148→+3 回归钉=4151 / skipped=26）；合并后主检出并行门
+ **4151 OK / skipped=20（golden 实跑）/ 193.6s**，串行 828s → **4.3x**。
+ AGENTS.md 后端命令补并行入口；串行 discover 保留为权威兜底。
+
 ## 重大更新（2026-08-28）——队列收敛第 2 步：omission+内部核对进统一事件链 + ABNT golden 降级（合并 `9652e89`/`1ed7c5f`）
 
 > 依据 `docs/review-queue-convergence-design-2026-08-27.md` §4.3 迁移顺序第 2 步与
