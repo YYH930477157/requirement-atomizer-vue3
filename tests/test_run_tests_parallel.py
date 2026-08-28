@@ -108,6 +108,18 @@ class ParseUnittestOutputTests(unittest.TestCase):
     def test_missing_ran_line_returns_none(self) -> None:
         self.assertIsNone(rtp.parse_unittest_output("Traceback (most recent call last):\nboom\n"))
 
+    def test_parser_uses_last_ran_and_status_after_it(self) -> None:
+        text = (
+            "Ran 99 tests in 0.001s\n\nOK\n"
+            "test_fail (mod.T.test_fail) ... FAIL\n"
+            "Ran 1 test in 0.002s\n\nFAILED (failures=1)\n"
+        )
+        parsed = rtp.parse_unittest_output(text)
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed.tests, 1)
+        self.assertEqual(parsed.failures, 1)
+        self.assertFalse(parsed.ok)
+
 
 class ParallelRunnerContractTests(unittest.TestCase):
     def _run_synth(self, *, serial: bool) -> rtp.SuiteResult:
@@ -184,6 +196,65 @@ class ParallelRunnerContractTests(unittest.TestCase):
             self.assertTrue(row.failed)
             self.assertIn("no ran-line here", row.stdout)
             self.assertIn("stub stderr", row.stderr)
+            self.assertEqual(rtp.suite_exit_code(result), 1)
+
+    def test_fake_summary_on_stdout_does_not_mask_real_failure(self) -> None:
+        fake_then_fail = (
+            "import sys\n"
+            "import unittest\n"
+            "\n"
+            'print("Ran 99 tests in 0.001s")\n'
+            "print()\n"
+            'print("OK")\n'
+            "\n"
+            "class FailAfterFakeSummaryTests(unittest.TestCase):\n"
+            "    def test_fail(self) -> None:\n"
+            "        self.assertEqual(1, 2)\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tests_dir = root / "tests"
+            tests_dir.mkdir()
+            (tests_dir / "__init__.py").write_text("", encoding="utf-8")
+            (tests_dir / "test_fake_ok.py").write_text(fake_then_fail, encoding="utf-8")
+            result = rtp.run_suite(
+                rtp.discover_modules(tests_dir),
+                cwd=root,
+                python=[sys.executable],
+                workers=1,
+                timeout=60.0,
+            )
+            self.assertEqual(len(result.results), 1)
+            row = result.results[0]
+            self.assertTrue(row.failed)
+            self.assertEqual(row.tests, 1)
+            self.assertNotEqual(row.tests, 99)
+            self.assertEqual(row.failures, 1)
+            self.assertEqual(rtp.suite_exit_code(result), 1)
+
+    def test_nonzero_exit_with_ok_summary_is_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            stub = root / "stub_python.py"
+            stub.write_text(
+                "import sys\n"
+                "sys.stdout.write('Ran 1 test in 0.001s\\n\\nOK\\n')\n"
+                "sys.exit(3)\n",
+                encoding="utf-8",
+            )
+            result = rtp.run_suite(
+                ["tests.test_ok_but_exit"],
+                cwd=root,
+                python=[sys.executable, str(stub)],
+                workers=1,
+                timeout=30.0,
+            )
+            self.assertEqual(len(result.results), 1)
+            row = result.results[0]
+            self.assertTrue(row.parsed)
+            self.assertTrue(row.ok)
+            self.assertEqual(row.returncode, 3)
+            self.assertTrue(row.failed)
             self.assertEqual(rtp.suite_exit_code(result), 1)
 
     def test_serial_and_parallel_agree_on_counts(self) -> None:

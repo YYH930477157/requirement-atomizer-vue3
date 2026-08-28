@@ -58,6 +58,9 @@ class ModuleResult:
     def failed(self) -> bool:
         if self.timed_out or not self.parsed:
             return True
+        # unittest 全绿退出码恒为 0；解析出 OK 但子进程非零退出不能算过。
+        if self.returncode != 0:
+            return True
         return (not self.ok) or self.failures > 0 or self.errors > 0
 
 
@@ -107,18 +110,25 @@ def _normalize_output(text: str) -> str:
 
 
 def parse_unittest_output(text: str) -> ParsedCounts | None:
-    """解析 ``Ran N tests`` + ``OK``/``FAILED (...)`` 行。缺 Ran 行返回 None。"""
+    """解析真实模块汇总：取最后一个 ``Ran N tests``，状态行只看其后文本。
+
+    输入是 stdout+stderr 拼接，stdout 在前。测试正文可能打印伪 ``Ran``/``OK``
+    行；unittest 真实汇总永远在输出末尾。取首个匹配会把伪汇总当成模块结果。
+    """
     normalized = _normalize_output(text)
-    ran = _RAN_RE.search(normalized)
-    if ran is None:
+    ran_matches = list(_RAN_RE.finditer(normalized))
+    if not ran_matches:
         return None
+    ran = ran_matches[-1]
     tests = int(ran.group(1))
-    status = _STATUS_RE.search(normalized)
+    tail = normalized[ran.end():]
+    status_matches = list(_STATUS_RE.finditer(tail))
     failures = 0
     errors = 0
     skipped = 0
     ok = False
-    if status is not None:
+    if status_matches:
+        status = status_matches[-1]
         ok = status.group(1) == "OK"
         detail = status.group(2) or ""
         for key, value in _COUNT_RE.findall(detail):
