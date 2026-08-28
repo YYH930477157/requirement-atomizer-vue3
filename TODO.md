@@ -1,7 +1,34 @@
-# TODO — 待办与路线（2026-07-06）
+# TODO — 待办与路线（2026-08-28 更新）
 
-> 来源：架构评审（2026-07-06）+ 组件增强评审 + 项目战略评审。完成一项划一项；
+> 来源：架构评审（2026-07-06）+ 组件增强评审 + 项目战略评审 + 架构收敛计划
+> （`docs/architecture-convergence-plan-2026-08-27.md`）。完成一项划一项；
 > 重启任何「有据缓建」项前先重跑探针。日常状态速查：输出目录 `run_manifest.json`。
+
+## 当前待办（2026-08-28，按优先级）
+
+- [ ] **队列收敛第 3 步：A/B 专家裁决双写切换**（设计
+  `docs/review-queue-convergence-design-2026-08-27.md` §4.3 最后一步）：
+  `review_states.jsonl` / `ai_review_states.jsonl` 切到统一事件链
+  `review_queue_events.jsonl`（第 2 步机械已就位，`9652e89`）。两者钩着
+  effective fold 与 CAS 指纹六套口径，风险最高所以放最后收；旧文件保持
+  逐字节投影 ≥ 两个桌面发布周期。
+- [ ] **大纲接线 Phase 2b：重切条款边界**（单独立项）：用 `document_outline.py`
+  shadow 报告（result3 实测 155/207 条款边界被吞并 heading 污染）重切
+  parse 层条款边界。爆炸半径 = 重解析 + atomize 指纹连锁 + golden 重生成，
+  须独立分支 + 全量回归组合护航。
+- [ ] **WS0 真值门禁重跑（付费）**：`RATOMIZER_CONTEXT_PACK_STRATEGY=clause_family`
+  + `--warm-a-cache` 复用已付 A 轨缓存；上次 FAIL 根因（XLSX 读取器、表格混入
+  B 轨、guards 表格 marker）均已修。通过后才可议
+  `RATOMIZER_EXECUTION_POLICY` 默认翻转（计划 §31）。
+- [ ] **技术表格保留率课题（中期）**：SBD section 6 参数表数字的 preservation
+  blocking（~50）是既有质量课题（2026-08-26/27 两轮路由收敛后如实转移归因至
+  该表）——方向：表格单元级守恒委托已铺路（WS-A），剩余在真实 b_track 义务表
+  上，需按行/格粒度抽取或专家定点闭环。
+- [ ] **测试套件有据瘦身（可选，低优先）**：全量已并行化至 ~3.3 分钟
+  （`160b2df`），跑速痛点已解。如仍要瘦身：逐文件审计「可删/该留/可合并」
+  清单（目标有据收敛至 3000-3500，禁止按数量指标批量删钉子）。
+- [ ] **架构收敛 Phase 3**：SQLite 状态存储 + 内容寻址 DAG 指纹（计划文档
+  §Phase 3；在队列收敛与大纲接线完成后启动）。
 
 ## 架构债（评审编号 F1-F8；F1+F7 已完成 2026-07-06）
 
