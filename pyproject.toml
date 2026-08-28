@@ -133,6 +133,7 @@ py-modules = [
   "requirement_schema",
   "resources",
   "review_actions",
+  "review_queue",
   "review_state",
   "review_tools",
   "result_package",

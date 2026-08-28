@@ -190,6 +190,13 @@ _ARTIFACTS = {
         _artifact("review_states", "state/review_states.jsonl", legacy_path="review_states.jsonl"),
         _artifact("review_state_events", "state/review_state_events.jsonl", legacy_path="review_state_events.jsonl"),
         _artifact("ai_review_states", "state/ai_review_states.jsonl", legacy_path="ai_review_states.jsonl"),
+        # 队列收敛第 2 步：统一评审事件链（omission + 澄清内部核对先入链）。
+        # 不是评审权威终态的替代——旧 JSONL 投影保留（设计 §4.3，review_queue.py）。
+        _artifact(
+            "review_queue_events",
+            "state/review_queue_events.jsonl",
+            legacy_path="review_queue_events.jsonl",
+        ),
         # Table B-track recompute work orders (not review authority).
         _artifact(
             "table_recompute_pending",
@@ -291,6 +298,7 @@ _STATE_FILENAMES = {
     "clarification_answers.jsonl", "clarification_answers.lock",
     "clarification_check_states.jsonl", "clarification_check_states.lock",
     "omission_states.jsonl", "omission_actions.lock",
+    "review_queue_events.jsonl", "review_queue.lock",
     "claim_catalog.jsonl", "claim_catalog.meta.json", "claim_coverage_groups.jsonl",
     "claim_ledger.jsonl", "claim_effective_ledger.jsonl", "claim_shadow_metrics.json",
     "claim_generation.meta.json", "claim_effective.meta.json",

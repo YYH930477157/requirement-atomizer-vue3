@@ -3,6 +3,14 @@
 The state file is shared by the desktop process, API server, and report
 generator.  Writes therefore use a cross-process lock and atomic replacement;
 the latest event for each clarification id is the effective state.
+
+队列收敛第 2 步（设计 §4.3）：写路径改为队列先落——单一 ``review_queue``
+跨进程锁内先 append 统一评审事件链 ``review_queue_events.jsonl``
+（subject_kind=clarification_internal），再按与旧 writer 逐字节相同的行形状
+投影回本文件；旧 ``clarification_check_states.lock`` O_EXCL 协议退役为新写
+路径不再使用（读者仍持它，旧包遗留 sidecar 不删）。读侧 ``evidence_fingerprint``
+失效逻辑一字不动；按设计 §4.2 补 ``expected_evidence_fingerprint`` 写时 CAS
+（未传该指纹的调用路径——xlsx 导入等——保持旧行为不拦）。
 """
 from __future__ import annotations
 
@@ -10,12 +18,14 @@ import json
 import logging
 import os
 import time
+import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import RLock
 from typing import Any, Iterator
 
+import review_queue
 from result_package import governed_artifact_path
 
 
@@ -27,11 +37,18 @@ DEFAULT_MODULE = "未归属"
 
 _LOCK_TIMEOUT_S = 10.0
 _LOCK_STALE_AFTER_S = 300.0
-_REPLACE_ATTEMPTS = 20
-_REPLACE_RETRY_DELAY_S = 0.05
 _PROCESS_LOCKS: dict[Path, RLock] = {}
 _PROCESS_LOCKS_GUARD = RLock()
 LOGGER = logging.getLogger("requirement_atomizer")
+
+
+class ClarificationCheckConflictError(ValueError):
+    """``expected_evidence_fingerprint`` 写时 CAS 失配（设计 §4.2）。
+
+    调用方声明了它的裁决所依据的证据指纹，而当前报告代里该澄清问题的
+    ``evidence_fingerprint`` 已不同（或该问题已不在当前报告）——裁决基于过期
+    证据，拒绝落账。API 侧映射结构化 409（needs_reconfirmation）。
+    """
 
 
 def read_clarification_check_history(out_dir: Path) -> list[dict[str, Any]]:
@@ -65,6 +82,8 @@ def apply_clarification_check_action(
     source_id: str = "",
     actor: str | None = None,
     note: str = "",
+    expected_evidence_fingerprint: str = "",
+    idempotency_key: str = "",
 ) -> dict[str, Any]:
     """Append one audited internal-check action and return the stored event."""
     event = _build_check_event(
@@ -78,13 +97,12 @@ def apply_clarification_check_action(
         actor=actor,
         note=note,
     )
-    root = Path(out_dir).expanduser().resolve()
-    path = governed_artifact_path(root, CHECK_STATES_FILE, category="state")
-    with clarification_check_state_lock(root):
-        history = _read_history_unlocked(path)
-        history.append(event)
-        _atomic_write_history(path, history)
-    return event
+    stored = _append_check_events(out_dir, [event], {
+        str(event["clarification_id"]): str(expected_evidence_fingerprint or "").strip(),
+    }, {
+        str(event["clarification_id"]): str(idempotency_key or "").strip(),
+    })
+    return stored[0]
 
 
 def apply_clarification_check_actions_batch(
@@ -108,13 +126,118 @@ def apply_clarification_check_actions_batch(
     ]
     if not events:
         return []
+    expected_by_id = {
+        str(event["clarification_id"]): str(row.get("expected_evidence_fingerprint") or "").strip()
+        for event, row in zip(events, actions)
+    }
+    idempotency_by_id = {
+        str(event["clarification_id"]): str(row.get("idempotency_key") or "").strip()
+        for event, row in zip(events, actions)
+    }
+    return _append_check_events(out_dir, events, expected_by_id, idempotency_by_id)
+
+
+def _append_check_events(
+    out_dir: Path,
+    events: list[dict[str, Any]],
+    expected_by_id: dict[str, str],
+    idempotency_by_id: dict[str, str],
+) -> list[dict[str, Any]]:
+    """Queue-first dual write: 队列事件先落，旧文件投影后落，单一队列锁内。
+
+    - 先补齐历史事件的投影（崩溃窗口闭合）；
+    - ``expected_evidence_fingerprint`` 写时 CAS 全部通过才动账（整批原子，
+      与旧行为"一锁一次替换"一致）；未声明的调用路径不拦；
+    - 幂等键命中返回既有事件并不再投影（重放不重复记账）。
+    """
     root = Path(out_dir).expanduser().resolve()
     path = governed_artifact_path(root, CHECK_STATES_FILE, category="state")
-    with clarification_check_state_lock(root):
-        history = _read_history_unlocked(path)
-        history.extend(events)
+    with review_queue.review_queue_lock(root):
+        snapshot = review_queue.scan_review_queue_unlocked(root)
+        history = _project_missing_check_rows(path, snapshot)
+        _enforce_expected_evidence_fingerprints(root, expected_by_id)
+        drafts = []
+        for event in events:
+            cid = str(event["clarification_id"])
+            key = idempotency_by_id.get(cid) or (
+                f"clarification_internal:{cid}:{uuid.uuid4().hex}"
+            )
+            drafts.append({
+                "subject_kind": review_queue.SUBJECT_KIND_CLARIFICATION_INTERNAL,
+                "subject_id": cid,
+                "subject_fingerprint": str(event["evidence_fingerprint"]),
+                "idempotency_key": key,
+                "event_kind": "deferred" if event["action"] == "deferred" else "decided",
+                "actor": str(event.get("actor") or ""),
+                "recorded_at": str(event["timestamp"]),
+                "reason": str(event.get("note") or ""),
+                "payload": event,
+            })
+        results = review_queue.append_review_queue_events_unlocked(root, snapshot, drafts)
+        stored: list[dict[str, Any]] = []
+        for event, (queued, replayed) in zip(events, results):
+            if replayed:
+                stored.append(dict(queued["payload"]))
+                continue
+            history.append(event)
+            stored.append(event)
         _atomic_write_history(path, history)
-    return events
+    return stored
+
+
+def _project_missing_check_rows(
+    path: Path,
+    snapshot: review_queue.ReviewQueueSnapshot,
+) -> list[dict[str, Any]]:
+    """崩溃窗口补投影：返回补齐后的完整历史（含既有行 + 补写行）。"""
+    store_events = [
+        row for row in snapshot.rows
+        if row.get("legacy_source_store") == CHECK_STATES_FILE
+    ]
+    history = _read_history_unlocked(path)
+    if not store_events:
+        return history
+    missing = review_queue.missing_projection_payloads(store_events, history)
+    for row in missing:
+        history.append(row)
+    if missing:
+        _atomic_write_history(path, history)
+    return history
+
+
+def _enforce_expected_evidence_fingerprints(
+    root: Path,
+    expected_by_id: dict[str, str],
+) -> None:
+    """Write-time CAS（设计 §4.2）：调用方声明的期望指纹 ≠ 当前报告代即拒绝。
+
+    权威 = 当前报告生成器（``clarification_report.collect_questions``）——与
+    omission 写时 CAS 用 blocks.jsonl 重算源指纹同构。惰性 import 避免
+    clarification_report ↔ clarification_check_states 的模块加载环。未声明
+    （空串）的调用路径保持旧行为不拦；读侧 ``evidence_fingerprint`` 失效逻辑
+    一字不动。整批在任何写入之前校验（all-or-nothing）。
+    """
+    pending = {
+        cid: expected for cid, expected in expected_by_id.items() if expected
+    }
+    if not pending:
+        return
+    from clarification_report import collect_questions
+
+    current: dict[str, str] = {}
+    for entry in collect_questions(root):
+        cid = str(entry.get("clarification_id") or "")
+        if cid:
+            current[cid] = str(entry.get("evidence_fingerprint") or "")
+    for cid, expected in pending.items():
+        if cid not in current:
+            raise ClarificationCheckConflictError(
+                "clarification no longer exists in the current report; refresh before confirming"
+            )
+        if current[cid] != expected:
+            raise ClarificationCheckConflictError(
+                "clarification evidence changed; refresh before confirming"
+            )
 
 
 def _build_check_event(
@@ -167,7 +290,11 @@ def clarification_check_state_lock(
     timeout_s: float = _LOCK_TIMEOUT_S,
     stale_after_s: float = _LOCK_STALE_AFTER_S,
 ) -> Iterator[None]:
-    """Serialize readers and writers across threads and processes."""
+    """Serialize readers across threads and processes.
+
+    队列收敛第 2 步：新写路径已迁至 ``review_queue.review_queue_lock``（本锁退役
+    为写路径不再使用）；读侧仍持本锁与旧包遗留 sidecar 兼容。
+    """
     root = Path(out_dir).expanduser().resolve()
     lock_path = governed_artifact_path(root, CHECK_STATES_LOCK, category="state")
     with _process_lock_for(lock_path.parent):
@@ -248,20 +375,10 @@ def _atomic_write_history(path: Path, rows: list[dict[str, Any]]) -> None:
                 handle.write(json.dumps(row, ensure_ascii=False) + "\n")
             handle.flush()
             os.fsync(handle.fileno())
-        _replace_with_retry(tmp_path, path)
+        # 单源退避（设计 §5.2）：投影替换与队列文件共用 review_queue 的 8 次线性重试。
+        review_queue.replace_with_retry(tmp_path, path)
     finally:
         try:
             tmp_path.unlink()
         except FileNotFoundError:
             pass
-
-
-def _replace_with_retry(source: Path, target: Path) -> None:
-    for attempt in range(_REPLACE_ATTEMPTS):
-        try:
-            os.replace(source, target)
-            return
-        except PermissionError:
-            if attempt + 1 >= _REPLACE_ATTEMPTS:
-                raise
-            time.sleep(_REPLACE_RETRY_DELAY_S)

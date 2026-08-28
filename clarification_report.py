@@ -1413,7 +1413,10 @@ def import_internal_checks(
         "ineligible": ineligible,
         "duplicates": duplicate,
         "total_states": len(read_clarification_check_states(out_dir)),
-        "written": ["clarification_check_states.jsonl"] if events else [],
+        "written": (
+            ["clarification_check_states.jsonl", "review_queue_events.jsonl"]
+            if events else []
+        ),
     }
 
 
@@ -1446,6 +1449,11 @@ def batch_apply_internal_checks(
             actor=actor,
             note=note,
         )
+        # API/批量路径声明写时 CAS 期望（设计 §4.2）：accepted 行的指纹已在
+        # _prepare 里对当前报告验证过，writer 侧再按 expected_evidence_fingerprint
+        # 复核一次；xlsx 导入路径不传，保持旧行为不拦。
+        for row in accepted:
+            row["expected_evidence_fingerprint"] = str(row.get("evidence_fingerprint") or "")
         events = apply_clarification_check_actions_batch(root, accepted)
 
     def grouped(field: str) -> dict[str, int]:
@@ -1466,7 +1474,10 @@ def batch_apply_internal_checks(
         "by_signal": grouped("signal"),
         "by_module": grouped("module"),
         "readiness": (report or {}).get("readiness"),
-        "written": ["clarification_check_states.jsonl"] if events else [],
+        "written": (
+            ["clarification_check_states.jsonl", "review_queue_events.jsonl"]
+            if events else []
+        ),
     }
 
 

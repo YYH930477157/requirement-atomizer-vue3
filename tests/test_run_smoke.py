@@ -11,9 +11,9 @@ class RunSmokeTests(unittest.TestCase):
     def test_repository_manifest_has_expected_baseline_shape(self) -> None:
         modules = run_smoke.load_modules(run_smoke.DEFAULT_MANIFEST)
         suite = run_smoke.build_suite(modules)
-        self.assertEqual(len(modules), 90)
-        # 1792 = 1790 + 2（atoms 退出交付物：build_output_summary 产品主指标）
-        self.assertEqual(suite.countTestCases(), 1792)
+        self.assertEqual(len(modules), 91)
+        # 1815 = 1792 + 23（队列收敛第 2 步：tests.test_review_queue 23 例）
+        self.assertEqual(suite.countTestCases(), 1815)
 
     def test_manifest_rejects_duplicates_and_non_test_modules(self) -> None:
         for content in ("tests.test_atomize\ntests.test_atomize\n", "atomize\n"):
