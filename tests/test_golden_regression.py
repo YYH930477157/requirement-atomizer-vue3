@@ -1,3 +1,13 @@
+"""ABNT golden 回归：多文档回归组合中 ABNT 成员的深度字节级钉。
+
+本套件比对冻结基线 out/abnt_nbr_16968_atomizer_v5/（只在存在该目录的
+检出执行，worktree 里环境性 skip），是多文档回归组合里 ABNT 一员的
+深度钉；组合主体（四类文档病理 fixture、12 钉）见
+tests/test_regression_portfolio.py。2026-08-28 起 golden 不再是单独
+合并门，漂移按组合成员对待：零漂移或逐项归因（真回归 vs 基线过期）。
+本模块另含一条不依赖 out/ 基线的最小 docx 全新管线钉
+（FreshPipelineRegressionTests）。
+"""
 from __future__ import annotations
 
 import json

@@ -1190,6 +1190,7 @@ CLI 契约见 `docs/cli-contract.md`（对接公司任务管理系统的接口�
 ## 回归纪律
 
 - `golden_sets/abnt_nbr_16968_v5/golden_summary.json` 是冻结基线；动它必须逐项写明原因
+- **golden 门地位（2026-08-28 起，降级）**：ABNT golden 六项是多文档回归组合（`tests/test_regression_portfolio.py`，12 钉，回归主体）中 ABNT 一员的深度字节级钉，不再是单独合并门。合并门 = 全量测试绿；golden 漂移按组合成员对待——零漂移或逐项归因说明（真回归 vs 基线过期），与组合其他成员同权重，不再单独阻塞合并结论，但必须归因。golden 重生成机制不变：行为版本 bump 后仍需按三 seed KB + domain-pack 重生成 `out/` 基线，否则 golden 假漂移。
 - 真实测试文档：`C:\Users\YYHwudi\Desktop\Canna-29\Appendix 9-ABNT NBR 16968-2022 EN.docx`（机器相关路径，换机器需调整）
 - 真实测试 PDF：`C:\Users\YYHwudi\Desktop\Canna-29\Appendix 9-ABNT NBR 16968-2022 EN.pdf`（同目录文字层 PDF；旧 `D:\Codex\abnt_converted.pdf` 已失效）
 - **Blue Book Ed.16 两 PDF**（P2 行为 RAG 语料，版权文件不进仓）：同目录 `Blue-Book-Ed-16-part-{1,2}-V1.0.pdf`；索引编译 `python -m blue_book_ingest --pdf <p1> --pdf <p2> --out out/bluebook`（约 2 分钟，产物 gitignored）

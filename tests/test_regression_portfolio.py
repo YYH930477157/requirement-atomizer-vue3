@@ -6,6 +6,10 @@ functional_extract.apply_unit_routing、conservation_report），零 LLM。
 
 钉子记录的是**当前行为**（含已知缺陷）。Phase 1 的 WS-A/B 改动应使带
 「已知缺陷」注释的断言显式变化；无该注释的值是应保持的结构/审计面。
+
+本组合是合并门的多文档回归主体；ABNT golden（tests/test_golden_regression.py）
+是组合中 ABNT 一员的深度字节级钉（2026-08-28 起不再占单独合并门，
+漂移按组合成员对待）。
 """
 from __future__ import annotations
 
