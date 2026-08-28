@@ -1,6 +1,47 @@
 # CLAUDE.md — Requirement Atomizer 项目上下文
 
-## 重大更新（2026-08-27e）——代码审查修复五项：守恒委托 replace-all + tender 死锚点/剥号顺序 + recompute 恢复收敛（分支 `codex/review-fixes-20260827`，未合并）
+## 重大更新（2026-08-28）——队列收敛第 2 步：omission+内部核对进统一事件链 + ABNT golden 降级（合并 `9652e89`/`1ed7c5f`）
+
+> 依据 `docs/review-queue-convergence-design-2026-08-27.md` §4.3 迁移顺序第 2 步与
+> 架构收敛计划 §五。两工作流并行（Claude Code/GLM 实施、Claude 审核）：
+> `codex/review-queue-step2`（`d399730`）与 `codex/golden-demote`（`8751a26`，纯文档）。
+
+- **统一评审事件链 `review_queue.py`**：`review_queue_events.jsonl`（governed state
+ 路径，result_package 登记）append-only + 文件级哈希链（event_seq/event_id/
+ prev_event_hash/event_hash，协议形状参照 claim_review_events，**不接进 claim
+ generation/fold**）。行契约 `review-queue-event/v1`；本步 `subject_kind ∈
+ {omission, clarification_internal}`——统一机械不统一枚举，各主体 CAS 仍在各自
+ writer 分派。幂等键重放返回既有事件不追加；撕裂尾读时截断恢复，中部损坏/链断裂/
+ 哈希失配 `ReviewQueueError` fail-closed。锁照抄 review_state 同族
+ （process_file_lock + tmp+fsync+os.replace + 8 次退避，`replace_with_retry` 单源，
+ 收编 clarification 原 20 次私有退避）。已知取舍：队列文件每 append 整文件重写，
+ 在 omission/内部核对量级（每文档百行内）可接受。
+- **写路径切换（队列为记录源，旧文件为投影）**：`apply_omission_action` 与
+ `apply_clarification_check_action/_batch` 在单一队列锁内 → 先补齐历史事件投影
+ （崩溃窗口对账 `missing_projection_payloads`：队列有事件而旧文件缺行时按事件序
+ 补写）→ 各自 CAS → append 队列事件 → 按与旧 writer **逐字节相同**行形状写旧
+ JSONL（键序/ensure_ascii=False 不变，读者零改动；测试钉住字节形状）。两套 O_EXCL
+ 自制锁退役为新写路径不再使用（读侧与旧包 sidecar 不动）。写路径无旁路：
+ agent_tools/xlsx 导入都经 apply 函数入队列。
+- **内部核对写时 CAS**（设计 §4.2 缺口闭合）：`expected_evidence_fingerprint` 对
+ 当前报告代（`collect_questions` 惰性引用）比对，失配抛
+ `ClarificationCheckConflictError` → API 结构化 409（needs_reconfirmation，与
+ omission 冲突同形）；批量路径声明期望指纹，xlsx 导入等未声明路径不拦；读侧
+ evidence_fingerprint 失效逻辑一字不动。比对权威刻意选当前报告代而非已存状态行
+ ——同一 clarification_id 换证再确认是合法流程，比照存量会死锁。
+- **ABNT golden 降级落文档**（`8751a26`，+19/−1 零行为）：AGENTS.md 合并门改写
+ ——全量绿为门，`test_regression_portfolio`（12 钉）是多文档回归主体，golden 六项
+ 是组合中 ABNT 一员的深度字节级钉；漂移须逐项归因（真回归 vs 基线过期）但不再
+ 单独阻塞合并结论。golden 重生成流程（三 seed KB + domain-pack）与冻结基线纪律
+ 原样保留；两个测试模块 docstring 补组合成员关系说明。
+- **验证**：线程①worktree 全量 4139 OK（skipped=26 环境性，= 基线 4116 + 新增 23）
+ + 审核方独立复跑聚焦 225 例；线程② 4116 OK。合并后主检出全量见本条目合并提交
+ （golden 按新纪律作为组合成员核验）。唯一 HTTP 契约变化 = 内部核对 CAS 失配的
+ 新增 409；无缓存指纹/行为版本影响。
+- **队列收敛剩余待办**：第 3 步 A/B 专家裁决双写切换（review_states /
+ ai_review_states，已钩 effective fold，风险最高最后收）；大纲接线 Phase 2b。
+
+## 重大更新（2026-08-27e）——代码审查修复五项：守恒委托 replace-all + tender 死锚点/剥号顺序 + recompute 恢复收敛（已合并 `ba93169`）
 
 > 对 28 提交大盘（`a0d17c2..0a31721`，2026-08-27d）审查发现的问题修复；
 > 方向判定：架构收敛 Phase 1/2 质量整体合格，以下为局部缺陷。
