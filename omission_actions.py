@@ -2,6 +2,13 @@
 
 The extraction cache is deliberately not a read API. Completed targeted fixes live in a
 separate append-only patch log and are replayed only while both source and strategy match.
+
+队列收敛第 2 步（设计 §4.3）：``apply_omission_action`` 的写路径改为队列先落——
+统一评审事件链 ``review_queue_events.jsonl``（subject_kind=omission）append 后，
+再按与旧 writer 逐字节相同的行形状投影回 ``omission_states.jsonl``；旧
+``omission_states.lock`` O_EXCL 协议退役为新写路径不再使用（读者与遗留
+sidecar 不动）。``omission_source_fingerprint`` CAS 与 ``OmissionConflictError``
+语义原样保留。
 """
 from __future__ import annotations
 
@@ -11,12 +18,14 @@ import json
 import logging
 import os
 import time
+import uuid
 from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import RLock
 from typing import Any, Iterator
 
+import review_queue
 from io_utils import read_jsonl, read_jsonl_recover_torn_tail
 from result_package import governed_artifact_path
 from table_structure import is_positive_marker
@@ -463,6 +472,29 @@ def current_omission_candidate_ids(out_dir: Path) -> set[str]:
     return candidates
 
 
+def _project_missing_omission_rows(
+    states_path: Path,
+    snapshot: review_queue.ReviewQueueSnapshot,
+) -> None:
+    """崩溃窗口补投影：队列有 omission 事件而旧文件缺行时按事件序补写。
+
+    队列事件先落、投影后落的窗口崩掉后，下一次同 root 的 apply 在锁内先对账
+    （详见 review_queue.missing_projection_payloads），绝不出现队列有事件而
+    ``omission_states.jsonl`` 永久缺行。
+    """
+    store_events = [
+        row for row in snapshot.rows
+        if row.get("legacy_source_store") == OMISSION_STATES
+    ]
+    if not store_events:
+        return
+    missing = review_queue.missing_projection_payloads(
+        store_events, _read_append_log(states_path)
+    )
+    for row in missing:
+        _append_fsynced(states_path, row)
+
+
 def apply_omission_action(
     out_dir: Path,
     *,
@@ -472,7 +504,15 @@ def apply_omission_action(
     reason: str = "",
     actor: str | None = None,
     expected_source_fingerprint: str = "",
+    idempotency_key: str = "",
 ) -> dict[str, Any]:
+    """Record one omission adjudication（队列收敛第 2 步：队列先落、旧文件投影）。
+
+    单一 ``review_queue`` 跨进程锁内：先补齐历史事件的投影 → ``omission_source_
+    fingerprint`` CAS（原样保留）→ append 统一评审队列事件（subject_kind=
+    omission）→ 按与旧 writer 逐字节相同的行形状追加 ``omission_states.jsonl``。
+    旧 ``omission_states.lock`` O_EXCL 协议退役为新写路径不再使用（读者不动）。
+    """
     root = Path(out_dir).expanduser().resolve()
     block_id = str(block_id or "").strip()
     if not block_id:
@@ -480,7 +520,10 @@ def apply_omission_action(
     status = str(status or "").strip()
     if status not in VALID_OMISSION_STATUS:
         raise ValueError(f"invalid omission status: {status}")
-    with _file_lock(root, "omission_states.lock"):
+    with review_queue.review_queue_lock(root):
+        states_path = governed_artifact_path(root, OMISSION_STATES, category="state")
+        snapshot = review_queue.scan_review_queue_unlocked(root)
+        _project_missing_omission_rows(states_path, snapshot)
         block = _block_by_id(root, block_id)
         text = str(block.get("text") or "")
         source_fp = omission_source_fingerprint(block_id, text)
@@ -499,9 +542,25 @@ def apply_omission_action(
             "actor": actor,
             "recorded_at": _utc_now(),
         }
-        _append_fsynced(governed_artifact_path(
-            root, OMISSION_STATES, category="state"
-        ), state)
+        key = str(idempotency_key or "").strip() or f"omission:{resolved_id}:{uuid.uuid4().hex}"
+        event, replayed = review_queue.append_review_queue_events_unlocked(
+            root,
+            snapshot,
+            [{
+                "subject_kind": review_queue.SUBJECT_KIND_OMISSION,
+                "subject_id": resolved_id,
+                "subject_fingerprint": source_fp,
+                "idempotency_key": key,
+                "event_kind": "queued" if status == "needs_extraction" else "decided",
+                "actor": str(actor).strip() if actor else "",
+                "recorded_at": state["recorded_at"],
+                "reason": str(reason or ""),
+                "payload": state,
+            }],
+        )[0]
+        if replayed:
+            return dict(event["payload"])
+        _append_fsynced(states_path, state)
     return state
 
 

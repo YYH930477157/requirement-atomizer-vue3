@@ -1579,6 +1579,7 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
             self.send_json({"error": "checks must be an array"}, status=400)
             return
         from clarification_report import batch_apply_internal_checks
+        from clarification_check_states import ClarificationCheckConflictError
         from omission_actions import OmissionConflictError
         try:
             result = batch_apply_internal_checks(
@@ -1588,7 +1589,9 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
                 actor=str(payload.get("actor") or "").strip() or None,
                 note=str(payload.get("note") or ""),
             )
-        except OmissionConflictError as exc:
+        except (OmissionConflictError, ClarificationCheckConflictError) as exc:
+            # 队列收敛第 2 步：内部核对 expected_evidence_fingerprint 写时 CAS 失配
+            # 与 omission 冲突同形（409 + needs_reconfirmation，别名旧码语义）。
             self.send_json({
                 "error": str(exc),
                 "retryable": True,

@@ -1,6 +1,6 @@
 # Fast deterministic smoke layer. Keep real LLM, golden assets, GUI/PySide6,
 # packaging, and machine-local end-to-end fixtures in their dedicated suites.
-# Baseline at 2026-08-11: 90 modules / 1649 unittest cases.
+# Baseline at 2026-08-28: 91 modules / 1815 unittest cases.
 tests.test_adjudication_bank
 tests.test_agent_compare
 tests.test_agent_decider
@@ -89,5 +89,6 @@ tests.test_quote_match_and_zones
 tests.test_reconcile
 tests.test_requirements_analysis_pipeline
 tests.test_result_package
+tests.test_review_queue
 tests.test_table_structure_cells
 tests.test_translation_guards

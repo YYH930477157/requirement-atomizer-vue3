@@ -52,15 +52,25 @@ _FILE_DESTINATIONS = (
     {
         "filename": "omission_states.jsonl",
         "writer_module": "omission_actions.py",
-        "writer_symbols": ("def apply_omission_action", "OMISSION_STATES"),
+        # 队列收敛第 2 步起：apply_omission_action 先 append 统一评审队列事件
+        # （subject_kind=omission），再按旧 writer 逐字节相同的行形状投影回本文件。
+        "writer_symbols": (
+            "def apply_omission_action",
+            "OMISSION_STATES",
+            "review_queue.append_review_queue_events_unlocked",
+        ),
         "destination_markers": ("subject_kind=omission",),
     },
     {
         "filename": "clarification_check_states.jsonl",
         "writer_module": "clarification_check_states.py",
+        # 队列收敛第 2 步起：apply_clarification_check_action/_batch 先 append
+        # 统一评审队列事件（subject_kind=clarification_internal），再投影回本文件；
+        # 补 expected_evidence_fingerprint 写时 CAS。
         "writer_symbols": (
             "def apply_clarification_check_action",
             "CHECK_STATES_FILE",
+            "review_queue.append_review_queue_events_unlocked",
         ),
         "destination_markers": ("subject_kind=clarification_internal",),
     },
@@ -69,6 +79,16 @@ _FILE_DESTINATIONS = (
         "writer_module": "claim_review_actions.py",
         "writer_symbols": ("def append_claim_review_events", "CLAIM_REVIEW_EVENTS"),
         "destination_markers": ("内核留下",),
+    },
+    {
+        # 队列收敛第 2 步：统一事件链账本（omission + 澄清内部核对第一对入链）。
+        "filename": "review_queue_events.jsonl",
+        "writer_module": "review_queue.py",
+        "writer_symbols": (
+            "def append_review_queue_events_unlocked",
+            "REVIEW_QUEUE_EVENT_SCHEMA",
+        ),
+        "destination_markers": ("append-only，hash chain，幂等键",),
     },
 )
 
@@ -125,6 +145,8 @@ class ReviewQueueFileDestinationContractTests(unittest.TestCase):
                     )
 
     def test_contract_covers_the_eight_named_authorities(self) -> None:
+        # 第 2 步起新增统一事件链账本本身（review_queue_events.jsonl）——八套旧
+        # 权威归宿钉不变，第九项钉新链的 writer 与设计 §4.1 形状。
         expected = {
             "review_states.jsonl",
             "ai_review_states.jsonl",
@@ -134,6 +156,7 @@ class ReviewQueueFileDestinationContractTests(unittest.TestCase):
             "omission_states.jsonl",
             "clarification_check_states.jsonl",
             "claim_review_events.jsonl",
+            "review_queue_events.jsonl",
         }
         self.assertEqual({row["filename"] for row in _FILE_DESTINATIONS}, expected)
 
