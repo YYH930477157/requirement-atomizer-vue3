@@ -14,14 +14,22 @@ functional_extract.apply_unit_routing、conservation_report），零 LLM。
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from collections import Counter
 from pathlib import Path
+from unittest import mock
 
 from atomize import build_table_artifacts
 from extraction_units import plan_extraction_units
-from functional_extract import apply_unit_routing, conservation_report, load_clauses
+from extract_units import assemble_sections_detailed
+from functional_extract import (
+    apply_unit_routing,
+    conservation_report,
+    load_clauses,
+    load_clauses_detailed,
+)
 from io_utils import read_jsonl
 from requirement_kb import KnowledgeRepository
 from table_dispositions import build_table_cell_dispositions
@@ -359,6 +367,92 @@ class ProceduralTechnicalMixedTests(unittest.TestCase):
         # obligation_units_kept_baseline 1→3；9 Retention period 的 90
         # 恢复为 number blocking。出处：CLAUDE.md 2026-08-27 诊断 2。
         self.assertEqual(self.obs["conservation"], self.exp["conservation"])
+
+
+class TenderPdfPathologyOutlineAuthorityTests(unittest.TestCase):
+    """flag-on 钉：大纲权威重切招标 PDF 病理边界（Phase 2b 第一片）。
+
+    上方 12 钉全部在 flag 关（默认）下断言现状零漂移；本类只在
+    ``RATOMIZER_OUTLINE_AUTHORITY=1`` 下钉**重切后**的确定性边界——
+    吞并 heading 场景（BLK-SWALLOW-H "2.3 STATEMENT OF REQUIREMENTS
+    (TECHNICAL)" 被吞进 2.2 Delivery Schedule）切开成独立条款。
+    出处：CLAUDE.md 2026-08-27c result3（155/207 条款边界被吞并 heading 污染）。
+    """
+
+    FLAG_ENV = "RATOMIZER_OUTLINE_AUTHORITY"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls._tmp = tempfile.TemporaryDirectory()
+        cls.out = Path(cls._tmp.name)
+        spec = _load_spec("tender_pdf_pathology.json")
+        cls.blocks = _seed_blocks_chunks(cls.out, spec)
+        base = {k: v for k, v in os.environ.items() if k != cls.FLAG_ENV}
+        with mock.patch.dict(os.environ, {**base, cls.FLAG_ENV: "1"}, clear=True):
+            cls.clauses, cls.clauses_audit = load_clauses_detailed(cls.out)
+            cls.assembled, cls.assembled_audit = assemble_sections_detailed(
+                list(spec["blocks"]))
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls._tmp.cleanup()
+
+    @staticmethod
+    def _boundaries(sections: list[dict]) -> list[tuple[str, list[str]]]:
+        return [
+            (str(section.get("section_id") or ""), list(section.get("block_ids") or []))
+            for section in sections
+        ]
+
+    def test_chunks_path_recuts_swallowed_heading_into_own_clause(self) -> None:
+        # 现状（flag 关）6 条款：CH-DEL 尾部吞着 BLK-SWALLOW-H。
+        # 重切后 7 条款：2.2 Delivery Schedule 停在自身块，2.3 从吞并 heading 切开。
+        self.assertEqual(self.clauses_audit["status"], "applied")
+        self.assertEqual(self.clauses_audit["input_clause_count"], 6)
+        self.assertEqual(self.clauses_audit["output_clause_count"], 7)
+        self.assertEqual(
+            self.clauses_audit["swallowed_cut_block_ids"], ["BLK-SWALLOW-H"])
+        boundaries = self._boundaries(self.clauses)
+        self.assertEqual(boundaries, [
+            ("26 There shall be no change of original equipment "
+             "manufacturer for this lot.", ["BLK-OEM-H", "BLK-OEM-P"]),
+            ("2.2 Delivery Schedule", ["BLK-DEL-H", "BLK-DEL-P"]),
+            ("2.3 STATEMENT OF REQUIREMENTS (TECHNICAL)", ["BLK-SWALLOW-H"]),
+            ("2.3 STATEMENT OF REQUIREMENTS (TECHNICAL)",
+             ["BLK-TECH-H", "BLK-TECH-P"]),
+            ("2 20 Control of", ["BLK-COL-A-H", "BLK-COL-A-P"]),
+            ("2 20 Control of", ["BLK-COL-B-H", "BLK-COL-B-P"]),
+            ("CH-000004", ["BLK-CHUNK-H", "BLK-CHUNK-P"]),
+        ])
+
+    def test_assemble_path_recuts_the_same_pathology(self) -> None:
+        # assemble（section_path 分组）现状 5 条款（两段 "2 20 Control of" 撞名并段）；
+        # 重切后 7 条款——非首位 confirmed heading（BLK-SWALLOW-H / BLK-COL-B-H）切开。
+        self.assertEqual(self.assembled_audit["input_clause_count"], 5)
+        self.assertEqual(self.assembled_audit["output_clause_count"], 7)
+        self.assertEqual(
+            self.assembled_audit["swallowed_cut_block_ids"],
+            ["BLK-SWALLOW-H", "BLK-COL-B-H"])
+        boundaries = self._boundaries(self.assembled)
+        self.assertEqual(boundaries, [
+            ("26 There shall be no change of original equipment "
+             "manufacturer for this lot.", ["BLK-OEM-H", "BLK-OEM-P"]),
+            ("2.2 Delivery Schedule", ["BLK-DEL-H", "BLK-DEL-P"]),
+            ("2.3 STATEMENT OF REQUIREMENTS (TECHNICAL)", ["BLK-SWALLOW-H"]),
+            ("2.3 STATEMENT OF REQUIREMENTS (TECHNICAL)",
+             ["BLK-TECH-H", "BLK-TECH-P"]),
+            ("2 20 Control of", ["BLK-COL-A-H", "BLK-COL-A-P"]),
+            ("2 20 Control of", ["BLK-COL-B-H", "BLK-COL-B-P"]),
+            ("(root)", ["BLK-CHUNK-H", "BLK-CHUNK-P"]),
+        ])
+
+    def test_demoted_promoted_sentence_stays_audited_not_silent(self) -> None:
+        # OEM 升格义务句是首条款（无前者）：如实保留 + 审计（不静默丢弃/合并）
+        self.assertEqual(
+            self.clauses_audit["demoted_leading_without_predecessor_block_ids"],
+            ["BLK-OEM-H"])
+        # suspect（BLK-TECH-H 编号回退、BLK-CHUNK-H 断裂）只审计不动切分
+        self.assertEqual(self.clauses_audit["suspect_headings_in_clauses"], 2)
 
 
 if __name__ == "__main__":

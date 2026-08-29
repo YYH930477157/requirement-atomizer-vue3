@@ -50,7 +50,35 @@ def assemble_sections(
     """把已解析 blocks 按 section_path 聚合成章节单元（章节文本 + 溯源 block）。
 
     table-structure-v2 起消费真实 table_items/table_cell_items（权威 row/cell ID），
-    不再自行拼 item ID；旧调用（None）退回兼容合成（行号含表头/标题偏移修复）。"""
+    不再自行拼 item ID；旧调用（None）退回兼容合成（行号含表头/标题偏移修复）。
+
+    Phase 2b（大纲权威第一片）：``RATOMIZER_OUTLINE_AUTHORITY=1`` 时聚合结果经
+    ``document_outline.apply_outline_authority`` 重切（demoted 并入 / 被吞并
+    confirmed heading 切开 / toc 出基线）；flag 关时逐字节零变化。需要重切审计
+    的调用方用 :func:`assemble_sections_detailed`。
+    """
+    return assemble_sections_detailed(
+        blocks,
+        table_items=table_items,
+        table_cell_items=table_cell_items,
+        table_cell_dispositions=table_cell_dispositions,
+    )[0]
+
+
+def assemble_sections_detailed(
+    blocks: list[dict[str, Any]],
+    table_items: list[dict[str, Any]] | None = None,
+    table_cell_items: list[dict[str, Any]] | None = None,
+    table_cell_dispositions: list[dict[str, Any]] | None = None,
+    *,
+    outline_authority: bool | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    """``assemble_sections`` 的详细形态：额外返回大纲权威重切审计。
+
+    ``outline_authority``：None=按 ``RATOMIZER_OUTLINE_AUTHORITY`` 门控（默认）；
+    False=强制不重切（报告构建等需要**原始边界**的调用方）；True=强制重切。
+    flag 关（默认）返回 ``(sections, None)``。
+    """
     try:  # 延迟 import,避免与 ai_extract 的顶层 import 形成循环
         from ai_extract import _PARAM_ROW_MIN_CELLS, _row_render_line, classify_table_kind
     except ImportError:  # pragma: no cover - ai_extract 始终在场
@@ -127,7 +155,12 @@ def assemble_sections(
                          "source_blocks": unit.get("source_blocks", []),
                          "_table_header_lines": unit.get("_table_header_lines", []),
                          "table_input_mode": unit.get("table_input_mode", "plain_text")})
-    return sections
+    if outline_authority is False:
+        return sections, None
+    # Phase 2b：大纲权威重切（flag 门控；单一检查点在 document_outline，两消费点共用）
+    from document_outline import apply_outline_authority
+
+    return apply_outline_authority(list(blocks), sections, enabled=outline_authority)
 
 
 def _iter_table_blocks(block: dict[str, Any]):

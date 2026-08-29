@@ -220,6 +220,13 @@ def extraction_fingerprint(
         "negative_k": functional_extract_negative_k(),
         "clauses": [clause_fingerprint(section) for section in sections],
     }
+    # Phase 2b：大纲权威重切改变条款集（clauses 已承载），此处钉住接线身份——
+    # flag 开时键存在（legacy/clause_family 两键空间都进），flag 关时键缺席
+    # （指纹逐字节不变）。重切是策略无关的装配层行为，不挂在策略门控的
+    # unit_routing_key 下。
+    from document_outline import outline_authority_lineage
+
+    canonical.update(outline_authority_lineage())
     if context_strategy and context_strategy != "legacy":
         canonical["context_strategy"] = str(context_strategy)
         canonical["doc_map_key"] = str(doc_map_key or "")
@@ -2644,8 +2651,11 @@ def run_functional_extract(
     整篇地图（``doc_map.load_doc_map``，缺席/不可用则不带摘要，退回无地图包——不伪造）。
     """
     out_dir = Path(out_dir).expanduser().resolve()
+    outline_authority_audit: dict[str, Any] | None = None
     if sections is None:
-        sections = load_clauses(out_dir)
+        # Phase 2b：flag 开时 load_clauses_detailed 产出重切条款 + 审计；
+        # 报告不可得时如实回退原始边界并记 unavailable（审计随产物落盘）。
+        sections, outline_authority_audit = load_clauses_detailed(out_dir)
     sections = list(sections)
     _emit_functional_extract_progress(
         progress_callback, completed=0, total=len(sections),
@@ -2737,6 +2747,9 @@ def run_functional_extract(
     if unit_routing is not None:
         # §17：路由审计块（被路由出条款清单/计数/版本身份）；legacy 产物不带此块。
         payload["unit_routing"] = unit_routing
+    if outline_authority_audit is not None:
+        # Phase 2b：大纲权威重切审计（flag 开才出现；缓存行随负载携带，重放不洗白）。
+        payload["outline_authority"] = outline_authority_audit
     # §3.5 缓存纪律：ok/partial 照常缓存（缓存行携带 execution_status，重放保留失败语义
     # ——mixed 重放仍是 partial）；**failed 不落缓存**——全退化多为瞬时故障（网络/超时），
     # 钉进缓存会让下次健康重跑永远重放失败；重跑就该真实再试。
@@ -2786,6 +2799,10 @@ def _finalize_payload(
             "table_dominated_routed_out": routing.get("table_dominated_routed_out", 0),
             "sections_extracted": routing.get("sections_extracted"),
         }
+    authority = payload.get("outline_authority")
+    if isinstance(authority, dict):
+        # Phase 2b：结果摘要镜像大纲权威状态（applied / unavailable:<reason>）
+        result["outline_authority"] = {"status": authority.get("status")}
     return result
 
 
@@ -2793,12 +2810,35 @@ def _finalize_payload(
 # 条款加载（不改 extract_units / atomize）
 # ---------------------------------------------------------------------------
 
-def load_clauses(out_dir: Path | str) -> list[dict[str, Any]]:
+def load_clauses(
+    out_dir: Path | str,
+    *,
+    outline_authority: bool | None = None,
+) -> list[dict[str, Any]]:
     """从 extract_units 条款切分产物惰性加载条款单元。
 
     优先读 governed ``chunks.jsonl``（每行一个章节/条款单元，含 section_path/text/block_ids），
     缺失则退回 ``blocks.jsonl`` 经 ``extract_units.assemble_sections`` 现场聚合——两条路径
     都不改 extract_units / atomize 主线（硬边界：直抽是旁路新入口）。
+
+    Phase 2b（大纲权威第一片）：``outline_authority=None``（默认）按
+    ``RATOMIZER_OUTLINE_AUTHORITY`` 门控重切（与 assemble_sections 同一权威、
+    逐字节同口径）；``False`` 强制取**原始边界**（报告构建等调用方）；
+    ``True`` 强制重切。需要重切审计的调用方用 :func:`load_clauses_detailed`。
+    """
+    return load_clauses_detailed(out_dir, outline_authority=outline_authority)[0]
+
+
+def load_clauses_detailed(
+    out_dir: Path | str,
+    *,
+    outline_authority: bool | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    """``load_clauses`` 的详细形态：额外返回大纲权威重切审计。
+
+    flag 关（默认）→ ``(sections, None)``（零行为变化）；flag 开 → 重切 +
+    审计；报告不可得（blocks 缺席/条款无块序列）→ 原始边界 +
+    ``{"status": "unavailable:<reason>"}``（如实回退，绝不静默假装重切过）。
     """
     from io_utils import read_jsonl
     from result_package import governed_artifact_path
@@ -2826,13 +2866,21 @@ def load_clauses(out_dir: Path | str) -> list[dict[str, Any]]:
                     else row.get("source_block_ids") or [])],
             })
         if sections:
-            return sections
-    # 兜底：现场聚合 blocks（不改 atomize，只读其产物）
+            if outline_authority is not False:
+                from document_outline import apply_outline_authority
+
+                return apply_outline_authority(
+                    _load_blocks(out_dir), sections, enabled=outline_authority)
+            return sections, None
+    # 兜底：现场聚合 blocks（不改 atomize，只读其产物）；chunks 缺席时 assemble
+    # 路径自带同一大纲权威（assemble_sections_detailed），审计原样上抛。
     blocks_path = governed_artifact_path(out_dir, "blocks.jsonl", category="pipeline", for_write=False)
     if blocks_path.is_file():
-        from extract_units import assemble_sections
-        return list(assemble_sections(read_jsonl(blocks_path)))
-    return []
+        from extract_units import assemble_sections_detailed
+
+        return assemble_sections_detailed(
+            read_jsonl(blocks_path), outline_authority=outline_authority)
+    return [], None
 
 
 def _load_blocks(out_dir: Path) -> list[dict[str, Any]]:
