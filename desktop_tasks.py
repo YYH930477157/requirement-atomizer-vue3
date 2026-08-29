@@ -1120,6 +1120,10 @@ def stage_producer(stage: str, *, out_dir: Path | None = None,
             # （路由决定哪些条款进产物——不进戳则路由 bump 后 chain 续跑静默复用旧路由
             # 产物，P1 2026-08-27）。路由版本与 extraction_fingerprint 的 unit_routing_key
             # 同源（functional_extract.routing_lineage_versions）。
+            # Phase 2b：大纲权威重切同样决定条款集——flag 开时版本身份进戳
+            # （与 extraction_fingerprint 的条件键同源）；flag 关时空 lineage，
+            # 戳逐字节不变。
+            from document_outline import outline_authority_lineage
             from functional_extract import (
                 FUNCTIONAL_CONSERVATION_MODEL_VERSION,
                 FUNCTIONAL_EXTRACT_GUARDS_VERSION,
@@ -1134,6 +1138,7 @@ def stage_producer(stage: str, *, out_dir: Path | None = None,
                 FUNCTIONAL_EXTRACT_GUARDS_VERSION,
                 FUNCTIONAL_CONSERVATION_MODEL_VERSION,
                 *routing_lineage_versions().values(),
+                *outline_authority_lineage().values(),
             ))
         elif stage == "atomize":
             # PDF text repair changes blocks consumed by every downstream stage. Include both
@@ -2423,6 +2428,12 @@ def _functional_extract_stage_config() -> dict[str, Any]:
         # §3.6：运行时求值（修掉 import 时常量在同进程不刷新的缺陷）
         "negative_k": functional_extract_negative_k(),
     }
+    # Phase 2b：大纲权威开关改变条款集 → 阶段必须重跑。flag 关时键缺席
+    # （阶段指纹与现状逐字节一致）；flag 开时携带重切版本身份。
+    from document_outline import OUTLINE_AUTHORITY_VERSION, outline_authority_enabled
+
+    if outline_authority_enabled():
+        config["outline_authority"] = OUTLINE_AUTHORITY_VERSION
     if (functional_extract_enabled()
             and str(raw).strip().lower() == "legacy"):
         LOGGER.warning(

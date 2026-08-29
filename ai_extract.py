@@ -448,20 +448,30 @@ def section_cache_versions() -> dict[str, str]:
     their versions belong to publication lineage but not this paid cache key. The
     verify prompt is already included in ``context_key`` only when verification is
     enabled; keeping it out here avoids invalidating verify-off caches.
+
+    Phase 2b（大纲权威第一片）：``assemble_sections`` 在 flag 开时按大纲裁决重切
+    条款边界——重切版本身份进付费缓存键（flag 关时键缺席，键逐字节不变）。
     """
     from compliance import COMPLIANCE_SCHEMA
+    from document_outline import outline_authority_lineage
 
     return {
         "extract_prompt_version": AI_EXTRACT_PROMPT_VERSION,
         "extract_guards_version": EXTRACT_GUARDS_VERSION,
         "compliance_schema": COMPLIANCE_SCHEMA,
         "table_structure_version": table_structure.TABLE_STRUCTURE_VERSION,
+        **outline_authority_lineage(),
     }
 
 
 def producer_lineage_versions() -> dict[str, str]:
-    """Complete version vector for published ai-extract artifacts."""
+    """Complete version vector for published ai-extract artifacts.
+
+    Phase 2b：大纲权威重切改变章节装配 → flag 开时版本身份进 lineage
+    （旧代际如实 stale）；flag 关时键缺席，lineage 逐字节不变。
+    """
     from compliance import COMPLIANCE_SCHEMA
+    from document_outline import outline_authority_lineage
     from merged_consistency import MERGED_CONSISTENCY_VERSION
     from table_structure import TABLE_STRUCTURE_VERSION
 
@@ -475,6 +485,7 @@ def producer_lineage_versions() -> dict[str, str]:
         # M3：表格结构版本进 lineage——cell 闭环/行级化的行为演进必须使旧
         # ai_requirements 代际如实 stale，不得假装与结构无关
         "table_structure_version": TABLE_STRUCTURE_VERSION,
+        **outline_authority_lineage(),
     }
 
 
