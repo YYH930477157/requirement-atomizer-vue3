@@ -19,13 +19,27 @@ _FILE_DESTINATIONS = (
     {
         "filename": "review_states.jsonl",
         "writer_module": "review_state.py",
-        "writer_symbols": ("def apply_expert_decision", '"review_states.jsonl"'),
+        # 队列收敛第 3 步起：apply_expert_decision 先 append 统一评审队列事件
+        # （subject_kind=atom_expert），再按旧 writer 逐字节相同的行形状整文件
+        # 原子替换投影回本文件；CAS 公式与锁外 fold 钩子不动。
+        "writer_symbols": (
+            "def apply_expert_decision",
+            '"review_states.jsonl"',
+            "review_queue.append_review_queue_events_unlocked",
+        ),
         "destination_markers": ("先双写进队列", "再切只读投影"),
     },
     {
         "filename": "ai_review_states.jsonl",
         "writer_module": "ai_review_actions.py",
-        "writer_symbols": ("def apply_ai_review_action", "AI_REVIEW_STATES"),
+        # 队列收敛第 3 步起：apply_ai_review_action（含 level=functional 的
+        # 功能级裁决）先 append 统一评审队列事件（subject_kind=ai_review），
+        # 再按旧 writer 逐字节相同的行形状 append 投影回本文件。
+        "writer_symbols": (
+            "def apply_ai_review_action",
+            "AI_REVIEW_STATES",
+            "review_queue.append_review_queue_events_unlocked",
+        ),
         "destination_markers": ("ai_review_states.jsonl", "同上"),
     },
     {
@@ -81,12 +95,15 @@ _FILE_DESTINATIONS = (
         "destination_markers": ("内核留下",),
     },
     {
-        # 队列收敛第 2 步：统一事件链账本（omission + 澄清内部核对第一对入链）。
+        # 队列收敛第 2/3 步：统一事件链账本（第 2 步 omission + 澄清内部核对
+        # 第一对入链；第 3 步 atom_expert + ai_review 双写切换入链）。
         "filename": "review_queue_events.jsonl",
         "writer_module": "review_queue.py",
         "writer_symbols": (
             "def append_review_queue_events_unlocked",
             "REVIEW_QUEUE_EVENT_SCHEMA",
+            'SUBJECT_KIND_ATOM_EXPERT: "review_states.jsonl"',
+            'SUBJECT_KIND_AI_REVIEW: "ai_review_states.jsonl"',
         ),
         "destination_markers": ("append-only，hash chain，幂等键",),
     },
