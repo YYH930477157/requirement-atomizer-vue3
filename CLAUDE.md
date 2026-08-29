@@ -1,5 +1,49 @@
 # CLAUDE.md — Requirement Atomizer 项目上下文
 
+## 重大更新（2026-08-29）——队列收敛第 3 步 + 大纲权威接线 Phase 2b 第一片（合并 `441fde8`/`6fe5250`）
+
+> 两工作流并行（Claude Code/GLM 实施、Claude 审核）：`codex/review-queue-step3`
+> （`b52d8f1`）与 `codex/outline-authority-2b`（`bef6a86`）。文件集合零交集，
+> 顺序合并零冲突。
+
+- **队列收敛第 3 步（A/B 专家裁决双写切换，设计 §4.3 最后一步）**：
+ `review_queue.py` 新增 `atom_expert`（→review_states.jsonl）/`ai_review`
+ （→ai_review_states.jsonl）两 subject_kind（只增不改，行契约 v1 不 bump）。
+ `review_state.apply_expert_decision` 与 `ai_review_actions.apply_ai_review_action`
+ 写路径改队列先落：单一队列锁（外）+ 各自旧状态锁（内，两文件各有第二写方/
+ 持锁读者，只换队列锁会失去互斥；队列锁→状态锁是唯一嵌套方向，fold 仍在
+ 全部锁释放后触发）→ 崩溃窗口补投影 → **原有 CAS 一字不动**（A 轨
+ atomic_target_authority_write_revision / B 轨 ai_target 同名公式 +
+ needs_reconfirmation）→ 幂等键重放返回既有 payload → 真实 transition 才
+ append 队列事件 → 按旧 writer 逐字节相同行形状写旧文件。A 轨对账复现
+ merge+单行替换语义（review_states 是覆盖式重写非 append-only，不能按第 2 步
+ 行前缀匹配；llm_pipeline 批量 merge 不收编、对账不回滚其合并）；B 轨对账
+ append-only 前缀匹配与 omission 同构。两 apply 新增可选 `idempotency_key`
+ （默认 uuid，api_server 不传，HTTP 契约零变化）。无缓存指纹影响（纯状态层）。
+- **大纲权威接线 Phase 2b 第一片（`RATOMIZER_OUTLINE_AUTHORITY` 门控，默认关）**：
+ shadow（2026-08-27c）第一次真实接进 B 轨条款装配。重切写成
+ `document_outline.recut_clauses` 纯函数，`apply_outline_authority` 是唯一
+ flag 检查点——`extract_units.assemble_sections_detailed` 与
+ `functional_extract.load_clauses_detailed` 两消费点共用。语义：demoted 升格
+ 正文句并入前条款；被吞并 confirmed heading 切开成新条款（身份=[heading 文本]，
+ 不继承病理父链）；toc 出正文基线只审计；suspect 宁漏勿错不动。块守恒硬校验
+ （违例 OutlineAuthorityError）；报告不可得如实回退旧切分记
+ `outline_authority: unavailable:<reason>`。**flag 关零漂移钉死**（指纹/producer
+ 字节相等钉 + literal 钉）；flag 开时 `outline-authority-v1` 进 functional-extract
+ 抽取缓存指纹（两键空间）、chain 阶段 producer、ai-extract 付费缓存/发布
+ lineage。result3 回放：207→239 条款（39 demoted 并入 + 34 confirmed 吞并
+ 切开），BLK-000240「2.3 STATEMENT OF REQUIREMENTS (TECHNICAL)」成功切出为
+ 独立条款；块守恒 821=821。**默认翻转不在本片**——翻转前还缺：真实语料 flag
+ 开全链验证（守恒/路由/claim 锚在新边界下的表现）、golden 重生成评估、
+ result3 重跑对照。
+- **验证**：线程①worktree 全量 4171 OK + 线程② 4179 OK（各自并行门）；合并后
+ 主检出全量 **4199 OK / 0 失败 / skipped=20 / 311.6s（并行门）**，golden 6/6
+ 实跑零漂移，新增 test_review_queue_step3（20）/ test_outline_authority_wiring
+ （25）/ 回归组合 flag-on 3 钉全绿。
+- **队列收敛至此四主体全部入链**（omission / clarification_internal /
+ atom_expert / ai_review）；剩余为旧文件只读兼容期观察与后续裁撤评估。
+ 大纲剩余待办：flag 真实语料验证 → 默认翻转评估（单独立项）。
+
 ## 更新（2026-08-28b）——并行测试运行器：全量 828s → ~194s（合并 `160b2df`）
 
 > 用户痛点=全量 14 分钟太慢；裁定不删测试（4000+ 钉子是多代理工作流的审核门），
