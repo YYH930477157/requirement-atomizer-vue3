@@ -16,12 +16,14 @@ import logging
 import os
 import tempfile
 import time
+import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import RLock
 from typing import Any, Iterator
 
+import review_queue
 from requirements_analysis_schema import normalize_ownership
 from process_file_lock import process_file_lock
 from result_package import governed_artifact_path
@@ -486,12 +488,21 @@ def apply_ai_review_action(
     review_anchor_fingerprint_value: str | None = None,
     expected_target_authority_write_revision: str | None = None,
     level: str | None = None,
+    idempotency_key: str = "",
 ) -> dict[str, Any]:
     """追加一条 AI 需求裁决，返回写入的 state。
 
     WS2 §4.3 ``level``（functional/atomic）：显式标注评审对象粒度。缺省时不写该键——
     旧 ai_review_states 文件无 level，读路径经 review_state.review_level() 解释为 atomic，
     零迁移打开。
+
+    队列收敛第 3 步（设计 §4.3）：写路径改为队列先落——单一 ``review_queue``
+    跨进程锁（外）+ ``_ai_review_state_lock``（内；append 读者持同锁扫描，只换
+    队列锁会让读者与写者失去互斥、把 fsync 中途的半行误判成撕裂尾）内：先补齐
+    历史事件投影（崩溃窗口对账）→ 原有 CAS（一字不动）→ append 统一评审队列
+    事件（subject_kind=ai_review，含 level=functional 的功能级裁决）→ 按与旧
+    writer 逐字节相同的行形状追加 ``ai_review_states.jsonl``。锁外的 effective
+    fold 钩子保持原样。
     """
     ai_req_id_value = str(ai_req_id_value or "").strip()
     if not ai_req_id_value:
@@ -502,34 +513,22 @@ def apply_ai_review_action(
     module = normalize_module_override(module_override)
     ownership_text = str(ownership_override or "").strip()
     ownership = normalize_ownership(ownership_text) if ownership_text else None
-    state = {
-        "ai_req_id": ai_req_id_value,
-        "status": status,
-        "module_override": module,
-        "ownership_override": ownership,
-        "reason": str(reason or ""),
-        "actor": actor,
-        "recorded_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-    }
-    if level is not None:
-        from review_state import normalize_review_level
-        state["level"] = normalize_review_level(level)
-    if source_fingerprint_value:
-        state["source_fingerprint"] = str(source_fingerprint_value)
-    if review_subject_fingerprint_value:
-        state["review_subject_fingerprint"] = str(review_subject_fingerprint_value)
-    if review_anchor_fingerprint_value:
-        state["review_anchor_fingerprint"] = str(review_anchor_fingerprint_value)
     out_dir = Path(out_dir).expanduser().resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
-    with _ai_review_state_lock(out_dir):
+    with review_queue.review_queue_lock(out_dir), _ai_review_state_lock(out_dir):
         states_path = governed_artifact_path(out_dir, AI_REVIEW_STATES, category="state")
+        snapshot = review_queue.scan_review_queue_unlocked(out_dir)
+        _project_missing_ai_review_rows(states_path, snapshot)
         if states_path.is_file():
             authority_snapshot = _authority_snapshot_from_scan(
                 _scan_ai_review_rows_unlocked(states_path)
             )
+            # 扫描可能修复撕裂尾（os.replace 原子重写）；重读拿修复后的稳定
+            # bytes，供下方"追加后字节"的指纹推导与真实 append 同源。
+            raw = states_path.read_bytes()
         else:
             authority_snapshot = _empty_ai_review_authority_snapshot()
+            raw = None
         current_write_revision = ai_target_authority_write_revision(
             ai_req_id_value,
             authority_snapshot,
@@ -543,9 +542,60 @@ def apply_ai_review_action(
                 "AI review authority changed; refresh before adjudicating",
                 current_revision=current_write_revision,
             )
-        with governed_artifact_path(
-            out_dir, AI_REVIEW_STATES, category="state"
-        ).open("a", encoding="utf-8", newline="\n") as f:
+        # 幂等键重放（第 2 步模式）：链上已有该键 → 投影已由上方对账保证在场，
+        # 返回既有事件 payload，不再追加、不重复投影。
+        replay_key = str(idempotency_key or "").strip()
+        if replay_key and snapshot.has_idempotency_key(replay_key):
+            replayed_row = next(
+                row for row in snapshot.rows if row["idempotency_key"] == replay_key
+            )
+            replayed = dict(replayed_row["payload"])
+            replayed["target_authority_write_revision"] = current_write_revision
+            return replayed
+        state = {
+            "ai_req_id": ai_req_id_value,
+            "status": status,
+            "module_override": module,
+            "ownership_override": ownership,
+            "reason": str(reason or ""),
+            "actor": actor,
+            "recorded_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        }
+        if level is not None:
+            from review_state import normalize_review_level
+            state["level"] = normalize_review_level(level)
+        if source_fingerprint_value:
+            state["source_fingerprint"] = str(source_fingerprint_value)
+        if review_subject_fingerprint_value:
+            state["review_subject_fingerprint"] = str(review_subject_fingerprint_value)
+        if review_anchor_fingerprint_value:
+            state["review_anchor_fingerprint"] = str(review_anchor_fingerprint_value)
+        # 队列事件先落；subject_fingerprint 用本主体既有权威身份公式（对
+        # "投影落盘后的字节"推导的物理写修订——内存拼接同一行，与下方真实
+        # append 之后的 re-scan 逐字节同源），不另起哈希。
+        state_line = json.dumps(state, ensure_ascii=False).encode("utf-8") + b"\n"
+        post_append_snapshot = _authority_snapshot_from_scan(
+            _scan_ai_review_rows_unlocked(
+                states_path,
+                raw=(raw or b"") + state_line,
+                repair_torn_tail=False,
+            )
+        )
+        key = replay_key or f"ai_review:{ai_req_id_value}:{uuid.uuid4().hex}"
+        review_queue.append_review_queue_events_unlocked(out_dir, snapshot, [{
+            "subject_kind": review_queue.SUBJECT_KIND_AI_REVIEW,
+            "subject_id": ai_req_id_value,
+            "subject_fingerprint": ai_target_authority_write_revision(
+                ai_req_id_value, post_append_snapshot,
+            ),
+            "idempotency_key": key,
+            "event_kind": "decided",
+            "actor": str(actor).strip() if actor else "",
+            "recorded_at": str(state["recorded_at"]),
+            "reason": str(reason or ""),
+            "payload": dict(state),
+        }])
+        with states_path.open("a", encoding="utf-8", newline="\n") as f:
             f.write(json.dumps(state, ensure_ascii=False) + "\n")
             f.flush()
             os.fsync(f.fileno())
@@ -573,3 +623,29 @@ def apply_ai_review_action(
             fold_lag_log_template="AI review saved; claim effective fold lagged: %s",
         )
     return state
+
+
+def _project_missing_ai_review_rows(
+    states_path: Path,
+    snapshot: review_queue.ReviewQueueSnapshot,
+) -> None:
+    """崩溃窗口补投影（队列收敛第 3 步）：队列有 ai_review 事件而旧文件缺行时
+    按事件序补写。
+
+    ``ai_review_states.jsonl`` 是 append-only last-wins——与 omission 同构，
+    直接复用 ``review_queue.missing_projection_payloads`` 的行前缀对账。
+    """
+    store_events = [
+        row for row in snapshot.rows
+        if row.get("legacy_source_store") == AI_REVIEW_STATES
+    ]
+    if not store_events:
+        return
+    missing = review_queue.missing_projection_payloads(
+        store_events, _read_ai_review_rows_unlocked(states_path)
+    )
+    for row in missing:
+        with states_path.open("a", encoding="utf-8", newline="\n") as f:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+            f.flush()
+            os.fsync(f.fileno())

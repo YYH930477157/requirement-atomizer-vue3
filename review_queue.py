@@ -1,31 +1,41 @@
-"""评审队列统一事件链账本（队列收敛第 2 步，设计 §4.1/§4.3）。
+"""评审队列统一事件链账本（队列收敛第 2/3 步，设计 §4.1/§4.3）。
 
 一条 append-only、文件级哈希链的评审事件账本 ``review_queue_events.jsonl``
-（governed state 路径）。本步接入的两个主体：
+（governed state 路径）。已接入的主体：
 
 - ``subject_kind=omission`` —— ``omission_actions.apply_omission_action``；
 - ``subject_kind=clarification_internal`` —— ``clarification_check_states``
-  的单条/批量内部核对动作。
+  的单条/批量内部核对动作；
+- ``subject_kind=atom_expert``（第 3 步）—— A 轨专家裁决
+  ``review_state.apply_expert_decision`` → ``review_states.jsonl``；
+- ``subject_kind=ai_review``（第 3 步）—— B 轨 AI/功能级裁决
+  ``ai_review_actions.apply_ai_review_action`` → ``ai_review_states.jsonl``。
 
-写路径纪律（设计 §4.3 第 2 步）：单一跨进程锁内 → 先 append 队列事件 → 再按
-与旧 writer **逐字节相同**的行形状把 ``payload`` 投影回旧 JSONL
-（``omission_states.jsonl`` / ``clarification_check_states.jsonl``）。队列是
+写路径纪律（设计 §4.3 第 2/3 步）：单一跨进程锁内 → 先 append 队列事件 → 再按
+与旧 writer **逐字节相同**的行形状把 ``payload`` 投影回旧 JSONL。队列是
 记录源，旧文件是兼容投影——所有既有读者（API GET、``clarification_report``
 就绪门、``agent_state``、xlsx 导入回读）零改动继续工作。崩溃窗口（队列事件
 已落、投影未落）由下一次同 root 写入时的投影补齐闭合：按事件序对账旧文件
-尾部，缺失的投影行按序补写，绝不出现队列有事件而旧文件永久缺行。
+尾部，缺失的投影行按序补写，绝不出现队列有事件而旧文件永久缺行。第 3 步的
+两个主体写路径额外嵌套持有各自的旧状态锁（``review_state_lock`` /
+``_ai_review_state_lock``，队列锁在外）——它们各有第二个写方/读者持旧锁
+（llm_pipeline 批量 merge、authority 快照读者），只换队列锁会失去互斥。
 
 与 claim 事件链的边界：链协议形状（seq/幂等键/prev_event_hash/event_hash）
-参照 ``claim_review_events``，但**不接进 claim generation/fold**——omission
-与内部核对不参与 claim 代际（设计 §4.3 第 2 步的明确边界）。
+参照 ``claim_review_events``，但链本身**不改写** claim generation/fold——
+omission 与内部核对不参与 claim 代际；atom_expert/ai_review 的裁决照旧经
+各自 writer 锁外的 ``cover_effective_fold_after_decision`` 钩子折 effective
+（fold 触发时机与协调器语义一字不动，锁序仍是"队列/状态锁全部释放后才拿
+claim 锁"）。
 
 统一的是机械，不是语义（设计 §4.1/§5.3）：``subject_kind`` 分派 CAS 与生命
 周期；``omission.issue_confirmed`` 与内部核对 ``issue_confirmed`` 是两个主体
 下的同名不同义动作，事件行靠 ``subject_kind`` 区分，绝不引入统一状态枚举。
-``authority_write_revision`` 对这两类没有既有物理写修订公式的主体，记录的是
+``authority_write_revision`` 对没有既有物理写修订公式的主体，记录的是
 队列推导的该主体事件序号（审计用），**不是** CAS 代币——各主体自己的 CAS
-（``omission_source_fingerprint`` / ``expected_evidence_fingerprint``）仍在
-各自 writer 里分派比对。
+（``omission_source_fingerprint`` / ``expected_evidence_fingerprint`` /
+A 轨 ``atomic_target_authority_write_revision`` / B 轨
+``ai_target_authority_write_revision``）仍在各自 writer 里分派比对。
 
 锁与写入机械照抄 ``review_state.py`` 同族：``process_file_lock`` 跨进程锁 +
 同卷 tmp + fsync + ``os.replace`` 原子替换 + ``PermissionError`` 8 次线性退避。
@@ -54,10 +64,15 @@ REVIEW_QUEUE_EVENT_SCHEMA = "review-queue-event/v1"
 
 SUBJECT_KIND_OMISSION = "omission"
 SUBJECT_KIND_CLARIFICATION_INTERNAL = "clarification_internal"
+# 第 3 步（设计 §4.3）：A 轨专家裁决与 B 轨 AI/功能级裁决双写切换入链。
+SUBJECT_KIND_ATOM_EXPERT = "atom_expert"
+SUBJECT_KIND_AI_REVIEW = "ai_review"
 # 设计 §4.2：过渡期事件行携带旧文件名（legacy_source_store），主体与投影落点一一对应。
 SUBJECT_KIND_LEGACY_STORES = {
     SUBJECT_KIND_OMISSION: "omission_states.jsonl",
     SUBJECT_KIND_CLARIFICATION_INTERNAL: "clarification_check_states.jsonl",
+    SUBJECT_KIND_ATOM_EXPERT: "review_states.jsonl",
+    SUBJECT_KIND_AI_REVIEW: "ai_review_states.jsonl",
 }
 # 设计 §4.1 的 event_kind 枚举全集（本步只用 decided/deferred/queued）。
 VALID_EVENT_KINDS = {"decided", "invalidated", "restored", "deferred", "queued"}

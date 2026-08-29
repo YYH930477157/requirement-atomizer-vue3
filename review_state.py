@@ -5,6 +5,7 @@ import hashlib
 import logging
 import os
 import time
+import uuid
 from contextlib import contextmanager
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -13,6 +14,7 @@ from pathlib import Path
 from threading import Condition, RLock
 from typing import Any, Iterator, Sequence
 
+import review_queue
 from process_file_lock import process_file_lock
 from result_package import governed_artifact_path
 
@@ -138,6 +140,7 @@ def apply_expert_decision(
     expected_target_fingerprint: str | None = None,
     expected_target_authority_write_revision: str | None = None,
     level: str | None = None,
+    idempotency_key: str = "",
 ) -> dict[str, Any]:
     """专家覆盖式裁决：决策状态间可自由改判（含 accepted→rejected、rejected→
     expert_pending 重审），这是有意语义——专家是权威裁决方，VALID_TRANSITIONS
@@ -145,6 +148,14 @@ def apply_expert_decision(
     不属于本入口）。每次改判都追加 history（actor/reason/timestamp），审计链完整。
 
     WS2 §4.3 ``level``（functional/atomic）：显式标注评审对象粒度，缺省/旧文件 → atomic。
+
+    队列收敛第 3 步（设计 §4.3）：写路径改为队列先落——单一 ``review_queue``
+    跨进程锁（外）+ ``review_state_lock``（内，见模块 docstring 的锁序说明）内：
+    先补齐历史事件投影（崩溃窗口对账）→ 原有 CAS（一字不动）→ append 统一
+    评审队列事件（subject_kind=atom_expert）→ 按与旧 writer 逐字节相同的行形状
+    整文件原子替换 ``review_states.jsonl``。CAS 公式（物理写修订 + 可选 subject
+    指纹）、``needs_reconfirmation`` 语义、``_append_review_state_event`` 事件
+    侧账本与锁外的 effective fold 钩子全部保持原样。
     """
     if status not in EXPERT_DECISION_STATUSES:
         raise ValueError(f"Unknown review status: {status}")
@@ -153,8 +164,9 @@ def apply_expert_decision(
     states_path = governed_artifact_path(out_dir, "review_states.jsonl", category="state")
     events_path = governed_artifact_path(out_dir, "review_state_events.jsonl", category="state")
 
-    with review_state_lock(out_dir):
-        states = _read_jsonl(states_path)
+    with review_queue.review_queue_lock(out_dir), review_state_lock(out_dir):
+        snapshot = review_queue.scan_review_queue_unlocked(out_dir)
+        states = _project_missing_expert_rows(states_path, snapshot)
         current_write_revision = atomic_target_authority_write_revision(
             requirement_id,
             states,
@@ -180,6 +192,18 @@ def apply_expert_decision(
                     "atomic requirement changed; refresh before adjudicating",
                     current_revision=current_write_revision,
                 )
+        # 幂等键重放（第 2 步模式）：链上已有该键 → 投影已由上方对账保证在场，
+        # 返回既有事件 payload，不再 transition、不追加、不重复投影。
+        replay_key = str(idempotency_key or "").strip()
+        if replay_key and snapshot.has_idempotency_key(replay_key):
+            replayed_row = next(
+                row for row in snapshot.rows if row["idempotency_key"] == replay_key
+            )
+            result = dict(replayed_row["payload"])
+            result["target_authority_write_revision"] = current_write_revision
+            if expected_target_fingerprint is not None:
+                result["target_fingerprint"] = str(expected_target_fingerprint)
+            return result
         state_index = _find_state_index(states, requirement_id)
         if state_index is None:
             state = RequirementReviewState(
@@ -216,6 +240,25 @@ def apply_expert_decision(
             event = review_event.__dict__
         states[state_index] = state.to_dict()
 
+        # 队列事件先落（仅真实 transition；重复点击同状态不追加——与旧 writer
+        # 只在有 transition 时写事件侧账本对称）。subject_fingerprint 用本主体
+        # 既有权威身份公式（写盘前对更新后行集的物理写修订），不另起哈希。
+        if event is not None:
+            key = replay_key or f"atom_expert:{requirement_id}:{uuid.uuid4().hex}"
+            review_queue.append_review_queue_events_unlocked(out_dir, snapshot, [{
+                "subject_kind": review_queue.SUBJECT_KIND_ATOM_EXPERT,
+                "subject_id": str(requirement_id),
+                "subject_fingerprint": atomic_target_authority_write_revision(
+                    requirement_id, states,
+                ),
+                "idempotency_key": key,
+                "event_kind": "decided",
+                "actor": str(actor or ""),
+                "recorded_at": str(event.get("timestamp") or ""),
+                "reason": str(reason or ""),
+                "payload": dict(states[state_index]),
+            }])
+
         _atomic_write_jsonl(states_path, states)
         result = dict(states[state_index])
         result["target_authority_write_revision"] = atomic_target_authority_write_revision(
@@ -244,6 +287,60 @@ def apply_expert_decision(
             authority_hook_track="A",
         )
     return result
+
+
+def _project_missing_expert_rows(
+    states_path: Path,
+    snapshot: review_queue.ReviewQueueSnapshot,
+) -> list[dict[str, Any]]:
+    """崩溃窗口补投影（队列收敛第 3 步）：返回补齐后的权威行集。
+
+    ``review_states.jsonl`` 是覆盖式整文件重写（merge+单行替换/追加），不是
+    append-only——不能按第 2 步的行前缀匹配对账。这里的对账语义与
+    ``apply_expert_decision`` 的写语义逐点一致：对链上每个 requirement 的
+    **最后一个** atom_expert 事件，若当前文件缺该行则按 payload 追加、行内容
+    不同则原位替换（行序保持，与新行 append 到列表尾的旧行为一致）。
+
+    一次遍历按 ``_find_state_index`` 同一身份键语义建索引后逐主体比对；行内容
+    已就位的主体零操作（含 llm_pipeline 批量 merge 后的行——merge 对带专家
+    history 的行是保留语义 ``_merge_state_payload``，行内容不因 merge 漂移，
+    对账不会回滚自动化合并）。仅在实际补写时原子替换文件。
+    """
+    store_events = [
+        row for row in snapshot.rows
+        if row.get("legacy_source_store") == "review_states.jsonl"
+    ]
+    states = _read_jsonl(states_path)
+    if not store_events:
+        return states
+    index_by_key: dict[str, int] = {}
+    for ordinal, row in enumerate(states):
+        metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+        for key in (
+            row.get("requirement_id"),
+            metadata.get("stable_req_id"),
+            metadata.get("req_id"),
+        ):
+            text = str(key) if key else ""
+            if text and text not in index_by_key:
+                index_by_key[text] = ordinal
+    last_by_subject: dict[str, dict[str, Any]] = {}
+    for row in store_events:
+        last_by_subject[str(row["subject_id"])] = row
+    changed = False
+    for subject_id, event in last_by_subject.items():
+        payload = dict(event["payload"])
+        index = index_by_key.get(subject_id)
+        if index is None:
+            index_by_key[subject_id] = len(states)
+            states.append(payload)
+            changed = True
+        elif states[index] != payload:
+            states[index] = payload
+            changed = True
+    if changed:
+        _atomic_write_jsonl(states_path, states)
+    return states
 
 
 def _current_atomic_review_binding(
