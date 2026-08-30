@@ -1,5 +1,16 @@
 # CLAUDE.md — Requirement Atomizer 项目上下文
 
+## 重大更新（2026-08-30c）——门禁重跑 v2（≤¥20 达标：实付 ¥17.80）：A 轨首次完整通过，B 轨失败面收敛至 25 绑定 + 3 preservation
+
+> `docs/ws0-gate-result-v2-2026-08-30.md` 归档。warm cache（A 抽取 ¥14.18，省 ≈¥27）
+> + extract floor 24576（B 轨单条款 ¥0.041→¥0.026）。A 轨 ok=True——template_writer/v2
+> 空正文行修复实证生效（902 FRE/894 行）。B 轨 176/176 条款完整抽取（225 FRE，
+> 无 402/stub），守恒闸诚实拦下 analysis：obligation 0 未覆盖（路由 v7+碎片过滤实证）、
+> duplicates 0、剩 **binding_mismatches=25（跨条款借位叙述为主）+ preservation
+> blocking=3（Security 节数值/否定）**——失败面首次缩至可逐条核查的真实质量项。
+> 工作目录 `%TEMP%b-runner.9gqsr665` 保留**全量 343 节 A 缓存**：再跑全门禁 ≈¥5-8。
+> 阈值门（14 键 truth）仍未评估（failures 短路）。
+
 ## 重大更新（2026-08-30b）——门禁复盘三修复：路由连坐窄门修 + 义务碎片过滤 + 模板写入器列位
 
 > 用户裁定「开始修复」后按 next-steps 总结的遗留清单执行；两个 worktree 分支，
