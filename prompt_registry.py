@@ -68,7 +68,9 @@ PROMPT_REGISTRY: list[dict[str, str]] = [
     # 携带文本身份）随 registry/指纹/producer stamp/claim lineage 四处同步失效。
     # v5（2026-08-27 审查修复）：同文本多表格块按委托块数剔除出现位置（replace-all
     # 会静默剥掉非委托块内容）。
-    {"id": "functional-extract-conservation", "version": "functional-conservation-obligation-evidence-v5",
+    # v6（2026-08-30 门禁复盘）：义务基线剔除内容词<2 的 lead-in/空壳碎片单元
+    # （_is_fragment_obligation_unit），剔除量在 conservation 报告 fragment_units_excluded 审计。
+    {"id": "functional-extract-conservation", "version": "functional-conservation-obligation-evidence-v6",
      "owner_module": "functional_extract",
      "purpose": "Functional extract obligation/evidence conservation model version"},
 
