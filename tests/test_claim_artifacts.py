@@ -2993,7 +2993,7 @@ with claim_artifacts.claim_publication_lock(Path(sys.argv[1])):
 
     def test_environment_managed_verifier_policy_change_marks_only_shadow_stale(self) -> None:
         config = LLMClientConfig(
-            base_url="http://example.test", model="model-a", max_tokens=6144,
+            base_url="http://example.test", model="model-a", max_tokens=24576,
         )
         with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {
             "RATOMIZER_CLAIM_SHADOW_VERIFY": "1",
@@ -3108,7 +3108,7 @@ with claim_artifacts.claim_publication_lock(Path(sys.argv[1])):
                 config=LLMClientConfig(
                     base_url=low_config.base_url,
                     model=low_config.model,
-                    max_tokens=6144,
+                    max_tokens=24576,
                 ),
                 policy_source="environment",
                 budget_policy_version=LLMRequestBudget.VERSION,
