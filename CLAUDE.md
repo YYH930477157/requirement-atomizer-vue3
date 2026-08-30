@@ -1,5 +1,79 @@
 # CLAUDE.md — Requirement Atomizer 项目上下文
 
+## 重大更新（2026-08-30b）——门禁复盘三修复：路由连坐窄门修 + 义务碎片过滤 + 模板写入器列位
+
+> 用户裁定「开始修复」后按 next-steps 总结的遗留清单执行；两个 worktree 分支，
+> **均未 push、合并由用户决定**；主检出产线零改动。
+
+- **`codex/routing-outline-veto-fragments`（`275a6be`，routing v7 + conservation v6）**：
+  ①tender 聚合路由出之前，条款内 confirmed 被吞并 heading（document_outline 报告
+  只读旁证）先**纯切分**（复用 document_outline 分解/形状/拼接契约，零块位移，
+  不做 toc/demoted 语义）再分别路由——程序性残骸照旧路由出，被连坐的技术内容
+  获得独立判定；meta 新增 outline_veto_split_sections/block_ids 审计；
+  routed_out_block_ids/review_units 补齐 tender 两桶（兑现 docstring 承诺）。
+  ②义务基线剔除内容词<2 的碎片单元（两个陷阱：单元天生模态开头、复合谓语切分
+  残留连接尾不是碎片证据；CJK 内容词天然豁免），剔除量入 conservation 报告
+  fragment_units_excluded；prompt_registry 同步。**result3 零成本重放**：
+  BLK-000240「2.3 STATEMENT OF REQUIREMENTS」在 **flag 关现状下**回到抽取池
+  （抽取条款 95→102、18 个混合条款被切开救回）；义务未覆盖 12→7（剔 49 碎片）；
+  duplicates/preservation 持平。9 新测试，全量 4208 OK。
+- **`codex/template-writer-columns`（`a589119`，template_writer/v2）**：A 轨成文
+  60 条空正文行根因=事件/状态字 sheet 是 8 列布局（无「需求模版」列），固定列位
+  把正文写进「说明」。v2 按表头名解析列位（关键列不齐回退固定契约，计量需求
+  拆分列场景 v1 行为钉住）+ 正文兜底链 refinement→requirement→objective +
+  column_resolution 逐 sheet 审计。**真实门禁数据回归**：A_atoms 的
+  engineering_analysis.json 重写后门禁读取器终审 992 行 / **0 空正文**（原 60）。
+  4 新测试，全量 4203 OK。
+- **对翻转评估的意义**：路由 v7 以远小于翻转 outline flag 的爆炸半径修复了
+  「内容连坐丢失」这一 flag 立项的主要实证病灶（2.3 回池）；义务碎片过滤让
+  obligation_coverage 信号可信。`RATOMIZER_OUTLINE_AUTHORITY` 默认翻转评估
+  若重启，应在 v7/v6 基线之上重新测量。
+- **已知债务（合并时声明）**：①routing v7 的 veto 行为依赖 document_outline
+  裁决逻辑，但 `DOCUMENT_OUTLINE_VERSION` 尚未并入路由指纹/血统——大纲裁决
+  升级时 routing 输出会静默变化，须补进 unit_routing 版本身份（违反「指纹含
+  确定性后处理版本」纪律，待修）；②写入器与门禁读取器各有一套列解析
+  （header-first vs alias-first），终态应抽共享列契约权威；③义务碎片判据
+  （内容词<2）为 SBD 单语料标定，换语料族需按 fragment_units_excluded 审计
+  重新校准。
+
+## 重大更新（2026-08-29b）——任务 C 队列投影审计工具 + 任务 A 大纲 flag 真实语料验证（No-Go 建议）+ 任务 B 门禁 FAIL
+
+> 按 `next-steps-plan-2026-08-29.md` 执行（机器 `E:\Codex`，HEAD `49a1a66`）。
+> **2026-08-30 用户裁定收口：剩余付费步骤（3.5 对照腿、门禁修复后重跑）不跑，
+> 以已跑数据出总结论**——`docs/next-steps-execution-summary-2026-08-30.md`。
+> 本条目与配套报告均未提交，合并由用户决定。总花费 ≈¥43.73（key 透支 -0.70）。
+
+- **任务 C（`codex/queue-projection-audit` 分支，提交 `65fe90f`，未 push）**：新增
+  只读审计工具 `tools/audit_review_queue_projection.py` + 12 测试（计划 §3.3 全项）。
+  复用 `review_queue._validate_event_row`/`missing_projection_payloads`；A 轨权威
+  `review_state._project_missing_expert_rows` 跑临时副本（真实文件零写入）；撕裂尾
+  不修复 fail-closed；CLI envelope exit 0=一致/2=drift/3=输入损坏。worktree 全量
+  4211 OK；真实 result3 包审计前后全树哈希一致（零写入证明）。
+- **任务 A（大纲权威 flag 真实语料验证，建议 No-Go）**：SBD 全链 flag 开付费运行
+  241 calls/128.3 万 tok/**≈¥7.30**（用户上限 ¥10 内；reasoning 输出占 62% + 截断
+  升级重试是成本高于旧口径估算的原因）。零成本链：离线回放 207→339（**计划书
+  §1.1 的 239/39/34 系笔误，与 `bef6a86` 提交信息 339/134/2 吻合**）、块守恒
+  821=821、BLK-000240 切出且义务零未覆盖；ABNT 对照 358→361 克制；归因底账
+  （`out/outline2b-attribution.json`）：中间版本贡献 duplicates 6→0、obligation
+  39→12、evidence 15→7、binding 50→37（flag 关即实现）。真实 flag 开：duplicates
+  0 ✓、binding 30 ✓、evidence 6 ✓、preservation 50 持平、**obligation 统一碎片
+  口径 18→22 恶化**（43=21 碎片+22 实质；22 新切/21 老条款；主题无整块丢失，
+  兄弟句粒度漏抽；vs 同代码基线 6 混合 LLM 方差不可判）。FRE 抽样 10/10 锚定
+  无借位。五条判定线过四，**obligation 未收敛+归因混合 → No-Go**：默认保持 0，
+  修复方向=检测器碎片误报/短条款抽取覆盖/heading-only 退化 objective；可选第
+  3.5 步（¥7）干净拆解待批准。analysis/clarification 被守恒闸诚实拦截（与
+  result3 同口径）。
+- **任务 B（WS0 门禁重跑，flag 关形态，FAIL）**：`docs/ws0-gate-result-2026-08-30.md`
+  归档。与 08-17 根因构成不同：两旧根因**实证已修**（A 轨 932 行成文可读=B 面别名
+  缺口修复实证；B 轨 cons_ok=True=守恒 duplicates 修复实证）；**新暴露** A 轨
+  模板写入 60 条空正文行（仅序号无载荷，状态字/事件类，写入侧缺陷待修）+ **402
+  余额截胡复发**（B 轨 171/176 处耗尽，末段条款退 stub → exec=failed）。总花费
+  ≈¥36.43（余额 35.73→-0.70 透支）。重跑顺序：先修空行缺陷 → 充值 →
+  `--warm-a-cache`（A 抽取零付费，B 重付 ≈¥5-7）。工作目录
+  `%TEMP%\ab-runner.hywzdhbl\` 已保留。
+- **安全备注**：旧 `out/ab-gate-report.json` 的 env_snapshot 明文含 key（out/
+  不进仓）；本次报告同样会快照 RATOMIZER_* env，key 仍只走进程环境。
+
 ## 重大更新（2026-08-29）——队列收敛第 3 步 + 大纲权威接线 Phase 2b 第一片（合并 `441fde8`/`6fe5250`）
 
 > 两工作流并行（Claude Code/GLM 实施、Claude 审核）：`codex/review-queue-step3`
