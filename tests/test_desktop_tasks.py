@@ -1696,7 +1696,7 @@ class ChainAndManifestTests(unittest.TestCase):
 
             snapshot = claim_artifacts.load_committed_shadow(out)
             runtime = snapshot["generation_meta"]["shadow_meta"]["verifier_runtime"]
-            self.assertEqual(runtime["max_tokens"], 6144)
+            self.assertEqual(runtime["max_tokens"], 24576)
             self.assertTrue(desktop_tasks.stage_is_reusable(
                 out,
                 "ai-extract",

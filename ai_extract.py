@@ -123,10 +123,14 @@ MAX_CONCURRENCY = 16
 CONCURRENCY_ENV = "RATOMIZER_LLM_CONCURRENCY"
 # 推理模型（如 deepseek-v4-flash / GLM-5.2）会先花大量 token 在隐藏 reasoning 上，
 # max_tokens 太小会把正文 JSON 截断 → finish_reason=length → 解析失败 → 整章节判失败。
-# 实测 deepseek-v4-flash：1024 必截断；2800 字章节正文最高用到 ~3500 token，6144 留足余量。
-# 注意：仅抬 max_tokens 不够——超大源章节（5k-9k 字）即便 8192 也会截断，必须配合 merge_sections
+# 实测 deepseek-v4-flash：1024 必截断；2800 字章节正文最高用到 ~3500 token。
+# 24576（2026-08-30，SBD 付费运行实证）：推理模型 max_tokens 记思考+答案（输出 88%
+# 是隐藏思考），低起步让 26% 调用"烧完-重来"倍升重试、重复付费；上限不是目标、
+# 按实际生成计费，一次给足只省重试。与 llm_client.PURPOSE_MIN_TOKENS["extract"]
+# 同值（本常量是 A 轨抽取的独立下限，语义复核用途）。
+# 注意：仅抬 max_tokens 不够——超大源章节（5k-9k 字）仍可能截断，必须配合 merge_sections
 # 的拆分（每次 LLM 输入 ≤target_chars），二者缺一不可。
-AI_EXTRACT_MIN_MAX_TOKENS = 6144
+AI_EXTRACT_MIN_MAX_TOKENS = 24576
 
 # M9 第 4 刀：二遍语义复核簇逐字搬到 ai_extract_verify，原名重导出——调用面零变化；
 # patch 目标全部留守本模块。SYSTEM_PROMPT 留守（拼接 MODULE_VOCAB/OTHER_MODULE）。

@@ -609,7 +609,12 @@ def _resolve_extract_chat(
     config = _route_config(route)
     if config is None:
         return None, "stub"
-    from llm_client import chat_json
+    from llm_client import apply_min_tokens, chat_json
+    # 用途级 max_tokens floor（2026-08-30 接线）：B 轨直抽此前从未接
+    # apply_min_tokens（A 轨 ai_extract/claim_artifacts 都接了），一直用全局默认
+    # 4096 裸奔——推理模型思考吃光预算后"烧完-重来"重复付费（SBD 实证 62/241 次）。
+    # 单一权威在 llm_client.PURPOSE_MIN_TOKENS，此处不另写数字。
+    config = apply_min_tokens(config, "extract")
     # 温度 0 可复现（config 层默认已是 0，此处显式断言不放松）
     try:
         temperature = float(getattr(config, "temperature", 0.0) or 0.0)
