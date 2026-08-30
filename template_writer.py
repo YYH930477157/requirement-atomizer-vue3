@@ -94,6 +94,13 @@ def module_mapping_drift() -> tuple[list[str], list[str]]:
     return (unmapped, extra)
 
 
+def _is_empty_item(item: dict[str, Any]) -> bool:
+    """全空条目判据：描述/正文/说明皆空——没有可交付内容（v2 跳过并审计）。"""
+    body = clarify_display_text(item, "software_requirement_text") or item.get("requirement") or ""
+    return not str(item.get("description") or "").strip() and not str(body).strip() \
+        and not str(_notes_text(item)).strip()
+
+
 def _next_seq(ws: Any) -> tuple[int, int]:
     """返回 (下一序号, 追加起始行)。序号接着表内最大数字序号继续。"""
     max_seq = 0
@@ -108,19 +115,72 @@ def _next_seq(ws: Any) -> tuple[int, int]:
     return max_seq + 1, last_row + 1
 
 
-def build_row_values(item: dict[str, Any], seq: int) -> dict[int, Any]:
-    """分析条目 → 模板行（列号→值）。内容全部来自 analyze 轨产物，此处零生成。"""
+def build_row_values(item: dict[str, Any], seq: int,
+                     columns: dict[str, int] | None = None) -> dict[int, Any]:
+    """分析条目 → 模板行（列号→值）。内容全部来自 analyze 轨产物，此处零生成。
+
+    ``columns`` 是按表头名解析的列位（v2）；缺省/None 回退固定列位常量（v1 契约，
+    计量需求拆分列场景）。列语义键：seq/submodule/question/answer/notes/
+    is_customer/section/hw。
+    """
     hw = "是" if item.get("ownership") == OWNERSHIP_CO_DESIGN else ""
+    resolved = columns or {}
+    # 正文兜底链（v2）：分析轨 refinement → 原始 requirement → objective 前缀化
+    # ——全是真实分析产物，杜绝「需求」列空行（门禁按空正文行 fail-closed）。
+    body = (
+        clarify_display_text(item, "software_requirement_text")
+        or str(item.get("requirement") or "").strip()
+    )
+    if not body:
+        objective = str(item.get("objective") or "").strip()
+        if objective:
+            body = f"目标：{objective}"
     return {
-        _COL_SEQ: seq,
-        _COL_SUBMODULE: item.get("submodule") or item.get("module") or "",
-        _COL_QUESTION: item.get("description") or "",
-        _COL_ANSWER: clarify_display_text(item, "software_requirement_text") or item.get("requirement") or "",
-        _COL_NOTES: _notes_text(item),
-        _COL_IS_CUSTOMER: "是",
-        _COL_SECTION: item.get("source_section") or "",
-        _COL_HW: hw,
+        resolved.get("seq", _COL_SEQ): seq,
+        resolved.get("submodule", _COL_SUBMODULE): item.get("submodule") or item.get("module") or "",
+        resolved.get("question", _COL_QUESTION): item.get("description") or "",
+        resolved.get("answer", _COL_ANSWER): body,
+        resolved.get("notes", _COL_NOTES): _notes_text(item),
+        resolved.get("is_customer", _COL_IS_CUSTOMER): "是",
+        resolved.get("section", _COL_SECTION): item.get("source_section") or "",
+        resolved.get("hw", _COL_HW): hw,
     }
+
+
+# 表头名 → 列语义键（v2 按名解析；需求模版列在场与否不再影响列位）。
+_HEADER_ALIASES: dict[tuple[str, ...], str] = {
+    ("序号",): "seq",
+    ("子模块",): "submodule",
+    ("描述",): "question",
+    ("需求模版", "需求模板"): "template",
+    ("需求",): "answer",
+    ("说明、示例、注意事项", "说明、示例和注意事项"): "notes",
+    ("是否客户需求",): "is_customer",
+    ("客户需求章节",): "section",
+    ("驱动/硬件相关", "驱动／硬件相关"): "hw",
+}
+
+
+def resolve_sheet_columns(ws: Any) -> dict[str, int] | None:
+    """按第一行表头名解析需求 sheet 列位；关键列不齐 → None（回退固定契约）。
+
+    门禁 FAIL 根因修复（template_writer/v2）：事件需求/状态字需求 sheet 是
+    8 列布局（无「需求模版」列），固定列位会把正文写进「说明」列、「需求」列
+    空着。关键列 = seq + submodule + answer + notes（缺一即回退）。
+    """
+    header_row = next(ws.iter_rows(min_row=1, max_row=1, values_only=True), None) or ()
+    resolved: dict[str, int] = {}
+    for index, cell in enumerate(header_row, start=1):
+        text = str(cell or "").strip()
+        if not text:
+            continue
+        for aliases, semantic in _HEADER_ALIASES.items():
+            if text in aliases and semantic not in resolved:
+                resolved[semantic] = index
+                break
+    if all(key in resolved for key in ("seq", "submodule", "answer", "notes")):
+        return resolved
+    return None
 
 
 def append_analysis_to_template(template_path: Path, items: list[dict[str, Any]],
@@ -130,8 +190,10 @@ def append_analysis_to_template(template_path: Path, items: list[dict[str, Any]]
     from openpyxl import load_workbook
     wb = load_workbook(template_path)
     appended: dict[str, int] = {}
+    column_resolution: dict[str, str] = {}
     skipped_hardware = 0
     skipped_compliance = 0
+    skipped_empty = 0
 
     software_items = []
     for item in items:
@@ -158,13 +220,24 @@ def append_analysis_to_template(template_path: Path, items: list[dict[str, Any]]
             ws.append(["关闭", "序号", "子模块", "描述", "需求模版", "需求",
                        "说明、示例、注意事项", "是否客户需求", "客户需求章节", "驱动/硬件相关"])
         ws = wb[sheet]
+        # v2：按表头名解析列位（8 列窄布局 sheet 不再错位）；解析失败回退固定契约
+        columns = resolve_sheet_columns(ws)
+        column_resolution[sheet] = "header" if columns else "contract"
         seq, row_idx = _next_seq(ws)
+        written_here = 0
         for item in sheet_items:
-            for col, value in build_row_values(item, seq).items():
+            if _is_empty_item(item):
+                # 全空条目（描述/正文/说明皆空）没有可交付内容——跳过并审计，
+                # 不再产生只有序号的空行（门禁按空正文行 fail-closed）。
+                skipped_empty += 1
+                continue
+            for col, value in build_row_values(item, seq, columns).items():
                 ws.cell(row=row_idx, column=col, value=_safe_cell(value))
             seq += 1
             row_idx += 1
-        appended[sheet] = len(sheet_items)
+            written_here += 1
+        if written_here:
+            appended[sheet] = written_here
 
     from xlsx_io import safe_save_workbook
     out_path = safe_save_workbook(wb, out_path)
@@ -172,6 +245,8 @@ def append_analysis_to_template(template_path: Path, items: list[dict[str, Any]]
             "appended_total": sum(appended.values()),
             "skipped_hardware": skipped_hardware,
             "skipped_compliance": skipped_compliance,
+            "skipped_empty_items": skipped_empty,
+            "column_resolution": column_resolution,
             "workbook": out_path.name}
 
 
@@ -186,7 +261,7 @@ def run_writer(out_dir: Path, template_path: Path) -> dict[str, Any]:
     out_path = out_dir / WRITTEN_WORKBOOK
     report = append_analysis_to_template(template_path, items, out_path)
     from requirement_record import provenance as _prov
-    report["provenance"] = _prov("template_writer", "template_writer/v1")
+    report["provenance"] = _prov("template_writer", "template_writer/v2")
     unmapped, extra = module_mapping_drift()
     if unmapped or extra:
         report["module_mapping_drift"] = {"unmapped_vocab": unmapped, "extra_keys": extra}
