@@ -84,11 +84,15 @@ FUNCTIONAL_EXTRACT_GUARDS_VERSION = "functional-extract-guards-v6"
 # （行渲染文本对不上条款扁平 text 时不再静默失败）；部分委托整块保留。
 # v4 → v5（2026-08-27 审查修复）：同文本多表格块按委托块数剔除出现位置——
 # replace-all 会把字节级相同的非委托块一并剥出基线（无 cell 守恒兜底的静默丢账）。
-FUNCTIONAL_CONSERVATION_MODEL_VERSION = "functional-conservation-obligation-evidence-v5"
+FUNCTIONAL_CONSERVATION_MODEL_VERSION = "functional-conservation-obligation-evidence-v6"
+# v5 → v6（2026-08-30，门禁复盘）：义务基线剔除 lead-in/悬空碎片单元（"shall include:"、
+# "will be issued and"、主语缺失的 "must be authenticated" 类——SBD 实测两侧各 21 条
+# 假义务污染 obligation_coverage 信号）。判据见 _is_fragment_obligation_unit；剔除量
+# 在 conservation 报告 fragment_units_excluded 审计，不静默。带主语完整句一律保留。
 # §17 unit 级路由接线（2026-08-17）：clause_family 策略下表格主导条款路由出 B 轨输入
 # 与守恒基线（表格内容归 A 轨/上下文，phase2 探针实证其混入 B 轨是守恒失败根因之一）。
 # 接线版本只进 clause_family 缓存指纹维度（legacy 指纹逐字节不变）；路由判据演进时 bump。
-FUNCTIONAL_UNIT_ROUTING_VERSION = "functional-unit-routing-v6"  # v6（2026-08-27，WS-B）：节级 tender 判定改为义务主体+跨度聚合。R2 返工：标题词表先验（own title 程序性且非产品主语）；跨度改为非产品主语即可（不再要求无模态）；technical 否决改为 own title/path（块内吞进的下一章 technical heading 不否决程序性残骸）。v5（2026-08-27，P3）：逐标题路由分支补 technical 反向否决 + P2 路由键并入 tender_region_filter 版本。v4：句子形程序性 heading 窄锚点 + v3 跨度继承/前置样板编号剥离
+FUNCTIONAL_UNIT_ROUTING_VERSION = "functional-unit-routing-v7"  # v7（2026-08-30，路由连坐窄门修）：tender 聚合路由出之前，条款内 confirmed 的被吞并 heading（document_outline 报告，只读）先切开再分别路由——程序性残骸照旧路由出，被连坐的技术内容（SBD 实证 2.3 STATEMENT OF REQUIREMENTS 整章）获得独立判定。纯切分零块位移（不做 toc 剔除/demoted 并入——那是 outline authority flag 的语义）；无 confirmed 吞并时行为与 v6 一致；routed_out_block_ids 补齐 tender 两桶（兑现 docstring「全部写入 meta」承诺）。v6（2026-08-27，WS-B）：节级 tender 判定改为义务主体+跨度聚合。R2 返工：标题词表先验（own title 程序性且非产品主语）；跨度改为非产品主语即可（不再要求无模态）；technical 否决改为 own title/path（块内吞进的下一章 technical heading 不否决程序性残骸）。v5（2026-08-27，P3）：逐标题路由分支补 technical 反向否决 + P2 路由键并入 tender_region_filter 版本。v4：句子形程序性 heading 窄锚点 + v3 跨度继承/前置样板编号剥离
 FUNCTIONAL_REQUIREMENTS_FILENAME = "functional_requirements.json"
 FUNCTIONAL_EXTRACT_CACHE = "functional_extract_cache.jsonl"
 
@@ -1028,20 +1032,51 @@ def _obligation_units(sentence: str) -> list[str]:
     return units
 
 
-def _obligation_index(section: dict[str, Any]) -> list[dict[str, Any]]:
-    """条款的义务单元清单（模态动词支配的独立行为；判据与 drilldown 多行为信号同源）。
+# --- 义务基线碎片判据（conservation v6，2026-08-30 门禁复盘）--------------------
+# SBD 实测两侧各 21 条假义务（"shall include:" / "will be issued and" / 助动词空壳
+# "must be authenticated"）——它们是表格/列表 lead-in 或主语缺失的被动残片，不是
+# 独立可测义务。注意两个陷阱：①义务单元由 _OBLIGATION_UNIT_SPLIT_RE 在模态词处
+# 切分，**天生以模态词开头**（主语不在单元内），不能用"模态开头"判碎片；②复合谓语
+# 的模态切分会留下连接尾（"shall log events and [shall send alarms]"），连接尾本身
+# 不是碎片证据。统一收敛到内容词计数：<2 即碎片（冒号尾 lead-in 的内容词也必然 <2，
+# 保留显式判断只为可读）。_content_tokens 含中文字符，CJK 单元天然不误伤。
+def _is_fragment_obligation_unit(unit: str) -> bool:
+    """lead-in/空壳碎片判据（确定性）：内容词 <2（含显式冒号尾 lead-in）。"""
+    text = str(unit or "").strip()
+    if not text:
+        return True
+    if text.endswith(":"):
+        return True
+    return len(_content_tokens(text)) < 2
 
-    ``unit_index`` 是条款内义务单元的顺序号（跨句连续），作守恒/判重的稳定键。
-    """
+
+def _obligation_index_with_fragment_audit(
+    section: dict[str, Any],
+) -> tuple[list[dict[str, Any]], int]:
+    """``_obligation_index`` 的审计形态：额外返回被碎片判据剔除的单元数。"""
     rows: list[dict[str, Any]] = []
+    fragments = 0
     for sentence_index, sentence in enumerate(_section_sentences(section)):
         for unit in _obligation_units(sentence):
+            if _is_fragment_obligation_unit(unit):
+                fragments += 1
+                continue
             rows.append({
                 "sentence_index": sentence_index,
                 "unit_index": len(rows),
                 "sentence": unit,
             })
-    return rows
+    return rows, fragments
+
+
+def _obligation_index(section: dict[str, Any]) -> list[dict[str, Any]]:
+    """条款的义务单元清单（模态动词支配的独立行为；判据与 drilldown 多行为信号同源）。
+
+    ``unit_index`` 是条款内义务单元的顺序号（跨句连续），作守恒/判重的稳定键。
+    conservation v6 起 lead-in/悬空碎片单元不入基线（单一权威：守恒检查/绑定
+    检查/claim_ledger 共用本定义；审计计数走 ``_obligation_index_with_fragment_audit``）。
+    """
+    return _obligation_index_with_fragment_audit(section)[0]
 
 
 def _script_profile(text: str) -> set[str]:
@@ -1490,9 +1525,14 @@ def conservation_report(
     uncovered_obligations: list[dict[str, Any]] = []
     cross_script_review: list[dict[str, Any]] = []
     sentence_cover_items: dict[tuple[str, int], list[int]] = {}
+    fragment_units_excluded = 0
     for section, blocks_ids in zip(baseline_sections, section_block_ids):
         section_id = str(section.get("section_id") or "")
-        for obligation in _obligation_index(section):
+        obligation_rows, section_fragments = (
+            _obligation_index_with_fragment_audit(section)
+        )
+        fragment_units_excluded += section_fragments
+        for obligation in obligation_rows:
             key = (section_id, obligation["unit_index"])
             obligation_edges = edges_by_obligation.get(key) or []
             covering = [
@@ -1709,6 +1749,8 @@ def conservation_report(
             "uncovered_obligations": uncovered_obligations[:50],
             # 跨语种边：覆盖成立但必须人工复核（M1 §3.2 cross_script_review）
             "cross_script_review": cross_script_review[:50],
+            # conservation v6：lead-in/悬空碎片单元剔出基线的审计计数（不静默）
+            "fragment_units_excluded": fragment_units_excluded,
         },
         "evidence_presence": {
             "ok": not no_evidence_items and not evidence_mismatches
@@ -2426,6 +2468,90 @@ def _routing_decisions_for(out_dir: Path, units: list[dict[str, Any]]) -> tuple[
     return {str(row.get("unit_id")): str(row.get("route") or "") for row in rows}, recomputed
 
 
+def _confirmed_swallowed_cut_ids(
+    blocks: Sequence[dict[str, Any]],
+    sections: Sequence[dict[str, Any]],
+) -> set[str]:
+    """document_outline 报告里 confirmed 的被吞并 heading 块集（只读、确定性）。
+
+    报告不可得（异常/无 heading）→ 空集 = 不切分（v6 行为，宁漏勿错）。
+    """
+    try:
+        from document_outline import build_outline_report
+
+        report = build_outline_report(
+            [block for block in blocks if isinstance(block, dict)],
+            sections=list(sections),
+        )
+    except Exception:  # noqa: BLE001 — 大纲是路由窄门修的旁证，失败退回 v6 行为
+        return set()
+    verdicts = {
+        str(row.get("block_id") or ""): str(row.get("verdict") or "")
+        for row in (report.get("headings") or []) if isinstance(row, dict)
+    }
+    swallowed = {
+        str(item.get("block_id") or "")
+        for item in (report.get("swallowed_headings") or []) if isinstance(item, dict)
+    }
+    return {bid for bid in swallowed if verdicts.get(bid) == "confirmed"}
+
+
+def _split_section_at_confirmed_headings(
+    section: dict[str, Any],
+    blocks_by_id: dict[str, dict[str, Any]],
+    cut_ids: set[str],
+) -> tuple[list[dict[str, Any]], list[str]] | None:
+    """在 confirmed 吞并 heading 处纯切分条款（零块位移；routing v7 窄门修）。
+
+    复用 document_outline 的分解/形状/拼接契约（切分语义单一权威）；刻意不做
+    toc 剔除与 demoted 并入——那是 outline authority flag 的语义，路由层只拿
+    切分救"整条款被 tender 聚合连坐路由出"的内容。首片保留原条款身份，后续片
+    身份 = [heading 文本]（与 recut 同式，不继承病理父链）。
+    """
+    if not cut_ids:
+        return None
+    from document_outline import (  # noqa: SLF001 — 切分契约单一权威在 document_outline
+        _build_clause,
+        _decompose_section,
+        _section_shape,
+    )
+
+    units, decomposable = _decompose_section(section, blocks_by_id)
+    if not decomposable:
+        return None
+    pieces_units: list[list[dict[str, Any]]] = []
+    cut_here: list[str] = []
+    current: list[dict[str, Any]] = []
+    for unit in units:
+        bid = str(unit.get("block_id") or "")
+        if bid in cut_ids and current:
+            pieces_units.append(current)
+            cut_here.append(bid)
+            current = [unit]
+            continue
+        current.append(unit)
+    if current:
+        pieces_units.append(current)
+    if len(pieces_units) < 2:
+        return None
+    shape = _section_shape(section)
+    pieces: list[dict[str, Any]] = []
+    for index, piece in enumerate(pieces_units):
+        if index == 0:
+            identity = (
+                str(section.get("section_id") or ""),
+                [str(part) for part in (section.get("section_path") or [])],
+                str(section.get("heading") or ""),
+            )
+        else:
+            heading_text = str(
+                (blocks_by_id.get(cut_here[index - 1]) or {}).get("text") or ""
+            ).strip()
+            identity = (heading_text, [heading_text], heading_text)
+        pieces.append(_build_clause(shape, identity, piece, {}))
+    return pieces, cut_here
+
+
 def apply_unit_routing(
     sections: Sequence[dict[str, Any]],
     *,
@@ -2510,23 +2636,44 @@ def apply_unit_routing(
     tender_procedural: list[dict[str, Any]] = []
     tender_span: list[dict[str, Any]] = []
     mixed_kept = 0
-    for section in sections:
+    # routing v7 窄门修：confirmed 吞并 heading 块集（只读旁证；不可得=不切分）
+    meta.setdefault("outline_veto_split_sections", 0)
+    meta.setdefault("outline_veto_split_block_ids", [])
+    outline_cut_ids = _confirmed_swallowed_cut_ids(blocks, sections)
+
+    def _classify(section: dict[str, Any]) -> None:
+        nonlocal mixed_kept
         path = [str(part).strip() for part in (section.get("section_path") or [])]
         top = _front_matter_top_key(path[0]) if path else ""
         if top in _FRONT_MATTER_TOP_LEVEL:
             # §7.5 前置样板章节：范围/引用/术语定义——归 context 索引，不进 B 轨
             # （单独计数，与表格路由区分审计）。
             front_matter.append(section)
-            continue
+            return
         # WS-B：路由出 = 义务主体/标题先验/跨度聚合 + technical 否决。
         tender_out, tender_bucket = _section_tender_aggregate_route_out(
             section, units, decisions_by_unit, span_by_block, blocks_by_id)
         if tender_out:
+            # routing v7：整条款路由出之前，先在 confirmed 吞并 heading 处切开——
+            # 程序性残骸照旧路由出，被连坐的技术内容获得独立判定（SBD 实证 2.3
+            # STATEMENT OF REQUIREMENTS 整章被利益冲突条款连坐）。切分零块位移。
+            split = (
+                _split_section_at_confirmed_headings(
+                    section, blocks_by_id, outline_cut_ids)
+                if outline_cut_ids else None
+            )
+            if split is not None:
+                pieces, cut_here = split
+                meta["outline_veto_split_sections"] += 1
+                meta["outline_veto_split_block_ids"].extend(cut_here)
+                for piece in pieces:
+                    _classify(piece)
+                return
             if tender_bucket == "tender_procedural":
                 tender_procedural.append(section)
             else:
                 tender_span.append(section)
-            continue
+            return
         block_ids = [str(b) for b in (section.get("block_ids") or []) if str(b)]
         has_table = bool(block_ids) and any(b in table_block_ids for b in block_ids)
         all_table = bool(block_ids) and all(b in table_block_ids for b in block_ids)
@@ -2538,8 +2685,11 @@ def apply_unit_routing(
                 block_routes |= routes_by_block.get(bid, set())
             if not (block_routes & _ROUTING_KEEP_ROUTES):
                 routed_out.append(section)
-                continue
+                return
         kept.append(section)
+
+    for section in sections:
+        _classify(section)
 
     meta.update(
         status="ok",
@@ -2563,13 +2713,17 @@ def apply_unit_routing(
         ] + [
             str(section.get("section_id") or "") for section in tender_span
         ],
+        # routing v7：三桶（表格/tender 程序性/tender 跨度）的块全部入清单——
+        # docstring「被路由出的条款清单（section/block id）全部写入 meta」承诺兑现
+        # （v6 只含表格桶，tender 两桶的块不在清单里，审计面不完整）。
         routed_out_block_ids=sorted({
-            str(b) for section in routed_out
+            str(b)
+            for section in (routed_out + tender_procedural + tender_span)
             for b in (section.get("block_ids") or []) if str(b)
         }),
         routed_out_review_units=sum(
             review_units_by_block.get(str(b), 0)
-            for section in routed_out
+            for section in (routed_out + tender_procedural + tender_span)
             for b in (section.get("block_ids") or []) if str(b)
         ),
         mixed_table_sections_kept=mixed_kept,
