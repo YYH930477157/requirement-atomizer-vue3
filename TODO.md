@@ -6,12 +6,17 @@
 
 ## 当前待办（2026-08-31 更新，全量交接见 `docs/handoff-2026-08-31.md`）
 
-- [ ] **门禁 B 轨剩余质量项**（v2 门禁：25 绑定 + 3 preservation）。result3
-  绑定归因已做（conservation v7 落地 reason 1 引句本地锚）；ABNT 那 25 条
-  reason 2 样本在另一台机器（`%TEMP%\ab-runner.9gqsr665\B_direct`），拿到后
-  复用 `tools/binding_attribution.py`。修后再跑门禁（A 全暖 ≈¥5-8）；B 过
-  守恒后 truth 阈值门首次评估 → PASS 才可议 `RATOMIZER_EXECUTION_POLICY`
-  默认翻转（计划 §31）。
+- [x] **门禁 B 轨剩余质量项归因**（2026-08-31 完成，含 E:\Codex 实测补位：
+  `docs/binding-attribution-2026-08-31.md` §7）：v7/v8 实测绑定 25→**2**（引句
+  逐字锚豁免 24）；剩余 2+3 中 **4 条同源于 Security 条款 Table 3 列序打乱拼接**
+  （输入侧病理，任务 D 领域，非 LLM 借位/丢数字）、1 条 b 类重复文本语义
+  （须审核方裁定）。
+- [ ] **WS0 门禁：挂起，等任务 D 设计落地**（2026-08-31 用户裁定——洞已见底
+  但洞底是设计项目不是运行，重跑只会买回同样 4 条 FAIL）。重开前置：① 任务 D
+  处理乱序表格条款（cell 守恒委托/结构化渲染）；② b 类重复文本语义裁定；
+  ③ **零成本重估 `RATOMIZER_EXECUTION_POLICY` 翻转边际价值**（功能直抽已是
+  生产默认、路由 v7/v8 已在默认路径，翻转价值比 08-17 时窄，先纸面重估再决定
+  是否继续付费）。重跑 ≈¥5-8（A 全暖，温缓存 `%TEMP%\ab-runner.9gqsr665\A_atoms`）。
 - [ ] **大纲权威 flag 翻转评估重启（可选）**：v1 验证已判 **No-Go**。重启前置
   里 heading-only 退化 objective **已修**（routing v8）；仍缺短条款抽取覆盖
   强化、可选 ¥7 对照腿；须在 routing v8 / conservation v7 基线上重新测量。
