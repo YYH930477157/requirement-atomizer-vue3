@@ -23,6 +23,29 @@
   legacy 指纹逐字节不变。
 - **已知未做**：「带标记的部分成文」（守恒失败项标红进 xlsx 而非整份扣下）待用户拍板。
 
+## 重大更新（2026-09-01）——待核成文（partial export）：对 08-19「守恒拦成文」的政策反转（用户拍板，merge codex/partial-export）
+
+> 动因：ABNT/SBD 实测「大多数条款抽对了，少数表有病」，整份成文被扣是在惩罚
+> 做对的部分——分析师一直拿不到需求表。grok 提案 + 分层语义表，ZCode 方案 v2
+> （`docs/pending-export-plan-2026-08-31.md`，grok 三条审核意见全部落实），
+> TDD 实施（`0a09c95`）。
+
+- **语义**：守恒判定/READY/Claim 发布/WS0 门禁零改动；只开旁路——守恒未闭合
+  或直抽 partial（mixed，SBD 主形态；failed/draft 一律仍拦，分流在
+  `functional_direct_basis` 单源）时，requirements-analysis/template-write/
+  clarification-report 照跑、manifest 记 **partial**（不可当干净复用），
+  失败面经 `conservation_pending_marks` 权威（block_ids 元组定位连带、撞名按
+  内容证据消歧、零 FRE 条款不造占位行）行级标「⚠待核（失败类）」进 xlsx
+  说明列（template_writer v3，不打 draft 水印）。首代发布走既有
+  `record_analysis_partial`（marker=incomplete，无新状态、不冒充完成代）。
+- **指纹面**：`conservation-partial-export-v1` + 开关有效值进两阶段 producer
+  （registry 同步；=0/=1 不互复用）；UI「成文已出（N 条待核）」。
+- **回滚**：`RATOMIZER_PARTIAL_EXPORT=0` 一键回整段拦截旧行为（ENV_REGISTRY）。
+- **验证**：15 新测试；主检出全量 4274 OK + UI vitest 286/build 绿；真实数据
+  终验（门禁 B 腿副本，零 LLM）：xlsx 落根 43 行待核（绑定 24/保留 25）。
+- **遗留口径**：payload `pending_marked_rows`（分析侧 FRE 计数）与写入器报告
+  `marked_rows`（实际成文行数）可能相差被过滤条目——各表各义，均如实。
+
 ## 重大更新（2026-08-30c）——门禁重跑 v2（≤¥20 达标：实付 ¥17.80）：A 轨首次完整通过，B 轨失败面收敛至 25 绑定 + 3 preservation
 
 > `docs/ws0-gate-result-v2-2026-08-30.md` 归档。warm cache（A 抽取 ¥14.18，省 ≈¥27）
