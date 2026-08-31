@@ -219,7 +219,9 @@ def _section_context(req: dict[str, Any], blocks_by_id: dict[str, dict[str, Any]
 _FUNCTIONAL_PRODUCER_FAMILIES = ("functional-synthesis", "functional-extract")
 
 
-def _raise_if_functional_extract_unconserved(synthesized_payload: dict[str, Any]) -> None:
+def _raise_if_functional_extract_unconserved(
+    synthesized_payload: dict[str, Any], *, allow_unclosed: bool = False,
+) -> None:
     """S1-2 成文导出闸门：functional-extract 直抽产物守恒未闭合即 raise，阻断成文上游。
 
     functional_extract 的 ``conservation_report`` 投影在 ``functional_requirements.json``
@@ -227,23 +229,62 @@ def _raise_if_functional_extract_unconserved(synthesized_payload: dict[str, Any]
     闭合即调 ``functional_extract.raise_if_unconserved`` 抛 ``FunctionalConservationError``，
     不让不守恒的功能需求级产物静默进归属分类 / 软件 LLM / 研发模板成文（仅 payload 标志位
     不够——验收要求「导出被阻断」）。functional-synthesis 无守恒块，缺块时按现状放行。
+    partial export（2026-09-01）：``allow_unclosed=True`` 时不抛——未闭合基线照跑，
+    失败面由 ``functional_extract.conservation_pending_marks`` 行级「待核」标记承接。
     """
     conservation = synthesized_payload.get("conservation")
     if not isinstance(conservation, dict):
         return
     from functional_extract import raise_if_unconserved
-    raise_if_unconserved(conservation)
+    raise_if_unconserved(conservation, allow_unclosed=allow_unclosed)
 
 
-def _functional_direct_basis(out_dir: Path) -> list[dict[str, Any]] | None:
+def _functional_direct_basis(
+    out_dir: Path, *, allow_unclosed: bool = False,
+) -> list[dict[str, Any]] | None:
     """直抽产物可否作为唯一需求依据（无原子链形态，RATOMIZER_FUNCTIONAL_EXTRACT=1）。
 
     判定单源在 ``functional_extract.functional_direct_basis``（analyze/clarification 共用，
     守恒未闭合在那里响亮失败）；此处薄封装仅为本地调用点留稳定锚。
+    partial export 的 ``allow_unclosed`` 直通（partial/failed 分流在单源内做）。
     """
     from functional_extract import functional_direct_basis
 
-    return functional_direct_basis(out_dir)
+    return functional_direct_basis(out_dir, allow_unclosed=allow_unclosed)
+
+
+def _attach_conservation_pending_marks(
+    out_dir: Path,
+    requirements: list[dict[str, Any]],
+) -> dict[str, list[str]]:
+    """partial export：给直抽需求行挂 ``conservation_pending`` 待核标记（权威单源）。
+
+    读 functional_requirements.json 的 conservation 报告 + 守恒基线条款，经
+    ``functional_extract.conservation_pending_marks`` 得 ``{fre_id: [失败类]}``，
+    就地写入需求行的 ``conservation_pending.classes``（干净行不带该字段）。
+    返回标记表供载荷计数。报告闭合时零副作用。
+    """
+    try:
+        payload = json.loads(
+            (Path(out_dir) / "functional_requirements.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    conservation = payload.get("conservation") if isinstance(payload, dict) else None
+    if not isinstance(conservation, dict) or conservation.get("ok", True):
+        return {}
+    items = payload.get("items") if isinstance(payload.get("items"), list) else []
+    from functional_extract import (
+        conservation_pending_marks,
+        load_conservation_baseline,
+    )
+
+    sections = load_conservation_baseline(out_dir)
+    marks = conservation_pending_marks(conservation, items, sections)
+    for row in requirements:
+        fre_id = str(row.get("functional_requirement_id") or "")
+        if fre_id in marks:
+            row["conservation_pending"] = {"classes": list(marks[fre_id])}
+    return marks
 
 
 def run_requirements_analysis(
@@ -255,21 +296,36 @@ def run_requirements_analysis(
     pipeline_path: Path | None = None,
     concurrency: int | None = None,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
+    allow_unclosed: bool = False,
 ) -> dict[str, Any]:
     out_dir = Path(out_dir).expanduser().resolve()
     synthesized_path = out_dir / "functional_requirements.json"
     source_path = out_dir / "ai_requirements.jsonl"
+    unclosed_basis = False
+    pending_marks: dict[str, list[str]] = {}
     if not source_path.exists():
         # WS2 直抽链形态（无原子）：functional_requirements.json 出自 functional-extract 且
         # 守恒闭合时，直抽产物即唯一需求依据。其余情况维持响亮失败——静默产出
         # "0 条 0 问题"的空交付物会掩盖打错目录（仓库纪律）。
-        direct_basis = _functional_direct_basis(out_dir)
+        # partial export：allow_unclosed 下守恒未闭合/直抽 partial 放行（failed 仍拦，
+        # 分流在 functional_direct_basis 单源内）。
+        direct_basis = _functional_direct_basis(out_dir, allow_unclosed=allow_unclosed)
         if direct_basis is None:
             raise FileNotFoundError(
                 f"ai_requirements.jsonl not found in {out_dir} — 请先运行「AI 抽取」，"
                 "或走功能直抽链（RATOMIZER_FUNCTIONAL_EXTRACT=1 的 chain）后再做需求分析")
         raw_requirements: list[dict[str, Any]] = []
         requirements = direct_basis
+        if allow_unclosed:
+            try:
+                fr_payload = json.loads(synthesized_path.read_text(encoding="utf-8"))
+                conservation = fr_payload.get("conservation") if isinstance(fr_payload, dict) else None
+                unclosed_basis = bool(
+                    isinstance(conservation, dict) and not conservation.get("ok", True))
+            except (OSError, json.JSONDecodeError):
+                unclosed_basis = False
+            if unclosed_basis:
+                pending_marks = _attach_conservation_pending_marks(out_dir, requirements)
     else:
         raw_requirements = read_jsonl(source_path)
         if synthesized_path.exists():
@@ -289,7 +345,14 @@ def run_requirements_analysis(
                     LOGGER.warning("functional_requirements.json producer 异常（%s），回退逐原子输入", producer or "缺失")
                     requirements = None
                 elif producer.startswith("functional-extract"):
-                    _raise_if_functional_extract_unconserved(synthesized_payload)
+                    _raise_if_functional_extract_unconserved(
+                        synthesized_payload, allow_unclosed=allow_unclosed)
+                    if allow_unclosed and isinstance(requirements, list):
+                        conservation = synthesized_payload.get("conservation")
+                        if isinstance(conservation, dict) and not conservation.get("ok", True):
+                            unclosed_basis = True
+                            pending_marks = _attach_conservation_pending_marks(
+                                out_dir, requirements)
             if not isinstance(requirements, list):
                 requirements = raw_requirements
         else:
@@ -527,6 +590,11 @@ def run_requirements_analysis(
         "input_completeness": payload["input_completeness"],
         "written": [xlsx_path.name] + [n for n in OUTPUT_FILES if n != "software_requirements.xlsx"],
     }
+    if unclosed_basis:
+        # partial export：未闭合基线上的分析——chain 侧据此记阶段 partial（非 ok），
+        # 待核行数供运行页「成文已出（N 条待核）」。
+        result["unclosed_basis"] = True
+        result["pending_marked_rows"] = len(pending_marks)
     if xlsx_path.name != "software_requirements.xlsx":
         result["note_xlsx"] = f"目标被占用，已另存 {xlsx_path.name}"
     if note:
@@ -1490,6 +1558,12 @@ def _base_item(index: int, req: dict[str, Any], vocabulary: dict[str, Any]) -> d
         "exceptions": [str(value).strip() for value in _as_list(req.get("exceptions")) if str(value).strip()],
         "related_dlms_objects": [str(value).strip() for value in _as_list(req.get("related_dlms_objects")) if str(value).strip()],
         "functional_requirement_id": str(req.get("functional_requirement_id") or "").strip(),
+        # partial export（2026-09-01）：守恒待核标记随行透传（干净行为 None——
+        # template_writer 只认 dict，不落键保持行形状稳定）
+        "conservation_pending": (
+            dict(req["conservation_pending"])
+            if isinstance(req.get("conservation_pending"), dict) else None
+        ),
         "functional_key": str(req.get("functional_key") or "").strip(),
         "merge_method": str(req.get("merge_method") or "").strip(),
         "merge_confidence": req.get("merge_confidence"),

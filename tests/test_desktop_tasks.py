@@ -698,7 +698,8 @@ class DesktopTaskTests(unittest.TestCase):
 
         from desktop_tasks import emit_progress
         run_analysis.assert_called_once_with(out_dir.resolve(), route="stub", template_path=template,
-                                             progress_callback=emit_progress)
+                                             progress_callback=emit_progress,
+                                             allow_unclosed=False)
         self.assertEqual(payload["kind"], "requirements_analysis")
         self.assertEqual(payload["analysis"]["analysis_count"], 1)
         self.assertEqual(
@@ -1211,8 +1212,10 @@ class ChainAndManifestTests(unittest.TestCase):
             ),
             "assemble": "assemble_spec/v1+enrich-v4+enrich-guards-v1+ai-supplement-v3-identity-preconditions+impl-v2",
             "functional-synthesis": "functional-synthesis-v8+ai-supplement-v3-identity-preconditions+impl-v4",
-            "requirements-analysis": "analyze-llm-v8+analyze-unfounded-v4+analyze-rules-v1+ai-supplement-v3-identity-preconditions+impl-v6",
-            "template-write": "template_writer/v1+ai-supplement-v3-identity-preconditions+impl-v5",
+            # partial export（2026-09-01）：两阶段 producer 末尾追加待核标记算法
+            # 身份 + 开关有效值（测试环境未设开关 → 默认 True）
+            "requirements-analysis": "analyze-llm-v8+analyze-unfounded-v4+analyze-rules-v1+ai-supplement-v3-identity-preconditions+conservation-partial-export-v1+partial-export-True+impl-v6",
+            "template-write": "template_writer/v1+ai-supplement-v3-identity-preconditions+conservation-partial-export-v1+partial-export-True+impl-v5",
             "clarification-report": "clarification/v8-param-row-aggregate+ai-supplement-v3-identity-preconditions+impl-v6",
             "compose": "engineering_composer/v1+ai-supplement-v3-identity-preconditions+impl-v2",
             "export-annotation-html": (
@@ -2016,7 +2019,7 @@ class ChainAndManifestTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             out = Path(td)
             with (mock.patch.object(desktop_tasks, "clarification_report_task",
-                                    side_effect=lambda o: (calls.append("clarification-report") or
+                                    side_effect=lambda o, **k: (calls.append("clarification-report") or
                                                            {"kind": "clarification_report", "questions": 7,
                                                             "readiness": {"verdict": "READY", "reasons": []},
                                                             "summary": {"big": 1}})),

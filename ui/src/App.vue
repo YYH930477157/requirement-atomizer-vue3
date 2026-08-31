@@ -2269,7 +2269,13 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
         }
         if (chainPayload?.conservation_blocked) {
           const block = String(chainPayload.conservation_block_error || "功能需求守恒核对未闭合")
-          readinessNote += `；成文已阻断：${shortConservationError(block)}`
+          if (chainPayload?.partial_export) {
+            // partial export：未闭合但表已出——区分「拦住了、没有表」与「未闭合、表已出」
+            const pending = Number(chainPayload.pending_marked_rows ?? 0)
+            readinessNote += `；成文已出（${pending} 条待核）：${shortConservationError(block)}`
+          } else {
+            readinessNote += `；成文已阻断：${shortConservationError(block)}`
+          }
         }
         lastStageNotes.value = chainNotes
         // 运行页总览瓦片（样机）：从链载荷提取,缺项保持 —
