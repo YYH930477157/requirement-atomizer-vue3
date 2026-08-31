@@ -70,7 +70,9 @@ PROMPT_REGISTRY: list[dict[str, str]] = [
     # 会静默剥掉非委托块内容）。
     # v6（2026-08-30 门禁复盘）：义务基线剔除内容词<2 的 lead-in/空壳碎片单元
     # （_is_fragment_obligation_unit），剔除量在 conservation 报告 fragment_units_excluded 审计。
-    {"id": "functional-extract-conservation", "version": "functional-conservation-obligation-evidence-v6",
+    # v7（2026-08-31）：绑定检查 reason 1 承认「引句逐字锚定声明条款」为本地锚
+    # （义务覆盖检查 2 不动；放行后 reason 2 不再被短路）。
+    {"id": "functional-extract-conservation", "version": "functional-conservation-obligation-evidence-v7",
      "owner_module": "functional_extract",
      "purpose": "Functional extract obligation/evidence conservation model version"},
 
