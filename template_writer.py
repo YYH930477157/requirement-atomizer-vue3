@@ -122,6 +122,9 @@ def build_row_values(item: dict[str, Any], seq: int,
     ``columns`` 是按表头名解析的列位（v2）；缺省/None 回退固定列位常量（v1 契约，
     计量需求拆分列场景）。列语义键：seq/submodule/question/answer/notes/
     is_customer/section/hw。
+    v3（partial export，2026-09-01）：``conservation_pending.classes`` 非空的条目
+    说明列前缀「⚠待核（失败类标签）」——失败类措辞单源在
+    ``functional_extract.pending_class_label``；不打 draft 水印（那是 stub 语义）。
     """
     hw = "是" if item.get("ownership") == OWNERSHIP_CO_DESIGN else ""
     resolved = columns or {}
@@ -135,12 +138,20 @@ def build_row_values(item: dict[str, Any], seq: int,
         objective = str(item.get("objective") or "").strip()
         if objective:
             body = f"目标：{objective}"
+    notes = _notes_text(item)
+    pending = item.get("conservation_pending") if isinstance(
+        item.get("conservation_pending"), dict) else None
+    if pending and pending.get("classes"):
+        from functional_extract import pending_class_label
+
+        prefix = f"⚠待核（{pending_class_label(pending['classes'])}）"
+        notes = f"{prefix} {notes}".strip()
     return {
         resolved.get("seq", _COL_SEQ): seq,
         resolved.get("submodule", _COL_SUBMODULE): item.get("submodule") or item.get("module") or "",
         resolved.get("question", _COL_QUESTION): item.get("description") or "",
         resolved.get("answer", _COL_ANSWER): body,
-        resolved.get("notes", _COL_NOTES): _notes_text(item),
+        resolved.get("notes", _COL_NOTES): notes,
         resolved.get("is_customer", _COL_IS_CUSTOMER): "是",
         resolved.get("section", _COL_SECTION): item.get("source_section") or "",
         resolved.get("hw", _COL_HW): hw,
@@ -194,6 +205,8 @@ def append_analysis_to_template(template_path: Path, items: list[dict[str, Any]]
     skipped_hardware = 0
     skipped_compliance = 0
     skipped_empty = 0
+    pending_rows = 0
+    pending_classes: dict[str, int] = {}
 
     software_items = []
     for item in items:
@@ -233,6 +246,12 @@ def append_analysis_to_template(template_path: Path, items: list[dict[str, Any]]
                 continue
             for col, value in build_row_values(item, seq, columns).items():
                 ws.cell(row=row_idx, column=col, value=_safe_cell(value))
+            pending = item.get("conservation_pending") if isinstance(
+                item.get("conservation_pending"), dict) else None
+            if pending and pending.get("classes"):
+                pending_rows += 1
+                for cls in pending["classes"]:
+                    pending_classes[str(cls)] = pending_classes.get(str(cls), 0) + 1
             seq += 1
             row_idx += 1
             written_here += 1
@@ -247,6 +266,12 @@ def append_analysis_to_template(template_path: Path, items: list[dict[str, Any]]
             "skipped_compliance": skipped_compliance,
             "skipped_empty_items": skipped_empty,
             "column_resolution": column_resolution,
+            # partial export（v3）：待核行级标记审计（template_write_task 据此
+            # 自报 unclosed_basis → 阶段记 partial；类计数供报告/UI）
+            "conservation_pending_export": {
+                "marked_rows": pending_rows,
+                "classes": dict(sorted(pending_classes.items())),
+            } if pending_rows else None,
             "workbook": out_path.name}
 
 
@@ -261,7 +286,7 @@ def run_writer(out_dir: Path, template_path: Path) -> dict[str, Any]:
     out_path = out_dir / WRITTEN_WORKBOOK
     report = append_analysis_to_template(template_path, items, out_path)
     from requirement_record import provenance as _prov
-    report["provenance"] = _prov("template_writer", "template_writer/v2")
+    report["provenance"] = _prov("template_writer", "template_writer/v3")
     unmapped, extra = module_mapping_drift()
     if unmapped or extra:
         report["module_mapping_drift"] = {"unmapped_vocab": unmapped, "extra_keys": extra}

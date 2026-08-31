@@ -556,6 +556,7 @@ def requirements_analysis_task(
     *,
     route: str = "stub",
     template_path: Path | None = None,
+    allow_unclosed: bool = False,
 ) -> dict[str, Any]:
     out_dir = out_dir.expanduser().resolve()
     analysis = run_requirements_analysis(
@@ -563,6 +564,7 @@ def requirements_analysis_task(
         route=route,
         template_path=resolve_template_path(template_path),
         progress_callback=emit_progress,  # 富化逐条上报（GUI n/total，并发度走 RATOMIZER_LLM_CONCURRENCY）
+        allow_unclosed=allow_unclosed,  # partial export：未闭合基线照跑（直连默认 False=旧行为）
     )
     # 只上报真实存在的产物（此前无条件列出 4 个文件，失败时载荷撒谎）
     names = analysis.get("written") or REQUIREMENTS_ANALYSIS_OUTPUTS
@@ -571,6 +573,11 @@ def requirements_analysis_task(
         "kind": "requirements_analysis",
         "out_dir": str(out_dir),
         "analysis": analysis,
+        # partial export：未闭合基线自报（_stage_completion_status 据此记 partial；
+        # chain 聚合 partial_export / pending_marked_rows）
+        **({"unclosed_basis": True,
+            "pending_marked_rows": int(analysis.get("pending_marked_rows") or 0)}
+           if analysis.get("unclosed_basis") else {}),
         "written": written,
         "summary": _stage_summary(out_dir),
     }
@@ -588,12 +595,14 @@ def resolve_template_path(template_path: Path | None) -> Path | None:
 
 
 @_leased_pipeline_stage("clarification-report")
-def clarification_report_task(out_dir: Path) -> dict[str, Any]:
+def clarification_report_task(
+    out_dir: Path, *, allow_unclosed: bool = False,
+) -> dict[str, Any]:
     """澄清问题清单 + 就绪判定（确定性零 LLM）：全链疑问信号聚合成评审会可用的问客户清单。"""
     from clarification_report import run_report
 
     out_dir = out_dir.expanduser().resolve()
-    report = run_report(out_dir)
+    report = run_report(out_dir, allow_unclosed=allow_unclosed)
     return {
         "kind": "clarification_report",
         "out_dir": str(out_dir),
@@ -859,10 +868,16 @@ def template_write_task(out_dir: Path, template_path: Path) -> dict[str, Any]:
 
     out_dir = out_dir.expanduser().resolve()
     report = run_writer(out_dir, template_path.expanduser().resolve())
+    pending = report.get("conservation_pending_export") if isinstance(
+        report.get("conservation_pending_export"), dict) else None
     return {
         "kind": "template_write",
         "out_dir": str(out_dir),
         "report": report,
+        # partial export：v3 成文报告带待核导出块——自报供阶段记 partial/链聚合
+        **({"unclosed_basis": True,
+            "pending_marked_rows": int(pending.get("marked_rows") or 0)}
+           if pending else {}),
         "written": [str(out_dir / name) for name in report.get("written") or []
                     if (out_dir / name).exists()],
         "summary": _stage_summary(out_dir),
@@ -1242,6 +1257,16 @@ def stage_producer(stage: str, *, out_dir: Path | None = None,
         }:
             from omission_actions import AI_SUPPLEMENT_VERSION
             producer = f"{producer}+{AI_SUPPLEMENT_VERSION}"
+        if stage in {"requirements-analysis", "template-write"}:
+            # partial export（2026-09-01，grok 审核第 2 条）：待核标记算法身份与
+            # 开关有效值进戳——分析行多了 conservation_pending、xlsx 说明列多了
+            # 「待核」，不进戳则续跑复用未标记旧产物；=0/=1 不得互复用
+            # （_stage_is_reusable 逐字节比较 producer）。
+            from functional_extract import CONSERVATION_PARTIAL_EXPORT_VERSION
+            producer = (
+                f"{producer}+{CONSERVATION_PARTIAL_EXPORT_VERSION}"
+                f"+partial-export-{_partial_export_enabled()!r}"
+            )
     except Exception:  # pragma: no cover - 版本戳失败不阻断任务
         pass
     revision = STAGE_IMPLEMENTATION_REVISIONS.get(stage)
@@ -2364,6 +2389,11 @@ def _stage_completion_status(stage: str, payload: Any) -> str:
         failed_sections = int(payload.get("failed_sections") or quality.get("failed_sections") or 0)
         if failed_sections > 0:
             return "partial"
+    # partial export（2026-09-01）：未闭合基线上的分析/成文/澄清记 partial（非 ok）——
+    # 不被 stage_is_reusable 当干净代复用；载荷标志由各阶段任务按产物状态自报。
+    if stage in {"requirements-analysis", "template-write", "clarification-report"} \
+            and isinstance(payload, dict) and payload.get("unclosed_basis"):
+        return "partial"
     # §3.5（2026-08-15）：直抽执行结果类别与 manifest 同语义——stub 降级=failed、
     # mixed=partial，不记 ok（run_manifest / readiness / 结果包完成证据三处口径一致）。
     if stage == "functional-extract" and isinstance(payload, dict):
@@ -2406,6 +2436,15 @@ def _replace_functional_extract_stages(stages: Iterable[str]) -> list[str]:
         if stage not in replaced:
             replaced.append(stage)
     return replaced
+
+
+def _partial_export_enabled() -> bool:
+    """待核成文开关（config 单源；默认开，=0 回整段拦截旧行为——政策反转的回滚通道）。"""
+    from config import get_env
+
+    return str(get_env("RATOMIZER_PARTIAL_EXPORT") or "1").strip().lower() not in {
+        "0", "false", "off", "",
+    }
 
 
 def _functional_extract_stage_config() -> dict[str, Any]:
@@ -2515,6 +2554,9 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
             "请使用 openai_compatible 完成 AI 抽取后再继续。"
         )
 
+    # partial export（2026-09-01，用户拍板政策反转，RATOMIZER_PARTIAL_EXPORT 默认开）：
+    # 守恒未闭合/直抽 partial（mixed）时，gated 三阶段照跑并如实标 partial；=0 回旧行为。
+    partial_export = _partial_export_enabled()
     runners: dict[str, Any] = {
         "ai-extract": lambda: ai_extract_task(out_dir, route=route,
                                               limit_sections=limit_sections,
@@ -2523,9 +2565,11 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
         "functional-synthesis": lambda: functional_synthesis_task(out_dir, route=route),
         "assemble": lambda: assemble_task(out_dir, enrich_route=route if route != "stub" else None),
         "requirements-analysis": lambda: requirements_analysis_task(
-            out_dir, route=route, template_path=template_path),
+            out_dir, route=route, template_path=template_path,
+            allow_unclosed=partial_export),
         "template-write": lambda: template_write_task(out_dir, template_path),
-        "clarification-report": lambda: clarification_report_task(out_dir),
+        "clarification-report": lambda: clarification_report_task(
+            out_dir, allow_unclosed=partial_export),
         "full-translation": lambda: full_translation_task(out_dir, route=route),
         "compose": lambda: compose_task(out_dir),
         "export-annotation-html": lambda: export_annotation_html_task(
@@ -2702,6 +2746,20 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
             stage_payload.pop("_input_files_fingerprint", None)
             stage_payload.pop("summary", None)   # 各阶段的 summary 体积大且重复，链尾统一给一份
             results[stage] = stage_payload
+            # partial export 聚合：gated 阶段在未闭合基线上跑过 → 链载荷如实记
+            # 「未闭合 + 表已出」双事实（conservation_blocked 保留旧义，新增
+            # partial_export / pending_marked_rows 供 UI 区分两种形态）。
+            if stage in conservation_gated and stage_payload.get("unclosed_basis"):
+                payload["conservation_blocked"] = True
+                payload.setdefault(
+                    "conservation_block_error",
+                    "功能需求守恒核比对未闭合——待核成文旁路（partial export）",
+                )
+                payload["partial_export"] = True
+                payload["pending_marked_rows"] = max(
+                    int(payload.get("pending_marked_rows") or 0),
+                    int(stage_payload.get("pending_marked_rows") or 0),
+                )
             # 顶层聚合：GUI 消息只看这几个键，不必翻 results
             if stage == "ai-extract":
                 for key in ("consistency", "sampled", "quality", "count", "claim_shadow"):

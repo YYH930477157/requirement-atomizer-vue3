@@ -76,6 +76,13 @@ PROMPT_REGISTRY: list[dict[str, str]] = [
      "owner_module": "functional_extract",
      "purpose": "Functional extract obligation/evidence conservation model version"},
 
+    # partial export（2026-09-01，用户拍板政策反转）：守恒待核行级标记算法身份。
+    # 登记 + 进 requirements-analysis/template-write 的 stage producer 与指纹
+    # （desktop_tasks.stage_producer——只登记不进戳不够，续跑会复用未标记旧产物）。
+    {"id": "conservation-partial-export", "version": "conservation-partial-export-v1",
+     "owner_module": "functional_extract",
+     "purpose": "Partial export pending-mark algorithm identity (conservation_pending_marks)"},
+
     # Table understanding
     {"id": "llm-table-understanding", "version": "llm-table-understanding-prompt-v1",
      "owner_module": "llm_table_understanding",

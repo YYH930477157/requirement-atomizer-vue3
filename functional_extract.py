@@ -100,6 +100,12 @@ FUNCTIONAL_CONSERVATION_MODEL_VERSION = "functional-conservation-obligation-evid
 FUNCTIONAL_UNIT_ROUTING_VERSION = "functional-unit-routing-v8"  # v8（2026-08-31，heading-only 条款出抽取池）：只有标题没有实质正文的条款（全部块为 heading/heading 回显、义务单元数 0、无表格块）确定性路由出 B 轨输入与守恒基线——SBD result3 实证 TGS 章 24 个 heading-only 条款在 LLM 失败时退化 stub（"实现{heading}，并满足来源条款。"），成功时也只能回显标题（零义务内容，无可抽取）。判据三条全满足才路由出（宁漏勿错：非 heading 块有任何实质文本即保留，含 v6 碎片过滤会剔掉义务的碎片正文）；meta 新增 heading_only_sections_routed_out/heading_only_section_ids，块入 routed_out_block_ids/review_units 四桶合并。v7（2026-08-30，路由连坐窄门修）：tender 聚合路由出之前，条款内 confirmed 的被吞并 heading（document_outline 报告，只读）先切开再分别路由——程序性残骸照旧路由出，被连坐的技术内容（SBD 实证 2.3 STATEMENT OF REQUIREMENTS 整章）获得独立判定。纯切分零块位移（不做 toc 剔除/demoted 并入——那是 outline authority flag 的语义）；无 confirmed 吞并时行为与 v6 一致；routed_out_block_ids 补齐 tender 两桶（兑现 docstring「全部写入 meta」承诺）。v6（2026-08-27，WS-B）：节级 tender 判定改为义务主体+跨度聚合。R2 返工：标题词表先验（own title 程序性且非产品主语）；跨度改为非产品主语即可（不再要求无模态）；technical 否决改为 own title/path（块内吞进的下一章 technical heading 不否决程序性残骸）。v5（2026-08-27，P3）：逐标题路由分支补 technical 反向否决 + P2 路由键并入 tender_region_filter 版本。v4：句子形程序性 heading 窄锚点 + v3 跨度继承/前置样板编号剥离
 FUNCTIONAL_REQUIREMENTS_FILENAME = "functional_requirements.json"
 FUNCTIONAL_EXTRACT_CACHE = "functional_extract_cache.jsonl"
+# 待核成文（partial export，2026-09-01 用户拍板的政策反转）：守恒未闭合/直抽
+# partial（mixed）时分析·成文·澄清照跑并如实标 partial，失败面行级「待核」标记
+# 算法身份。进 requirements-analysis / template-write 的 stage producer 与阶段
+# 指纹（含 RATOMIZER_PARTIAL_EXPORT 有效值）——不进 functional-extract 指纹，
+# 不 bump 守恒模型（判定语义零改动）。开关 RATOMIZER_PARTIAL_EXPORT=0 回旧行为。
+CONSERVATION_PARTIAL_EXPORT_VERSION = "conservation-partial-export-v1"
 
 # P0-8：负例 few-shot 注入数量上限（可配）。§3.6：改经 config 单源读取（运行时求值，
 # 进程内改 env 即生效——旧 import 时常量在同进程 shadow 场景下不刷新）。
@@ -1834,13 +1840,21 @@ def conservation_report(
     }
 
 
-def raise_if_unconserved(report: dict[str, Any]) -> None:
+def raise_if_unconserved(
+    report: dict[str, Any], *, allow_unclosed: bool = False,
+) -> dict[str, Any] | None:
     """成文导出闸门：守恒核对存在任一 blocking 失败类别即抛 FunctionalConservationError。
 
     兼容旧形报告（只有顶层 ok）——ok=False 一律阻塞；新形报告按分项类别给出计数。
+    partial export（2026-09-01，用户拍板的政策反转）：``allow_unclosed=True`` 时
+    不抛，返回待核摘要（``{ok, pending_fre_ids}``，FRE id 取自
+    :func:`conservation_pending_marks` 的直接点名集合）——守恒判定本身不动，
+    只是分析/成文层获准在未闭合基线上继续并如实标 partial。
     """
     if report.get("ok", True):
-        return
+        return {"ok": True, "pending_fre_ids": []}
+    if allow_unclosed:
+        return {"ok": False, "pending_fre_ids": sorted(_pending_direct_fre_ids(report))}
     checks = report.get("checks") if isinstance(report.get("checks"), dict) else {}
     if checks:
         detail = "；".join(
@@ -1858,6 +1872,176 @@ def raise_if_unconserved(report: dict[str, Any]) -> None:
     raise FunctionalConservationError(
         f"功能需求守恒核对未闭合（{detail}），阻塞成文导出（强制人工）"
     )
+
+
+# --- 待核成文（partial export，2026-09-01）标记权威 ----------------------------
+# 方案 docs/pending-export-plan-2026-08-31.md v2（grok 审核三条）。守恒判定/报告
+# 零改动；这里只把失败面投影成「FRE id → 失败类」供成文行级标记与 UI 计数。
+# 判据纪律：定位键 = 条款 block_ids 元组（禁 section_id 字符串定位，SBD 撞名病理）；
+# uncovered/preservation finding 只带 section_id——按 id 候选 + 内容证据（义务句
+# squash-包含 / 保留 token 在场）确定性还原到块集；无法唯一还原时对同 id 候选
+# 取并集（宁多标不漏标）。duplicates 组自带 FRE id 清单，只标组内成员。
+# 零 FRE 条款不造占位行（没有行可标）。版本：CONSERVATION_PARTIAL_EXPORT_VERSION。
+_PENDING_CLASS_LABELS = {
+    "binding": "绑定失配",
+    "evidence": "证据失配",
+    "uncovered": "义务未覆盖",
+    "preservation": "保留丢失",
+    "duplicate": "重复需求",
+}
+
+
+def pending_class_label(classes: Sequence[str]) -> str:
+    """失败类 → 人读标签（成文说明列与 UI 共用，单一措辞权威）。"""
+    return "、".join(
+        _PENDING_CLASS_LABELS.get(str(cls), str(cls)) for cls in classes
+    )
+
+
+def _pending_direct_fre_ids(report: dict[str, Any]) -> set[str]:
+    """binding/evidence/duplicates 直接点名的 FRE id 集。"""
+    checks = report.get("checks") if isinstance(report.get("checks"), dict) else {}
+    named: set[str] = set()
+    evidence = checks.get("evidence_presence") if isinstance(checks.get("evidence_presence"), dict) else {}
+    for row in (evidence.get("binding_mismatches") or []) + (
+            evidence.get("evidence_mismatches") or []) + (
+            evidence.get("items_without_evidence") or []):
+        if isinstance(row, dict) and row.get("functional_requirement_id"):
+            named.add(str(row["functional_requirement_id"]))
+    duplicates = checks.get("duplicates") if isinstance(checks.get("duplicates"), dict) else {}
+    for group in duplicates.get("groups") or []:
+        if isinstance(group, dict):
+            named.update(
+                str(fre_id) for fre_id in (group.get("functional_requirement_ids") or [])
+                if fre_id
+            )
+    return named
+
+
+def _squash_contains(haystack: str, needle: str) -> bool:
+    return bool(needle) and needle in haystack
+
+
+def _clause_block_candidates(
+    sections: Sequence[dict[str, Any]], section_id: str, *,
+    sentence: str = "", token: str = "",
+) -> list[tuple[str, ...]]:
+    """finding → 候选条款块集（block_ids 元组）。id 撞名时按内容证据收窄。"""
+    candidates = [
+        tuple(str(b) for b in (s.get("block_ids") or []) if str(b))
+        for s in sections if str(s.get("section_id") or "") == section_id
+    ]
+    if len(candidates) > 1:
+        if sentence:
+            needle = _squashed(sentence)
+            narrowed = [
+                blocks for blocks, s in zip(candidates, [
+                    sec for sec in sections
+                    if str(sec.get("section_id") or "") == section_id
+                ])
+                if _squash_contains(_squashed(str(s.get("text") or "")), needle)
+            ]
+            if narrowed:
+                return narrowed
+        if token:
+            narrowed = [
+                blocks for blocks, s in zip(candidates, [
+                    sec for sec in sections
+                    if str(sec.get("section_id") or "") == section_id
+                ])
+                if token.lower() in str(s.get("text") or "").lower()
+            ]
+            if narrowed:
+                return narrowed
+    return candidates
+
+
+def conservation_pending_marks(
+    report: dict[str, Any],
+    items: Sequence[dict[str, Any]],
+    sections: Sequence[dict[str, Any]],
+) -> dict[str, list[str]]:
+    """守恒失败面 → ``{functional_requirement_id: [失败类]}``（待核行级标记权威）。
+
+    - binding / evidence / duplicate：直接点名（duplicates 只标组内成员）；
+    - uncovered / preservation：finding 所在条款（块集定位）上**声明的** FRE 连带
+      （``source_block_ids`` 与条款 ``block_ids`` 相交——与检查 5 叙述并集同口径）；
+    - 报告闭合（ok=True）返回空——无失败即无待核。
+    """
+    if report.get("ok", True):
+        return {}
+    checks = report.get("checks") if isinstance(report.get("checks"), dict) else {}
+    evidence = checks.get("evidence_presence") if isinstance(
+        checks.get("evidence_presence"), dict) else {}
+    duplicates = checks.get("duplicates") if isinstance(
+        checks.get("duplicates"), dict) else {}
+    obligation = checks.get("obligation_coverage") if isinstance(
+        checks.get("obligation_coverage"), dict) else {}
+    preservation = checks.get("preservation") if isinstance(
+        checks.get("preservation"), dict) else {}
+    marks: dict[str, list[str]] = {}
+
+    def _mark(fre_id: str, cls: str) -> None:
+        if not fre_id:
+            return
+        classes = marks.setdefault(fre_id, [])
+        if cls not in classes:
+            classes.append(cls)
+
+    for row in evidence.get("binding_mismatches") or []:
+        if isinstance(row, dict):
+            _mark(str(row.get("functional_requirement_id") or ""), "binding")
+    for row in (evidence.get("evidence_mismatches") or []) + (
+            evidence.get("items_without_evidence") or []):
+        if isinstance(row, dict):
+            _mark(str(row.get("functional_requirement_id") or ""), "evidence")
+    for group in duplicates.get("groups") or []:
+        if isinstance(group, dict):
+            for fre_id in group.get("functional_requirement_ids") or []:
+                _mark(str(fre_id), "duplicate")
+
+    def _connect(rows: Sequence[dict[str, Any]], cls: str, *, key: str) -> None:
+        block_union: set[str] = set()
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            evidence_value = str(row.get(key) or "")
+            for blocks in _clause_block_candidates(
+                sections, str(row.get("section_id") or ""),
+                **({key: evidence_value} if evidence_value else {}),
+            ):
+                block_union.update(blocks)
+        if not block_union:
+            return
+        for item in items:
+            declared = {str(b) for b in (item.get("source_block_ids") or [])}
+            if declared & block_union:
+                _mark(str(item.get("functional_requirement_id") or ""), cls)
+
+    _connect(obligation.get("uncovered_obligations") or [], "uncovered", key="sentence")
+    _connect(preservation.get("blocking_losses") or [], "preservation", key="token")
+    return {fre_id: classes for fre_id, classes in marks.items() if classes}
+
+
+def load_conservation_baseline(out_dir: Path | str) -> list[dict[str, Any]]:
+    """守恒基线条款（路由保留集）——标记侧与 conservation_report 同口径重建。
+
+    供 partial export 标记与 UI 计数复用；不写任何产物。
+    """
+    root = Path(out_dir).expanduser().resolve()
+    sections = load_clauses(root)
+    if not sections:
+        return []
+    from io_utils import read_jsonl
+    from result_package import governed_artifact_path
+
+    blocks_path = governed_artifact_path(root, "blocks.jsonl", category="pipeline", for_write=False)
+    blocks = read_jsonl(blocks_path) if blocks_path.is_file() else []
+    try:
+        kept, _meta = apply_unit_routing(sections, blocks=blocks, out_dir=root)
+        return kept
+    except Exception:  # noqa: BLE001 — 路由不可得（旧包/产物缺席）退全量条款，宁多标不漏标
+        return sections
 
 
 def _check_failure_count(name: str, result: dict[str, Any]) -> int:
@@ -2881,13 +3065,19 @@ def current_producer_lineage() -> dict[str, str]:
     }
 
 
-def functional_direct_basis(root: Path | str) -> list[dict[str, Any]] | None:
+def functional_direct_basis(
+    root: Path | str, *, allow_unclosed: bool = False,
+) -> list[dict[str, Any]] | None:
     """直抽产物可否作为唯一需求依据（无原子链形态，RATOMIZER_FUNCTIONAL_EXTRACT=1）。
 
     供 requirements_analysis / clarification_report 的缺原子门共用：三查 producer 家族
     （functional-extract）、items 为列表、守恒闭合。守恒未闭合不在此二值判断内——直接
     ``raise_if_unconserved`` 响亮失败（成文闸门纪律），绝不静默回退空表产"0 条"假交付物。
     不满足前置返回 None，调用方维持各自的响亮失败。
+    partial export（2026-09-01）：``allow_unclosed=True`` 时守恒未闭合与
+    execution_status=partial（mixed，SBD 主形态）放行——调用方继续并如实标
+    partial；execution_status=failed（整段 stub）**无论开关一律照旧 raise**
+    （数据不完整不是守恒未闭合，旁路不放行）。
     """
     from requirements_analysis_rules import _read_functional_requirements_payload
 
@@ -2899,12 +3089,13 @@ def functional_direct_basis(root: Path | str) -> list[dict[str, Any]] | None:
     conservation = payload.get("conservation")
     if isinstance(conservation, dict):
         # 缺守恒块按现状放行（与 requirements_analysis 消费端闸门同口径）；
-        # 有块未闭合 = 响亮失败，绝不静默进成文。
-        raise_if_unconserved(conservation)
+        # 有块未闭合 = 响亮失败，绝不静默进成文（partial export 旁路除外）。
+        raise_if_unconserved(conservation, allow_unclosed=allow_unclosed)
     # §3.5：执行不完整（stub 降级 / mixed 部分失败）同样响亮阻断下游——缓存行携带的
     # 失败语义在这里保持为失败（_payload_execution_status 不用当前请求路由重算）。
+    # partial export：partial（mixed）在 allow_unclosed 下放行；failed 一律拦。
     status = _payload_execution_status(payload)
-    if status != "ok":
+    if status == "failed" or (status != "ok" and not allow_unclosed):
         raise FunctionalExtractionIncompleteError(
             f"功能直抽执行不完整（execution_status={status}，"
             f"route_requested={payload.get('route_requested')}, route={payload.get('route')}），"

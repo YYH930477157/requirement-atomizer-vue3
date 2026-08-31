@@ -140,6 +140,8 @@ ENV_REGISTRY: tuple[EnvVar, ...] = (
     EnvVar("RATOMIZER_UNIT_ROUTER_RULES", "", "单元路由规则集覆盖（保留给真实语料标定后的阈值集；空=内置规则）", False),
     # --- 大纲权威接线 Phase 2b（2026-08-29 第一片，默认关） ---
     EnvVar("RATOMIZER_OUTLINE_AUTHORITY", "0", "大纲权威条款重切开关（=1 B 轨条款装配层按 document_outline 裁决重切边界：demoted 升格正文句并入前条款、被吞并 confirmed heading 切开成新条款、toc 条目不进正文基线、suspect 只审计不动切分；报告不可得时如实回退旧切分并记 unavailable；默认 0=装配/指纹/产物逐字节不变。重切身份 outline-authority-v1 在 flag 开时进 functional-extract 抽取缓存指纹、chain 阶段 producer 与 ai-extract 付费缓存/发布 lineage）", False),
+    # --- 待核成文 partial export（2026-09-01，用户拍板对 08-19「守恒拦成文」的政策反转） ---
+    EnvVar("RATOMIZER_PARTIAL_EXPORT", "1", "待核成文开关（=1 默认：守恒未闭合/直抽 partial[mixed] 时 requirements-analysis/template-write/clarification-report 照跑并如实记 partial，失败面行级「待核+失败类」标记进成文 xlsx，首代走 record_analysis_partial 发布（marker=incomplete 不冒充完成代）；execution_status=failed 与 draft:true 一律仍拦；READY/Claim 发布/WS0 门禁语义不动；=0 回到整段拦截旧行为——回滚通道）", False),
 )
 
 ENV_NAMES = frozenset(v.name for v in ENV_REGISTRY)
