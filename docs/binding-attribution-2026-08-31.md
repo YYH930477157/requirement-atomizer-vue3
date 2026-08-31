@@ -83,4 +83,48 @@ reason 2 的唯一一条（`FRE-bdccb0567f18`，TOU 支持）判 b：被覆盖�
 | 归因工具 `tools/binding_attribution.py` | **新增** | 只读诊断库：不截断镜像收集器 + 确定性信号归因；不触任何守恒语义与生产路径 |
 | 测试 `tests/test_binding_attribution.py` | **新增 13 例** | 分类判定 9 例 + stub 判定 2 例 + 合成语料镜像一致性/最小复现 1 例 + 身份键 1 例 |
 
-版本变更：**无**（未动任何行为版本/缓存指纹/prompt registry；新增文件均在生产链路之外）。
+版本变更说明：本任务的**行为变更**只有 conservation v6→v7（绑定检查 reason 1 引句
+本地锚，prompt_registry 已同步）；`tools/binding_attribution.py` 与其测试是生产链路之外
+的新增文件，自身无版本面。早前此处误写为「版本变更：无」，与同批 diff 事实不符，特此更正。
+
+---
+
+## 7. 实测补位（2026-08-31，E:\Codex 机器——门禁工作目录所在机）
+
+§5 遗留的缺口（门禁 v2 的 25 条 binding 本机拿不到）在此补上：用门禁 B 腿工作目录
+`%TEMP%b-runner.9gqsr665\B_direct` 的真实 225 FRE 在 v7/v8 代码下重算。
+
+### 7.1 修复效果（v7 绑定引句锚 + v8 heading-only 出池）
+
+| 指标 | v2 门禁实测（v6 代码） | v7/v8 重算 |
+|---|---|---|
+| binding_mismatches | 25 | **2**（24 条被 `quote_verbatim_local_anchors` 豁免，审计计数非静默） |
+| obligation / duplicates | 0 / 0 | 0 / 0（保持） |
+| preservation blocking | 3 | 3（未修，见 7.3） |
+| routing v8 @ABNT | — | heading-only 出池 **0**、抽取条款 176 不变（门禁语料零误伤） |
+| routing v8 @SBD result3 | — | heading-only 出池 **34**（含 TGS 章及 3 ABBREVIATIONS 等）、抽取条款 102→68、v7 的 outline_veto 切分 18 保持 |
+
+**门禁 B 轨失败面从 25+3 收敛到 2+3=5。**
+
+### 7.2 剩余 2 条绑定的归因（`tools/binding_attribution.py` 实跑）
+
+| FRE | 归因 | 说明 |
+|---|---|---|
+| FRE-92633e048020（security suite） | **a 类真借位**（narrative_retells_undeclared_clause_obligations）——但注意其引句即 7.3 的乱序表格文本，根因疑为表格列序病理而非典型借位 | 修复方向：表格渲染/任务 D，prompt 修不着 |
+| FRE-9c12d6aee468（IEC 62056 对象插入） | **b 类假阳性嫌疑**（covered_clause_text_duplicated_in_declared_clause）——标准同段落文本在多条款重复 | 修复方向：绑定检查对重复文本的语义（须审核方裁定，工具只报告） |
+
+### 7.3 剩余 3 条 preservation 的诊断（Security 节 no/5/64）
+
+Security 条款的正文文本是 **Table 3 单元格的列序打乱拼接**（"O set in security
+determines O set of algorithms cryptographic what must be available…"）——数字 5/64
+与否定词 no 是失去行列结构的表格碎片 token，唯一覆盖它的 FRE（正确概述了 security
+suite 语义）不可能在叙述中保留这些无结构数字。**根因是解析/表格渲染病理（任务 D
+领域：c 类输入侧问题），不是 LLM 丢数字。** 修复方向：该形态条款的表格内容走
+cell 守恒委托或结构化渲染，属任务 D 设计文档的候选范围。
+
+### 7.4 门禁 PASS 的剩余条件
+
+5 条里 2 条（security suite 借位 + Security preservation 3 条）同源于乱序表格条款，
+1 条（重复文本假阳性）在绑定检查语义——**均为设计决策项而非一行修复**。B 轨过守恒
+需先在任务 D 框架内处理乱序表格条款，或审核方裁定 b 类语义。A 轨已 ok、温缓存全量
+在手，届时门禁重跑 ≈¥5-8。
