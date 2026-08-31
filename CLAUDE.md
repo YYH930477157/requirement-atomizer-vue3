@@ -1,5 +1,28 @@
 # CLAUDE.md — Requirement Atomizer 项目上下文
 
+## 重大更新（2026-08-31）——heading-only 出抽取池（routing v8）+ 绑定检查引句本地锚（conservation v7）
+
+> 用户裁定「开工」后两条 worktree 并行，顺序合入 main（未 push）。
+
+- **`codex/heading-only-context`（`2a10f28`，routing v8）**：只有标题没有实质正文的
+  条款（全部块为 heading/heading 回显、义务单元数 0、无表格块）确定性路由出 B 轨
+  输入与守恒基线。判据三条全满足才出（宁漏勿错：非 heading 实质文本在场即保留，
+  含 v6 碎片过滤会剔掉义务的碎片正文）。meta 新增 `heading_only_sections_routed_out`/
+  `heading_only_section_ids`，块入 `routed_out_block_ids` 四桶合并。result3 只读回放：
+  kept 102→68，heading_only **34**（TGS 30 + 前置样板 2 + 技术章重名 heading 分身 2），
+  技术章 1/6/8/9/11/21 零误伤。13 新测试。
+- **`codex/binding-attribution`（`6d8db13`，conservation v7）**：result3 重放 58 条
+  binding 里 49 条是检查误报（清单/表格行无模态动词 → 永远成不了义务单元 →
+  reason 1 占位声明 + 短路 reason 2）。方案一：绑定检查 reason 1 承认「引句剥表格
+  标记后逐字落在声明条款基线」为本地锚，不判占位声明，落入 reason 2。义务覆盖
+  （检查 2）分母与判定不动。空引句不算锚定。审计 `quote_verbatim_local_anchors`。
+  归因库 `tools/binding_attribution.py` + 报告 `docs/binding-attribution-2026-08-31.md`。
+  WS0 门禁那 25 条 ABNT reason-2 样本本机不可得，未覆盖。
+- **缓存**：routing v8 + conservation v7 经既有血统进 clause_family 键与
+  functional-extract 阶段 producer——抽取缓存与阶段台账一次性失效重跑（诚实重算）；
+  legacy 指纹逐字节不变。
+- **已知未做**：「带标记的部分成文」（守恒失败项标红进 xlsx 而非整份扣下）待用户拍板。
+
 ## 重大更新（2026-08-30c）——门禁重跑 v2（≤¥20 达标：实付 ¥17.80）：A 轨首次完整通过，B 轨失败面收敛至 25 绑定 + 3 preservation
 
 > `docs/ws0-gate-result-v2-2026-08-30.md` 归档。warm cache（A 抽取 ¥14.18，省 ≈¥27）

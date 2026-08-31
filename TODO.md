@@ -6,15 +6,15 @@
 
 ## 当前待办（2026-08-31 更新，全量交接见 `docs/handoff-2026-08-31.md`）
 
-- [ ] **门禁 B 轨 28 条失败项逐条归因**（v2 门禁遗留：25 绑定失配 + 3
-  preservation，工作目录 `%TEMP%b-runner.9gqsr665\B_direct`）→ 修后再跑门禁
-  （A 全暖 ≈¥5-8，命令在交接文档 §5）；B 过守恒后 truth 阈值门首次评估 →
-  PASS 才可议 `RATOMIZER_EXECUTION_POLICY` 默认翻转（计划 §31）。
-- [ ] **大纲权威 flag 翻转评估重启（可选）**：v1 验证已判 **No-Go**（义务实质
-  口径 18→22 恶化、归因混合；报告 `docs/outline-authority-validation-2026-08-29.md`）。
-  重启前置：短条款抽取覆盖强化、heading-only 退化 objective、可选 ¥7 对照腿；
-  且须在 routing v7 / conservation v6 基线上重新测量（v7 已修复内容连坐病灶——
-  BLK-000240 在 flag 关现状下回抽取池）。
+- [ ] **门禁 B 轨剩余质量项**（v2 门禁：25 绑定 + 3 preservation）。result3
+  绑定归因已做（conservation v7 落地 reason 1 引句本地锚）；ABNT 那 25 条
+  reason 2 样本在另一台机器（`%TEMP%\ab-runner.9gqsr665\B_direct`），拿到后
+  复用 `tools/binding_attribution.py`。修后再跑门禁（A 全暖 ≈¥5-8）；B 过
+  守恒后 truth 阈值门首次评估 → PASS 才可议 `RATOMIZER_EXECUTION_POLICY`
+  默认翻转（计划 §31）。
+- [ ] **大纲权威 flag 翻转评估重启（可选）**：v1 验证已判 **No-Go**。重启前置
+  里 heading-only 退化 objective **已修**（routing v8）；仍缺短条款抽取覆盖
+  强化、可选 ¥7 对照腿；须在 routing v8 / conservation v7 基线上重新测量。
 - [ ] **队列收敛收尾：旧文件兼容期观察与裁撤评估**：四主体已全部入链
   （omission / clarification_internal / atom_expert / ai_review，第 3 步
   `441fde8`）。旧 JSONL 保持逐字节投影 ≥ 两个桌面发布周期后，评估读者迁移
@@ -29,6 +29,13 @@
   指标批量删钉子）。
 - [ ] **架构收敛 Phase 3**：SQLite 状态存储 + 内容寻址 DAG 指纹（计划文档
   §Phase 3；在队列收敛与大纲接线完成后启动）。
+
+### 已完成（2026-08-31）
+
+- [x] **heading-only 条款出抽取池**（routing v8，`2a10f28`）：TGS 裸标题不再进
+  抽取池；result3 回放 34 条路由出，技术章零误伤。
+- [x] **绑定检查 reason 1 引句本地锚**（conservation v7，`6d8db13`）：清单/表格
+  行诚实抽取不再误判占位声明；检查 2 不动；reason 2 不再被短路。
 
 ### 已完成（2026-08-30/31）
 
