@@ -4,17 +4,17 @@
 > （`docs/architecture-convergence-plan-2026-08-27.md`）。完成一项划一项；
 > 重启任何「有据缓建」项前先重跑探针。日常状态速查：输出目录 `run_manifest.json`。
 
-## 当前待办（2026-08-29，按优先级）
+## 当前待办（2026-08-31 更新，全量交接见 `docs/handoff-2026-08-31.md`）
 
-- [ ] **大纲权威 flag 真实语料验证 → 默认翻转评估**（Phase 2b 第二片）：
-  接线第一片已合（`6fe5250`，`RATOMIZER_OUTLINE_AUTHORITY` 默认关零漂移，
-  result3 回放 207→239 条款、BLK-000240 切出、块守恒 821=821）。翻转前须：
-  真实语料 flag 开全链跑通（守恒/路由/claim 锚在新边界下的表现）、golden
-  重生成评估、result3 重跑对照。通过后单独立项翻默认。
-- [ ] **WS0 真值门禁重跑（付费）**：`RATOMIZER_CONTEXT_PACK_STRATEGY=clause_family`
-  + `--warm-a-cache` 复用已付 A 轨缓存；上次 FAIL 根因（XLSX 读取器、表格混入
-  B 轨、guards 表格 marker）均已修。通过后才可议
-  `RATOMIZER_EXECUTION_POLICY` 默认翻转（计划 §31）。
+- [ ] **门禁 B 轨 28 条失败项逐条归因**（v2 门禁遗留：25 绑定失配 + 3
+  preservation，工作目录 `%TEMP%b-runner.9gqsr665\B_direct`）→ 修后再跑门禁
+  （A 全暖 ≈¥5-8，命令在交接文档 §5）；B 过守恒后 truth 阈值门首次评估 →
+  PASS 才可议 `RATOMIZER_EXECUTION_POLICY` 默认翻转（计划 §31）。
+- [ ] **大纲权威 flag 翻转评估重启（可选）**：v1 验证已判 **No-Go**（义务实质
+  口径 18→22 恶化、归因混合；报告 `docs/outline-authority-validation-2026-08-29.md`）。
+  重启前置：短条款抽取覆盖强化、heading-only 退化 objective、可选 ¥7 对照腿；
+  且须在 routing v7 / conservation v6 基线上重新测量（v7 已修复内容连坐病灶——
+  BLK-000240 在 flag 关现状下回抽取池）。
 - [ ] **队列收敛收尾：旧文件兼容期观察与裁撤评估**：四主体已全部入链
   （omission / clarification_internal / atom_expert / ai_review，第 3 步
   `441fde8`）。旧 JSONL 保持逐字节投影 ≥ 两个桌面发布周期后，评估读者迁移
@@ -29,6 +29,17 @@
   指标批量删钉子）。
 - [ ] **架构收敛 Phase 3**：SQLite 状态存储 + 内容寻址 DAG 指纹（计划文档
   §Phase 3；在队列收敛与大纲接线完成后启动）。
+
+### 已完成（2026-08-30/31）
+
+- [x] **大纲 flag 真实语料验证（付费 ¥7.30）**：No-Go 建议（义务覆盖卡线），
+  报告与归因底账落盘；计划书「207→239」勘误为 339。
+- [x] **WS0 门禁重跑 ×2**（¥36.43 + ¥17.80）：A 轨首次完整通过（template_writer
+  v2 修复 60 空正文行）；B 轨失败面收敛至 25 绑定 + 3 preservation（真实质量项）。
+- [x] **三修复 + floor**：路由连坐窄门修（routing v7）/ 义务碎片过滤
+  （conservation v6）/ 写入器列位（v2）/ extract floor 24576 + B 轨接线——
+  均合 main 并 push。
+- [x] **任务 C：队列投影只读审计工具**（12 测试，exit 0/2/3 契约）。
 
 ### 已完成（2026-08-29）
 
