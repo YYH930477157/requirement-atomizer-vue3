@@ -92,7 +92,7 @@ FUNCTIONAL_CONSERVATION_MODEL_VERSION = "functional-conservation-obligation-evid
 # §17 unit 级路由接线（2026-08-17）：clause_family 策略下表格主导条款路由出 B 轨输入
 # 与守恒基线（表格内容归 A 轨/上下文，phase2 探针实证其混入 B 轨是守恒失败根因之一）。
 # 接线版本只进 clause_family 缓存指纹维度（legacy 指纹逐字节不变）；路由判据演进时 bump。
-FUNCTIONAL_UNIT_ROUTING_VERSION = "functional-unit-routing-v7"  # v7（2026-08-30，路由连坐窄门修）：tender 聚合路由出之前，条款内 confirmed 的被吞并 heading（document_outline 报告，只读）先切开再分别路由——程序性残骸照旧路由出，被连坐的技术内容（SBD 实证 2.3 STATEMENT OF REQUIREMENTS 整章）获得独立判定。纯切分零块位移（不做 toc 剔除/demoted 并入——那是 outline authority flag 的语义）；无 confirmed 吞并时行为与 v6 一致；routed_out_block_ids 补齐 tender 两桶（兑现 docstring「全部写入 meta」承诺）。v6（2026-08-27，WS-B）：节级 tender 判定改为义务主体+跨度聚合。R2 返工：标题词表先验（own title 程序性且非产品主语）；跨度改为非产品主语即可（不再要求无模态）；technical 否决改为 own title/path（块内吞进的下一章 technical heading 不否决程序性残骸）。v5（2026-08-27，P3）：逐标题路由分支补 technical 反向否决 + P2 路由键并入 tender_region_filter 版本。v4：句子形程序性 heading 窄锚点 + v3 跨度继承/前置样板编号剥离
+FUNCTIONAL_UNIT_ROUTING_VERSION = "functional-unit-routing-v8"  # v8（2026-08-31，heading-only 条款出抽取池）：只有标题没有实质正文的条款（全部块为 heading/heading 回显、义务单元数 0、无表格块）确定性路由出 B 轨输入与守恒基线——SBD result3 实证 TGS 章 24 个 heading-only 条款在 LLM 失败时退化 stub（"实现{heading}，并满足来源条款。"），成功时也只能回显标题（零义务内容，无可抽取）。判据三条全满足才路由出（宁漏勿错：非 heading 块有任何实质文本即保留，含 v6 碎片过滤会剔掉义务的碎片正文）；meta 新增 heading_only_sections_routed_out/heading_only_section_ids，块入 routed_out_block_ids/review_units 四桶合并。v7（2026-08-30，路由连坐窄门修）：tender 聚合路由出之前，条款内 confirmed 的被吞并 heading（document_outline 报告，只读）先切开再分别路由——程序性残骸照旧路由出，被连坐的技术内容（SBD 实证 2.3 STATEMENT OF REQUIREMENTS 整章）获得独立判定。纯切分零块位移（不做 toc 剔除/demoted 并入——那是 outline authority flag 的语义）；无 confirmed 吞并时行为与 v6 一致；routed_out_block_ids 补齐 tender 两桶（兑现 docstring「全部写入 meta」承诺）。v6（2026-08-27，WS-B）：节级 tender 判定改为义务主体+跨度聚合。R2 返工：标题词表先验（own title 程序性且非产品主语）；跨度改为非产品主语即可（不再要求无模态）；technical 否决改为 own title/path（块内吞进的下一章 technical heading 不否决程序性残骸）。v5（2026-08-27，P3）：逐标题路由分支补 technical 反向否决 + P2 路由键并入 tender_region_filter 版本。v4：句子形程序性 heading 窄锚点 + v3 跨度继承/前置样板编号剥离
 FUNCTIONAL_REQUIREMENTS_FILENAME = "functional_requirements.json"
 FUNCTIONAL_EXTRACT_CACHE = "functional_extract_cache.jsonl"
 
@@ -2557,6 +2557,75 @@ def _split_section_at_confirmed_headings(
     return pieces, cut_here
 
 
+# --- heading-only 条款判据（routing v8，2026-08-31）--------------------------
+# SBD result3 实证：TGS 章 24 个「只有标题没有正文」的条款进了抽取池——LLM 失败退化
+# stub（objective 模板回显 heading），成功也只能回显标题（零义务内容）。它们应作
+# context 路由出（宁漏勿错方向：零义务内容，路由出不丢真需求）。判据必须保守：
+# 任何非 heading 实质文本（含会被 v6 碎片过滤剔掉义务的碎片正文）都保留。
+_HEADING_NUM_PREFIX_RE = re.compile(r"^\s*(?:#+\s*)?\d+(?:[.．]\d+)*[.．]?\s*")
+
+
+def _heading_norm(text: str) -> str:
+    """heading 归一键：小写、去标点、空白折叠（内容 token 序列）。"""
+    tokens = re.findall(r"[0-9A-Za-z一-鿿]+", str(text or "").casefold())
+    return " ".join(tokens)
+
+
+def _heading_norm_variants(text: str) -> set[str]:
+    """heading 文本的归一变体：原文 + 剥条款编号前缀（"22.6.5. TITLE" ↔ "TITLE"）。"""
+    text = str(text or "").strip()
+    variants = {_heading_norm(text)}
+    stripped = _HEADING_NUM_PREFIX_RE.sub("", text)
+    if stripped != text:
+        variants.add(_heading_norm(stripped))
+    variants.discard("")
+    return variants
+
+
+def _section_is_heading_only(
+    section: dict[str, Any],
+    blocks_by_id: dict[str, dict[str, Any]],
+    table_block_ids: set[str],
+) -> bool:
+    """heading-only 条款判定（三条全满足才 True，任何不确定即 False——宁漏勿错）。
+
+    ① 无表格块（block_ids 与表格块集合零交集——表格条款有独立路由通道，不碰）；
+    ② 全部块要么是 heading 块，要么其文本归一化后为空（仅标点）或等于某个 heading
+      归一键（heading 回显）——非 heading 块只要有任何实质文本即保留，包括会被
+      conservation v6 碎片过滤剔掉义务的碎片正文（正文非空 ≠ heading-only）；
+    ③ ``_obligation_index``（v6 碎片过滤后）义务单元数为 0。
+    块不可得（blocks 清单缺席该 id）= 判据无法核验 → False（保留）。
+    """
+    block_ids = [str(b) for b in (section.get("block_ids") or []) if str(b)]
+    if not block_ids:
+        return False
+    if any(bid in table_block_ids for bid in block_ids):
+        return False
+    heading_keys: set[str] = set()
+    for candidate in [section.get("heading"), *(section.get("section_path") or [])]:
+        heading_keys |= _heading_norm_variants(str(candidate or ""))
+    body_norms: list[str] = []
+    for bid in block_ids:
+        block = blocks_by_id.get(bid)
+        if block is None:
+            return False  # 块不可得——无法核验，保守保留
+        if str(block.get("type") or "") == "table":
+            return False
+        text = str(block.get("text") or "")
+        if str(block.get("type") or "") == "heading":
+            heading_keys |= _heading_norm_variants(text)
+            continue
+        body_norms.append(_heading_norm(text))
+    if not heading_keys:
+        return False  # 无任何 heading 身份——不是 heading-only 形态
+    for norm in body_norms:
+        if norm and norm not in heading_keys:
+            return False  # 非 heading 实质文本在场——保留（宁漏勿错）
+    if _obligation_index(section):
+        return False
+    return True
+
+
 def apply_unit_routing(
     sections: Sequence[dict[str, Any]],
     *,
@@ -2576,6 +2645,11 @@ def apply_unit_routing(
 
     被路由出的条款清单（section/block id）全部写入 meta；`routed_out_review_units`
     记录其上的 review 单元数（这些单元已在路由产物中物化待审，不因路由出而消失）。
+
+    routing v8 新增 heading-only 通道：只有标题没有实质正文的条款（全部块为
+    heading/heading 回显、``_obligation_index`` 义务单元数 0、无表格块）作 context
+    路由出——判据三条全满足才出（``_section_is_heading_only``，宁漏勿错），
+    meta `heading_only_sections_routed_out`/`heading_only_section_ids` 审计。
     """
     from extraction_units import EXTRACTION_UNIT_PLANNER_VERSION
     from unit_router import UNIT_ROUTER_VERSION
@@ -2640,6 +2714,7 @@ def apply_unit_routing(
     front_matter: list[dict[str, Any]] = []
     tender_procedural: list[dict[str, Any]] = []
     tender_span: list[dict[str, Any]] = []
+    heading_only: list[dict[str, Any]] = []
     mixed_kept = 0
     # routing v7 窄门修：confirmed 吞并 heading 块集（只读旁证；不可得=不切分）
     meta.setdefault("outline_veto_split_sections", 0)
@@ -2679,6 +2754,12 @@ def apply_unit_routing(
             else:
                 tender_span.append(section)
             return
+        # routing v8：heading-only 条款（无实质正文/零义务单元/无表格块）作 context
+        # 路由出——LLM 对它们只能回显标题或退化 stub，零可抽取内容（宁漏勿错：
+        # 判据三条全满足才出，非 heading 实质文本在场即保留）。
+        if _section_is_heading_only(section, blocks_by_id, table_block_ids):
+            heading_only.append(section)
+            return
         block_ids = [str(b) for b in (section.get("block_ids") or []) if str(b)]
         has_table = bool(block_ids) and any(b in table_block_ids for b in block_ids)
         all_table = bool(block_ids) and all(b in table_block_ids for b in block_ids)
@@ -2711,24 +2792,33 @@ def apply_unit_routing(
         tender_span_routed_out=len(tender_span),
         tender_span_section_ids=[
             str(section.get("section_id") or "") for section in tender_span],
+        # routing v8：heading-only 条款桶（只有标题没有实质正文，零义务单元，无表格块）。
+        heading_only_sections_routed_out=len(heading_only),
+        heading_only_section_ids=[
+            str(section.get("section_id") or "") for section in heading_only],
         routed_out_section_ids=[
             str(section.get("section_id") or "") for section in routed_out
         ] + [
             str(section.get("section_id") or "") for section in tender_procedural
         ] + [
             str(section.get("section_id") or "") for section in tender_span
+        ] + [
+            str(section.get("section_id") or "") for section in heading_only
         ],
         # routing v7：三桶（表格/tender 程序性/tender 跨度）的块全部入清单——
         # docstring「被路由出的条款清单（section/block id）全部写入 meta」承诺兑现
         # （v6 只含表格桶，tender 两桶的块不在清单里，审计面不完整）。
+        # routing v8：heading_only 第四桶同样并入（承诺对全部路由出桶生效）。
         routed_out_block_ids=sorted({
             str(b)
-            for section in (routed_out + tender_procedural + tender_span)
+            for section in (
+                routed_out + tender_procedural + tender_span + heading_only)
             for b in (section.get("block_ids") or []) if str(b)
         }),
         routed_out_review_units=sum(
             review_units_by_block.get(str(b), 0)
-            for section in (routed_out + tender_procedural + tender_span)
+            for section in (
+                routed_out + tender_procedural + tender_span + heading_only)
             for b in (section.get("block_ids") or []) if str(b)
         ),
         mixed_table_sections_kept=mixed_kept,
