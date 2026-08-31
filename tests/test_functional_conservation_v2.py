@@ -568,5 +568,120 @@ class ReviewHardeningTests(unittest.TestCase):
         self.assertTrue(report["ok"], report)
 
 
+class ConservationV7QuoteLocalAnchorTests(unittest.TestCase):
+    """conservation v7：绑定检查 reason 1 承认「引句逐字锚定声明条款」为本地锚。
+
+    义务覆盖（检查 2）分母与判定不动；reason 1 放行后 reason 2 不再被短路。
+    """
+
+    def test_list_quote_in_home_is_not_placeholder_declaration(self) -> None:
+        """清单引句逐字在声明条款内 → 不判占位声明（检查 2 仍拦未覆盖模态句）。"""
+        sections = [_clause(
+            "7.5", ["B1"],
+            "The meter shall record monthly energy usage totals. "
+            "Display options:\n- Currency display\n- Tariff index display",
+        )]
+        items = [_item(
+            "FRE-LIST", ["B1"],
+            "Provide currency and tariff index display options.",
+            quote="- Currency display\n- Tariff index display",
+        )]
+        report = fe.conservation_report(sections, items)
+        binding = report["checks"]["evidence_presence"]["binding_mismatches"]
+        self.assertEqual(binding, [])
+        self.assertIn("obligation_coverage", report["failure_categories"])
+        self.assertGreaterEqual(
+            report["checks"]["evidence_presence"].get(
+                "quote_verbatim_local_anchors", 0),
+            1,
+        )
+
+    def test_quote_in_home_still_reaches_reason2_borrowing(self) -> None:
+        """引句锚在本款、叙述复述他款 → reason 1 不短路，reason 2 仍触发。"""
+        sections = [
+            _clause("4.1", ["B1"],
+                    "The meter shall log events. Display options:\n- Currency"),
+            _clause("4.2", ["B2"], "The logger shall archive events."),
+        ]
+        items = [_item(
+            "FRE-BORROW", ["B1"],
+            "The logger shall archive events.",
+            quote="- Currency",
+        )]
+        report = fe.conservation_report(sections, items)
+        binding = report["checks"]["evidence_presence"]["binding_mismatches"]
+        self.assertEqual(
+            [mm["reason"] for mm in binding],
+            ["narrative_covers_other_clauses_not_declared"],
+        )
+        self.assertEqual(binding[0]["functional_requirement_id"], "FRE-BORROW")
+
+    def test_placeholder_without_home_quote_still_reason1(self) -> None:
+        """引句不在声明条款内、也无本地边 → 仍判占位声明。"""
+        sections = [_clause("4.1", ["B1"], "The meter shall log events.")]
+        items = [_item(
+            "FRE-STUB", ["B1"],
+            "Implement logging functionality",
+            quote="unrelated placeholder quote xyz",
+        )]
+        report = fe.conservation_report(sections, items)
+        binding = report["checks"]["evidence_presence"]["binding_mismatches"]
+        self.assertEqual(
+            [mm["reason"] for mm in binding],
+            ["declared_section_has_no_local_obligation_coverage"],
+        )
+
+    def test_empty_quote_is_not_a_local_anchor(self) -> None:
+        sections = [_clause("4.1", ["B1"], "The meter shall log events.")]
+        items = [{
+            "functional_requirement_id": "FRE-EMPTY",
+            "source_block_ids": ["B1"],
+            "source_quote": "",
+            "objective": "Implement logging functionality",
+            "behaviors": [],
+        }]
+        report = fe.conservation_report(sections, items)
+        binding = report["checks"]["evidence_presence"]["binding_mismatches"]
+        self.assertEqual(
+            [mm["reason"] for mm in binding],
+            ["declared_section_has_no_local_obligation_coverage"],
+        )
+
+    def test_table_marker_stripped_before_verbatim_match(self) -> None:
+        """引句带 [TBL-NNNNNN] 前缀时，剥离后再做逐字锚定（与 guards-v6 同口径）。"""
+        sections = [_clause(
+            "6.2", ["B1"],
+            "The meter shall record monthly energy usage totals. Protective class II",
+        )]
+        items = [_item(
+            "FRE-TBL", ["B1"],
+            "Protective class is II",
+            quote="[TBL-000275] Table 6 (continuation)\nProtective class II",
+        )]
+        report = fe.conservation_report(sections, items)
+        binding = report["checks"]["evidence_presence"]["binding_mismatches"]
+        self.assertEqual(binding, [])
+        self.assertGreaterEqual(
+            report["checks"]["evidence_presence"].get(
+                "quote_verbatim_local_anchors", 0),
+            1,
+        )
+
+    def test_conservation_model_version_is_v7(self) -> None:
+        self.assertEqual(
+            fe.FUNCTIONAL_CONSERVATION_MODEL_VERSION,
+            "functional-conservation-obligation-evidence-v7",
+        )
+        import prompt_registry
+        registered = {
+            (row["id"], row["version"]) for row in prompt_registry.PROMPT_REGISTRY
+        }
+        self.assertIn(
+            ("functional-extract-conservation",
+             fe.FUNCTIONAL_CONSERVATION_MODEL_VERSION),
+            registered,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

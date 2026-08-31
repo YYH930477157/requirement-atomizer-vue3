@@ -84,7 +84,12 @@ FUNCTIONAL_EXTRACT_GUARDS_VERSION = "functional-extract-guards-v6"
 # （行渲染文本对不上条款扁平 text 时不再静默失败）；部分委托整块保留。
 # v4 → v5（2026-08-27 审查修复）：同文本多表格块按委托块数剔除出现位置——
 # replace-all 会把字节级相同的非委托块一并剥出基线（无 cell 守恒兜底的静默丢账）。
-FUNCTIONAL_CONSERVATION_MODEL_VERSION = "functional-conservation-obligation-evidence-v6"
+FUNCTIONAL_CONSERVATION_MODEL_VERSION = "functional-conservation-obligation-evidence-v7"
+# v6 → v7（2026-08-31，绑定检查 reason 1 本地锚）：声明条款含义务单元却建不成
+# lexical/cross_script/source_quote 边时，若引句（剥表格标记后）逐字落在该声明条款
+# 基线文本内，不再判「占位声明」——SBD 清单/表格行无模态动词、永远成不了义务单元，
+# 诚实抽取会被 reason 1 误伤并短路 reason 2。义务覆盖（检查 2）分母与判定不动；
+# 放行后落入 reason 2（叙述覆盖未声明条款）。空引句不算锚定。
 # v5 → v6（2026-08-30，门禁复盘）：义务基线剔除 lead-in/悬空碎片单元（"shall include:"、
 # "will be issued and"、主语缺失的 "must be authenticated" 类——SBD 实测两侧各 21 条
 # 假义务污染 obligation_coverage 信号）。判据见 _is_fragment_obligation_unit；剔除量
@@ -971,6 +976,29 @@ def _squashed(text: str) -> str:
     return "".join(str(text or "").split())
 
 
+def _quote_verbatim_in_home_clauses(
+    item: dict[str, Any],
+    baseline_sections: Sequence[dict[str, Any]],
+    home_indices: Sequence[int],
+) -> bool:
+    """引句（剥表格标记后）逐字落在任一给定声明条款的基线文本内。
+
+    conservation v7 仅把这条通道用作绑定检查 reason 1 的本地锚豁免——义务覆盖
+    （检查 2）不认。空引句不算锚定。
+    """
+    quote = _strip_table_markers(str(item.get("source_quote") or ""))
+    quote_sq = _squashed(quote)
+    if not quote_sq:
+        return False
+    for index in home_indices:
+        if index < 0 or index >= len(baseline_sections):
+            continue
+        text_sq = _squashed(str(baseline_sections[index].get("text") or ""))
+        if quote_sq in text_sq:
+            return True
+    return False
+
+
 def _sentence_covered_by(
     sentence: str, narrative: str, *, ignore_tokens: frozenset[str] | set[str] = frozenset(),
 ) -> bool:
@@ -1576,6 +1604,7 @@ def conservation_report(
     no_evidence_items: list[dict[str, Any]] = []
     evidence_mismatches: list[dict[str, Any]] = []
     binding_mismatches: list[dict[str, Any]] = []
+    quote_verbatim_local_anchors = 0
     # 错绑检测（审查 2026-08-15 P1）：声明的 source_block_ids 与叙述实际覆盖的义务单元
     # 所属条款不一致——叙述互换/错误溯源会让条款覆盖假通过。跨语种（token 覆盖失效）
     # 与无义务单元的家条款无从判定，跳过（宁漏勿错，不误报 blocking）。
@@ -1629,16 +1658,22 @@ def conservation_report(
                 edge["section_index"] for edge in (edges_by_item.get(item_index) or [])
             }
             if not (set(home_with_units) & local_edge_sections):
-                binding_mismatches.append({
-                    "functional_requirement_id": fre_id,
-                    "reason": "declared_section_has_no_local_obligation_coverage",
-                    "declared_block_ids": ids,
-                    "declared_section_ids": [
-                        str(baseline_sections[i].get("section_id") or "")
-                        for i in home_with_units
-                    ],
-                })
-                continue
+                # v7：引句逐字锚定声明条款 = 本地锚，不判占位声明；落入 reason 2。
+                if _quote_verbatim_in_home_clauses(
+                    item, baseline_sections, home_with_units,
+                ):
+                    quote_verbatim_local_anchors += 1
+                else:
+                    binding_mismatches.append({
+                        "functional_requirement_id": fre_id,
+                        "reason": "declared_section_has_no_local_obligation_coverage",
+                        "declared_block_ids": ids,
+                        "declared_section_ids": [
+                            str(baseline_sections[i].get("section_id") or "")
+                            for i in home_with_units
+                        ],
+                    })
+                    continue
             covered_clause_indices = {
                 i for i, units in enumerate(clause_units)
                 if any(
@@ -1763,6 +1798,8 @@ def conservation_report(
             "items_without_evidence": no_evidence_items[:50],
             "evidence_mismatches": evidence_mismatches[:50],
             "binding_mismatches": binding_mismatches[:50],
+            # conservation v7：reason 1 被引句逐字锚定豁免的条数（不静默）
+            "quote_verbatim_local_anchors": quote_verbatim_local_anchors,
         },
         "duplicates": {
             "ok": not duplicate_groups,
