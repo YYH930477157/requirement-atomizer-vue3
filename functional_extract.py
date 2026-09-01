@@ -108,7 +108,12 @@ FUNCTIONAL_EXTRACT_CACHE = "functional_extract_cache.jsonl"
 # v2（2026-09-01b，方案 grok 审核第 3 条补全）：mixed 载荷的 stub 占位条目加
 # 独立失败类 extract_degraded（标记侧确定性形状比对，抽取侧/缓存零改动）——
 # 分析行与成文说明列新增一类标记，旧产物复用时无该类（算法身份随版本失效）。
-CONSERVATION_PARTIAL_EXPORT_VERSION = "conservation-partial-export-v2"
+# v3（2026-09-01c，hotfix）：①寻址修复——分析 attach/unclosed_basis 改 governed
+# 双路径读（package_v1 桌面跑此前漏标记出假干净表）；②draft+未闭合一律拦；
+# ③extract_degraded 比对 _stub_item（coerce 后）字段；④红字+「守恒待核」清单
+# sheet + conservation_pending_gaps。不进 functional-extract 指纹、不 bump 守恒
+# 模型——v3 戳使 package_v1 上「ok 但零标记」的旧分析/成文代失效重跑（零 LLM）。
+CONSERVATION_PARTIAL_EXPORT_VERSION = "conservation-partial-export-v3"
 
 # P0-8：负例 few-shot 注入数量上限（可配）。§3.6：改经 config 单源读取（运行时求值，
 # 进程内改 env 即生效——旧 import 时常量在同进程 shadow 场景下不刷新）。
@@ -1987,8 +1992,10 @@ def extract_degraded_marks(
     判据（缓存安全，不在抽取侧打标）：
     - 仅 ``payload["route"] == "mixed"`` 启用（纯 llm 载荷没有 stub 条目；
       纯 stub 载荷 execution_status=failed 一律仍拦，到不了标记层）；
-    - item 声明块与某条款块相交，且 ``(objective, behaviors)`` 与该条款的
-      ``_stub_shape`` **逐字节相等**（与构造侧同源，不另立启发式）。
+    - item 声明块与某条款块相交，且 ``(objective, behaviors)`` 与该条款
+      ``_stub_item(section, 1)`` 的字段**逐字节相等**（v3 Task3：比落盘条目
+      同一清洗链的产物，不比 coerce 前模板——防清洗链演进后标记漂移；
+      只借字段，不用其重算的 id 对 payload）。
     LLM 真产出恰好逐字复刻占位模板的概率可忽略；即使发生，内容即占位文本，
     标记语义仍成立。
     """
@@ -2010,10 +2017,11 @@ def extract_degraded_marks(
             section = sections_by_block.get(block_id)
             if section is None:
                 continue
-            objective, behaviors = _stub_shape(section)
+            stub = _stub_item(section, 1)
             if (
-                str(item.get("objective") or "") == objective
-                and [str(b) for b in (item.get("behaviors") or [])] == behaviors
+                str(item.get("objective") or "") == str(stub.get("objective") or "")
+                and [str(b) for b in (item.get("behaviors") or [])]
+                == [str(b) for b in (stub.get("behaviors") or [])]
             ):
                 fre_id = str(item.get("functional_requirement_id") or "")
                 if fre_id:
@@ -2108,6 +2116,87 @@ def load_conservation_baseline(out_dir: Path | str) -> list[dict[str, Any]]:
         return kept
     except Exception:  # noqa: BLE001 — 路由不可得（旧包/产物缺席）退全量条款，宁多标不漏标
         return sections
+
+
+# 「守恒待核」清单 sheet 的缺口类别 → 人读标签（与 _PENDING_CLASS_LABELS 同措辞风格）
+_PENDING_GAP_LABELS = {
+    "clause_gap": "条款缺口",
+    "uncovered": "义务未覆盖",
+}
+
+
+def pending_gap_label(category: str) -> str:
+    """缺口类别机键 → 人读标签；未知键原样返回（不猜）。"""
+    key = str(category or "")
+    return _PENDING_GAP_LABELS.get(key, key)
+
+
+def conservation_pending_gaps(
+    report: dict[str, Any],
+    items: Sequence[dict[str, Any]],
+    sections: Sequence[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """守恒失败面里**零 FRE 可挂**的缺口行（v3 Task4，只进「守恒待核」清单 sheet）。
+
+    与 :func:`conservation_pending_marks` 的分工：marks 把失败连带到已声明 FRE
+    （行级标红）；本函数只收集**没有任何 FRE 可挂**的缺口——清单可见、但绝不
+    造需求占位行（零 FRE 条款不进需求 sheet）：
+
+    - ``clause_gap``：``checks.clause_coverage.uncovered_sections`` 全部——标记
+      函数本就不收这一类（无声明 FRE 可连带）；
+    - ``uncovered``：``uncovered_obligations`` 中按 ``_clause_block_candidates``
+      还原块集后与任何 item 的 ``source_block_ids`` 都不相交的义务——已连带挂
+      到 FRE 的不重复（需求 sheet 已标红，清单不再造无 id 行）。
+
+    守恒闭合（ok=True）返回空。只读 report，不 bump 守恒模型。
+    """
+    if report.get("ok", True):
+        return []
+    checks = report.get("checks") if isinstance(report.get("checks"), dict) else {}
+    gaps: list[dict[str, Any]] = []
+
+    clause = checks.get("clause_coverage") if isinstance(
+        checks.get("clause_coverage"), dict) else {}
+    for row in clause.get("uncovered_sections") or []:
+        if not isinstance(row, dict):
+            continue
+        gaps.append({
+            "category": "clause_gap",
+            "reason": "条款块无任何功能需求声明",
+            "section_id": str(row.get("section_id") or ""),
+            "functional_requirement_id": "",
+            "token": "",
+            "detail": str(row.get("heading") or "")[:120],
+        })
+
+    obligation = checks.get("obligation_coverage") if isinstance(
+        checks.get("obligation_coverage"), dict) else {}
+    declared_blocks = {
+        str(b) for item in items
+        if isinstance(item, dict)
+        for b in (item.get("source_block_ids") or []) if str(b)
+    }
+    for row in obligation.get("uncovered_obligations") or []:
+        if not isinstance(row, dict):
+            continue
+        sentence = str(row.get("sentence") or "")
+        block_union: set[str] = set()
+        for blocks in _clause_block_candidates(
+            sections, str(row.get("section_id") or ""),
+            **({"sentence": sentence} if sentence else {}),
+        ):
+            block_union.update(blocks)
+        if block_union & declared_blocks:
+            continue  # 已连带挂 FRE——需求 sheet 行级已标，不重复造缺口行
+        gaps.append({
+            "category": "uncovered",
+            "reason": "义务句未被任何功能需求覆盖",
+            "section_id": str(row.get("section_id") or ""),
+            "functional_requirement_id": "",
+            "token": "",
+            "detail": sentence[:160],
+        })
+    return gaps
 
 
 def _check_failure_count(name: str, result: dict[str, Any]) -> int:
@@ -3144,6 +3233,10 @@ def functional_direct_basis(
     execution_status=partial（mixed，SBD 主形态）放行——调用方继续并如实标
     partial；execution_status=failed（整段 stub）**无论开关一律照旧 raise**
     （数据不完整不是守恒未闭合，旁路不放行）。
+    v3（2026-09-01c，Task2）：``draft:true``（stub 草稿水印）且守恒未闭合——
+    **无论开关一律 raise Incomplete**：旁路放行的前提是"数据本身可信，只是
+    守恒有缺口"，draft+未闭合意味着占位数据+缺口叠加，不能出表。draft+守恒
+    闭合（显式 stub opt-in/烟测）保持现状不扩大拦截。
     """
     from requirements_analysis_rules import _read_functional_requirements_payload
 
@@ -3167,6 +3260,14 @@ def functional_direct_basis(
             f"route_requested={payload.get('route_requested')}, route={payload.get('route')}），"
             "阻塞需求分析/澄清/成文下游；请修复 LLM 路由后重跑直抽"
             "（显式 route=stub 仅限测试/烟测 opt-in）"
+        )
+    conservation_closed = (
+        not isinstance(conservation, dict) or bool(conservation.get("ok", True))
+    )
+    if payload.get("draft") and not conservation_closed:
+        raise FunctionalExtractionIncompleteError(
+            "功能直抽产物带 stub 草稿水印且守恒未闭合（draft=true），"
+            "阻塞需求分析/澄清/成文下游；partial export 旁路不放行 draft"
         )
     items = payload.get("items")
     return items if isinstance(items, list) else None

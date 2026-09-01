@@ -383,6 +383,38 @@ class ExecutionStatusTests(unittest.TestCase):
         self.assertEqual(fe._payload_execution_status(
             {"route_requested": "stub", "route": "stub"}), "ok")
 
+    def test_direct_basis_blocks_draft_when_unconserved_even_if_allow_unclosed(self) -> None:
+        """v3（Task2）：draft 水印 + 守恒未闭合——partial export 旁路也不放行。"""
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            (out / "functional_requirements.json").write_text(json.dumps({
+                "producer": "functional-extract-v1",
+                "route_requested": "stub",
+                "route": "stub",
+                "execution_status": "ok",
+                "draft": True,
+                "items": [{"functional_requirement_id": "F1"}],
+                "conservation": {"ok": False},
+            }, ensure_ascii=False), encoding="utf-8")
+            with self.assertRaises(fe.FunctionalExtractionIncompleteError):
+                fe.functional_direct_basis(out, allow_unclosed=True)
+
+    def test_direct_basis_allows_explicit_stub_when_conserved(self) -> None:
+        """v3（Task2 反例）：显式 stub opt-in（烟测）且守恒闭合——不扩大拦截。"""
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            (out / "functional_requirements.json").write_text(json.dumps({
+                "producer": "functional-extract-v1",
+                "route_requested": "stub",
+                "route": "stub",
+                "execution_status": "ok",
+                "draft": True,
+                "items": [{"functional_requirement_id": "F1"}],
+                "conservation": {"ok": True},
+            }, ensure_ascii=False), encoding="utf-8")
+            items = fe.functional_direct_basis(out, allow_unclosed=True)
+            self.assertEqual(items[0]["functional_requirement_id"], "F1")
+
 
 class ManifestStatusMappingTests(unittest.TestCase):
     """§3.5：manifest 记账与产物同一失败语义。"""

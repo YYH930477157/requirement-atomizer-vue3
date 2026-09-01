@@ -874,8 +874,13 @@ def template_write_task(out_dir: Path, template_path: Path) -> dict[str, Any]:
         report.get("conservation_pending_export"), dict) else None
     # v2：待核行可能全部是 extract_degraded（守恒闭合、仅抽取降级）——
     # unclosed_basis 只在存在守恒类标记时置位，行数则独立上报。
-    pending_classes = pending.get("classes") if isinstance(
-        pending.get("classes"), dict) else {}
+    # v3（Task1 审出）：干净工作簿 pending=None——先判 None 再取 classes，
+    # 否则无标记链路径（package_v1 干净代/守恒闭合）整段崩。
+    pending_classes = (
+        pending.get("classes")
+        if isinstance(pending, dict) and isinstance(pending.get("classes"), dict)
+        else {}
+    )
     unclosed_marks = bool(pending) and any(
         str(cls) != "extract_degraded" for cls in pending_classes)
     return {
@@ -1072,7 +1077,9 @@ STAGE_IMPLEMENTATION_REVISIONS = {
     # 纯渲染变更不动 analyze 缓存版本，靠 impl 戳让阶段重跑重渲染（审计 P1-b）
     "requirements-analysis": "v6",
     # v5：完整性元数据进入阶段输入，旧缓存不得缺 incomplete_inputs。
-    "template-write": "v5",
+    # v6（2026-09-01c，partial export hotfix）：待核行红字 + 「守恒待核」清单
+    # sheet——旧 xlsx 必须重写（零 LLM）。
+    "template-write": "v6",
     "clarification-report": "v6",
     "full-translation": "v2",
     # v1.5：compose 首次绑定完整性元数据，显式升级阶段实现戳。

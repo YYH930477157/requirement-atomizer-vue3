@@ -195,10 +195,19 @@ def resolve_sheet_columns(ws: Any) -> dict[str, int] | None:
 
 
 def append_analysis_to_template(template_path: Path, items: list[dict[str, Any]],
-                                out_path: Path) -> dict[str, Any]:
+                                out_path: Path,
+                                gap_rows: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     """把分析条目按模块追加进模板副本。硬件独占项不进软件需求列表（走 hardware_items.md，
-    与 analyze 轨一致）；协同项进列表并标「驱动/硬件相关=是」。"""
+    与 analyze 轨一致）；协同项进列表并标「驱动/硬件相关=是」。
+
+    v3（partial export）：``conservation_pending.classes`` 非空的追加行，序号/
+    需求/说明三格标红；工作簿内另建「守恒待核」清单 sheet（FRE 行 + 零 FRE 缺口
+    行 ``gap_rows``——缺口只进清单，不造需求占位行）。守恒闭合且无降级无缺口
+    时零漂移（无 sheet、无前缀、无红字）。
+    """
     from openpyxl import load_workbook
+    from openpyxl.styles import Font
+
     wb = load_workbook(template_path)
     appended: dict[str, int] = {}
     column_resolution: dict[str, str] = {}
@@ -207,6 +216,7 @@ def append_analysis_to_template(template_path: Path, items: list[dict[str, Any]]
     skipped_empty = 0
     pending_rows = 0
     pending_classes: dict[str, int] = {}
+    pending_item_rows: list[tuple[str, list[str], str]] = []
 
     software_items = []
     for item in items:
@@ -227,6 +237,7 @@ def append_analysis_to_template(template_path: Path, items: list[dict[str, Any]]
     for item in software_items:
         by_sheet.setdefault(target_sheet(item, wb.sheetnames), []).append(item)
 
+    red_font = Font(color="FFFF0000")
     for sheet, sheet_items in by_sheet.items():
         if sheet == FALLBACK_SHEET and sheet not in wb.sheetnames:
             ws = wb.create_sheet(FALLBACK_SHEET)
@@ -252,12 +263,25 @@ def append_analysis_to_template(template_path: Path, items: list[dict[str, Any]]
                 pending_rows += 1
                 for cls in pending["classes"]:
                     pending_classes[str(cls)] = pending_classes.get(str(cls), 0) + 1
+                # v3：待核行的序号/需求/说明标红——只染本趟追加行，模板样例行不动
+                resolved = columns or {}
+                for key, fallback in (
+                    ("seq", _COL_SEQ), ("answer", _COL_ANSWER), ("notes", _COL_NOTES),
+                ):
+                    ws.cell(row=row_idx, column=resolved.get(key, fallback)).font = red_font
+                pending_item_rows.append((
+                    str(item.get("functional_requirement_id") or ""),
+                    [str(c) for c in pending["classes"]],
+                    str(item.get("source_section") or ""),
+                ))
             seq += 1
             row_idx += 1
             written_here += 1
         if written_here:
             appended[sheet] = written_here
 
+    # v3：「守恒待核」清单 sheet（已存在则清空重写——续跑不叠行）
+    pending_sheet_rows = _write_pending_sheet(wb, pending_item_rows, gap_rows or [])
     from xlsx_io import safe_save_workbook
     out_path = safe_save_workbook(wb, out_path)
     return {"appended_by_sheet": dict(sorted(appended.items(), key=lambda x: -x[1])),
@@ -267,12 +291,67 @@ def append_analysis_to_template(template_path: Path, items: list[dict[str, Any]]
             "skipped_empty_items": skipped_empty,
             "column_resolution": column_resolution,
             # partial export（v3）：待核行级标记审计（template_write_task 据此
-            # 自报 unclosed_basis → 阶段记 partial；类计数供报告/UI）
+            # 自报 unclosed_basis → 阶段记 partial；类计数供报告/UI）。
+            # pending_sheet_rows/gap_rows：清单 sheet 数据行与其中的零 FRE 缺口行
+            # （守恒闭合且无降级无缺口 = None，与 v2 干净工作簿同形）。
             "conservation_pending_export": {
                 "marked_rows": pending_rows,
                 "classes": dict(sorted(pending_classes.items())),
-            } if pending_rows else None,
+                **({"pending_sheet_rows": pending_sheet_rows,
+                    "gap_rows": len(gap_rows or [])} if pending_sheet_rows else {}),
+            } if (pending_rows or pending_sheet_rows) else None,
             "workbook": out_path.name}
+
+
+# 「守恒待核」sheet：类别 | 原因 | 功能需求ID | 章节 | token | 说明
+_PENDING_SHEET_NAME = "守恒待核"
+_PENDING_SHEET_HEADER = ["类别", "原因", "功能需求ID", "章节", "token", "说明"]
+
+
+def _write_pending_sheet(
+    wb: Any,
+    item_rows: list[tuple[str, list[str], str]],
+    gap_rows: list[dict[str, Any]],
+) -> int:
+    """写「守恒待核」清单 sheet，返回数据行数（不含总述/表头）。
+
+    FRE 行来自已挂 ``conservation_pending`` 的分析条目（每 class 一行）；
+    缺口行来自 ``functional_extract.conservation_pending_gaps``（零 FRE 可挂，
+    只进清单不进需求 sheet）。无任何行时不建 sheet（干净工作簿零漂移）。
+    """
+    if not item_rows and not gap_rows:
+        return 0
+    from openpyxl.styles import Font
+
+    from functional_extract import pending_class_label, pending_gap_label
+
+    if _PENDING_SHEET_NAME in wb.sheetnames:
+        del wb[_PENDING_SHEET_NAME]
+    ws = wb.create_sheet(_PENDING_SHEET_NAME)
+    ws.merge_cells("A1:F1")
+    ws["A1"] = "本工作簿为待核导出。不得作为已验收交付。"
+    ws["A1"].font = Font(color="FFFF0000", bold=True)
+    ws.append(_PENDING_SHEET_HEADER)
+    data_rows = 0
+    for fre_id, classes, section in item_rows:
+        for cls in classes:
+            # 类别=人读标签（与需求 sheet 说明列前缀同措辞）；原因=类键（机器可归并）
+            ws.append([pending_class_label([cls]), cls,
+                       fre_id, section, "", pending_class_label([cls])])
+            data_rows += 1
+    for gap in gap_rows:
+        category = str(gap.get("category") or "")
+        # 与 FRE 行同形：类别=人读，原因=机键；原 reason 句子进说明
+        ws.append([
+            pending_gap_label(category),
+            category,
+            str(gap.get("functional_requirement_id") or ""),
+            str(gap.get("section_id") or ""),
+            str(gap.get("token") or ""),
+            str(gap.get("reason") or gap.get("detail") or ""),
+        ])
+        data_rows += 1
+    return data_rows
 
 
 def run_writer(out_dir: Path, template_path: Path) -> dict[str, Any]:
@@ -284,7 +363,26 @@ def run_writer(out_dir: Path, template_path: Path) -> dict[str, Any]:
     payload = json.loads(analysis_path.read_text(encoding="utf-8"))
     items = payload.get("items") or []
     out_path = out_dir / WRITTEN_WORKBOOK
-    report = append_analysis_to_template(template_path, items, out_path)
+    # v3（Task4）：守恒缺口行——governed 双路径读 FR（package_v1 下裸读读不到），
+    # 只为「守恒待核」清单 sheet 算零 FRE 缺口（条目上的 class 已由分析挂好）。
+    gap_rows: list[dict[str, Any]] = []
+    from requirements_analysis_rules import _read_functional_requirements_payload
+
+    fr = _read_functional_requirements_payload(out_dir)
+    if isinstance(fr, dict) and isinstance(fr.get("conservation"), dict):
+        if not fr["conservation"].get("ok", True):
+            from functional_extract import (
+                conservation_pending_gaps,
+                load_conservation_baseline,
+            )
+
+            sections = load_conservation_baseline(out_dir)
+            gap_rows = conservation_pending_gaps(
+                fr["conservation"],
+                fr.get("items") if isinstance(fr.get("items"), list) else [],
+                sections,
+            )
+    report = append_analysis_to_template(template_path, items, out_path, gap_rows=gap_rows)
     from requirement_record import provenance as _prov
     report["provenance"] = _prov("template_writer", "template_writer/v3")
     unmapped, extra = module_mapping_drift()

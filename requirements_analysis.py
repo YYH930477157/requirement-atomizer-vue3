@@ -253,6 +253,20 @@ def _functional_direct_basis(
     return functional_direct_basis(out_dir, allow_unclosed=allow_unclosed)
 
 
+def _functional_payload(out_dir: Path) -> dict[str, Any]:
+    """读 functional_requirements.json——governed 双路径单源（v3 Task1）。
+
+    裸 ``out_dir / "functional_requirements.json"`` 在 package_v1（桌面新跑，
+    产物在 ``.ratomizer/pipeline/``）下读不到 → 待核标记全漏、成文假干净。
+    与 ``functional_direct_basis`` 同走 ``_read_functional_requirements_payload``
+    （governed 优先、裸根兜底）。空 payload / 坏 JSON 返回 {}（与「读不到」同形）。
+    """
+    from requirements_analysis_rules import _read_functional_requirements_payload
+
+    payload = _read_functional_requirements_payload(Path(out_dir))
+    return payload if isinstance(payload, dict) else {}
+
+
 def _attach_conservation_pending_marks(
     out_dir: Path,
     requirements: list[dict[str, Any]],
@@ -264,10 +278,8 @@ def _attach_conservation_pending_marks(
     就地写入需求行的 ``conservation_pending.classes``（干净行不带该字段）。
     返回标记表供载荷计数。报告闭合时零副作用。
     """
-    try:
-        payload = json.loads(
-            (Path(out_dir) / "functional_requirements.json").read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    payload = _functional_payload(out_dir)
+    if not payload:
         return {}
     conservation = payload.get("conservation") if isinstance(payload, dict) else None
     if not isinstance(conservation, dict) or conservation.get("ok", True):
@@ -300,12 +312,8 @@ def _attach_extract_degraded_marks(
     （与守恒失败类去重并存）。守恒闭合的 mixed 载荷同样适用（抽取降级不是守恒
     缺口）。返回 ``{fre_id: ["extract_degraded"]}`` 供载荷计数。
     """
-    try:
-        payload = json.loads(
-            (Path(out_dir) / "functional_requirements.json").read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    if not isinstance(payload, dict) or str(payload.get("route") or "") != "mixed":
+    payload = _functional_payload(out_dir)
+    if not payload or str(payload.get("route") or "") != "mixed":
         return {}
     from functional_extract import extract_degraded_marks, load_conservation_baseline
 
@@ -353,13 +361,11 @@ def run_requirements_analysis(
         raw_requirements: list[dict[str, Any]] = []
         requirements = direct_basis
         if allow_unclosed:
-            try:
-                fr_payload = json.loads(synthesized_path.read_text(encoding="utf-8"))
-                conservation = fr_payload.get("conservation") if isinstance(fr_payload, dict) else None
-                unclosed_basis = bool(
-                    isinstance(conservation, dict) and not conservation.get("ok", True))
-            except (OSError, json.JSONDecodeError):
-                unclosed_basis = False
+            # v3（Task1）：governed 双路径读——package_v1 下裸读会漏 unclosed_basis
+            fr_payload = _functional_payload(out_dir)
+            conservation = fr_payload.get("conservation") if fr_payload else None
+            unclosed_basis = bool(
+                isinstance(conservation, dict) and not conservation.get("ok", True))
             if unclosed_basis:
                 pending_marks = _attach_conservation_pending_marks(out_dir, requirements)
             # v2：mixed 载荷的 stub 占位行挂 extract_degraded——与守恒状态独立

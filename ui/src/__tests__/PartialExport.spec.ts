@@ -87,6 +87,7 @@ describe("partial export（待核成文）run summary & deliverable hint", () =>
     const hint = wrapper.find('[data-testid="software-hint"]')
     expect(hint.exists()).toBe(true)
     expect(hint.text()).toContain("守恒未闭合的待核成文（5 条待核）")
+    expect(hint.text()).toContain("工作簿含「守恒待核」清单")
   })
 
   it("degraded-only（守恒闭合 + mixed 降级行）：措辞用抽取降级，不冒充守恒未闭合", async () => {
@@ -101,6 +102,7 @@ describe("partial export（待核成文）run summary & deliverable hint", () =>
     const hint = wrapper.find('[data-testid="software-hint"]')
     expect(hint.exists()).toBe(true)
     expect(hint.text()).toContain("待核成文（2 条抽取降级待核）")
+    expect(hint.text()).toContain("工作簿含「守恒待核」清单")
     expect(hint.text()).not.toContain("守恒未闭合")
   })
 

@@ -1,5 +1,46 @@
 # CLAUDE.md — Requirement Atomizer 项目上下文
 
+## 重大更新（2026-09-01c）——待核成文 v3 hotfix：package_v1 寻址 + draft 未闭合拦截 + 红字/「守恒待核」清单（分支 codex/partial-export-hotfix，基线 193efc8）
+
+> 2026-09-01 对照 origin/main 审查发现 v2 三缺口（方案
+> `docs/pending-export-v3-plan-2026-09-01.md`）：①Critical——attach/unclosed_basis
+> 裸读根目录 FR，package_v1 桌面跑成文照出但零标记（假干净表）；②Important——
+> draft+未闭合可经旁路出表（方案/ENV_REGISTRY 写明 draft 仍拦，实现只拦 failed）；
+> ③呈现债——只做了说明列前缀，无红字与工作簿内清单。TDD 实施，闸零放宽。
+
+- **寻址（Task1）**：`requirements_analysis._functional_payload` 单源
+  （`_read_functional_requirements_payload` governed 双路径）——两处 attach 与
+  unclosed_basis 三站点全部改走；顺手修出 v2 潜伏 bug：`template_write_task` 的
+  `pending=None` 裸 `.get` 使干净工作簿链路径整段崩（v2 测试未覆盖该路径）。
+- **draft（Task2）**：`functional_direct_basis` 在守恒/执行状态检查后加
+  `draft:true 且守恒未闭合 → raise Incomplete`（无论开关）——旁路的前提是"数据
+  可信只是守恒有缺口"，draft+缺口=占位数据叠加缺口，不放行；draft+守恒闭合
+  （显式 stub opt-in/烟测）保持现状不扩大拦。
+- **coerce（Task3）**：`extract_degraded_marks` 比对改 `_stub_item(section, 1)`
+  字段（落盘条目同一清洗链，借字段不借 id）——防清洗链演进后标记漂移。
+- **呈现（Task4）**：待核行序号/需求/说明三格红字（只染本趟追加行，模板样例行
+  不动）；新 sheet「守恒待核」（已存在清空重写）：A1 红字总述「不得作为已验收
+  交付」+ FRE 行（每 class 一行）+ `conservation_pending_gaps` 零 FRE 缺口行
+  （clause_coverage 全部 + uncovered 中无任何声明 FRE 相交的义务；缺口只进清单
+  **不造需求占位行**）。守恒闭合且无降级无缺口零漂移（无 sheet/前缀/红字）。
+  `run_writer` 读 FR 走同一 governed 单源。报告块增
+  `pending_sheet_rows`/`gap_rows`。缺口行类别经 `pending_gap_label` 与 FRE 行
+  同形（人读标签 / 机键分列），禁止清单上给人看 `clause_gap`。
+- **版本（Task5）**：`CONSERVATION_PARTIAL_EXPORT_VERSION` v2→v3（registry/两阶段
+  producer 同步——package_v1 上「ok 但零标记」的旧分析/成文代失效重跑，零 LLM）；
+  `STAGE_IMPLEMENTATION_REVISIONS["template-write"]` v5→v6（旧 xlsx 必须重写）。
+  不进 extract 指纹、不 bump 守恒模型。
+- **UI**：待核成文 hint 两形态均追加「；工作簿含『守恒待核』清单」。
+- **验收闸零放宽（Task6 核）**：`raise_if_unconserved`/`functional_direct_basis`
+  默认、claim shadow 发布 `conservation.ok` 前置、`evaluate_full_closure`
+  `conservation_open`、ab_runner B 腿 `conservation_ok is False → FAIL`、结果包
+  completed 拒绝 needs_work——全部未动，测试仍绿。
+- **验证**：新增 package_v1 主钉/draft 钉/coerce 钉/gaps 4 钉/呈现 3 钉；
+  聚焦 289 绿；worktree 并行全量 **4292 OK / 0 失败 / skipped=26**（golden 环境
+  skip 为 worktree 正常口径；唯一 transient 是 test_platform_scaffold 已知 HTTP
+  偶发，复跑绿——2026-09-01b 已落档）；UI vitest **289/289 + vue-tsc 0 错**
+  （PartialExport.spec 首次真跑：worktree junction 主检出 node_modules）。
+
 ## 重大更新（2026-09-01b）——待核成文 v2：extract_degraded 行级失败类补全（方案 grok 审核第 3 条收尾）
 
 > v1 实现曾以「stub 条款不产 FRE、无行可标」为由跳过 extract_degraded——该理由与

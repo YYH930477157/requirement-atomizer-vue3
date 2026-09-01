@@ -81,9 +81,11 @@ PROMPT_REGISTRY: list[dict[str, str]] = [
     # （desktop_tasks.stage_producer——只登记不进戳不够，续跑会复用未标记旧产物）。
     # v2（2026-09-01b）：mixed 载荷 stub 占位条目加独立失败类 extract_degraded
     # （标记侧确定性形状比对，见 functional_extract.extract_degraded_marks）。
-    {"id": "conservation-partial-export", "version": "conservation-partial-export-v2",
+    # v3（2026-09-01c，hotfix）：governed 寻址 + draft 拦截 + 红字/守恒待核 sheet
+    # （conservation_pending_gaps）——与常量同步进两阶段 producer/指纹。
+    {"id": "conservation-partial-export", "version": "conservation-partial-export-v3",
      "owner_module": "functional_extract",
-     "purpose": "Partial export pending-mark algorithm identity (conservation_pending_marks + extract_degraded_marks)"},
+     "purpose": "Partial export pending-mark algorithm identity (marks + extract_degraded + gaps)"},
 
     # Table understanding
     {"id": "llm-table-understanding", "version": "llm-table-understanding-prompt-v1",

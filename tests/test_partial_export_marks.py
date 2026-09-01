@@ -186,6 +186,8 @@ class ExtractDegradedMarksTests(unittest.TestCase):
         self.assertEqual(
             fe.pending_class_label(["binding", "extract_degraded"]),
             "绑定失配、抽取降级")
+        self.assertEqual(fe.pending_gap_label("clause_gap"), "条款缺口")
+        self.assertEqual(fe.pending_gap_label("uncovered"), "义务未覆盖")
 
     def test_stub_shape_matches_stub_item(self) -> None:
         # 与构造侧同源：_stub_shape 必须还原 _stub_item 的 objective/behaviors
@@ -193,6 +195,62 @@ class ExtractDegradedMarksTests(unittest.TestCase):
         item = fe._stub_item(section, 1)
         self.assertEqual(
             (item["objective"], item["behaviors"]), fe._stub_shape(section))
+
+    def test_degraded_compare_uses_stub_item_fields(self) -> None:
+        """v3（Task3）：标记比对以落盘条目同一清洗链（_stub_item）为准。
+
+        带标准号标题的条款 coerce 链（heading 清洗/behaviors 回显）与裸模板
+        出发点可能分叉——比对直接借 ``_stub_item(section, 1)`` 的字段（不用
+        它重算的 id），落盘的 stub 条目必须能标上。
+        """
+        section = _section("IEC 62056-21", "The meter shall log events.", ["B1"])
+        item = fe._stub_item(section, 1)
+        payload = {"route": "mixed", "items": [dict(item)]}
+        marks = fe.extract_degraded_marks(payload, [section])
+        self.assertEqual(
+            marks, {item["functional_requirement_id"]: ["extract_degraded"]})
+
+
+class ConservationPendingGapsTests(unittest.TestCase):
+    """v3（Task4）：零 FRE 可挂的缺口行——只进「守恒待核」清单 sheet，不造需求行。"""
+
+    def test_gaps_include_clause_coverage_not_fabricated_fre(self) -> None:
+        report = _report()
+        report["checks"]["clause_coverage"] = {
+            "ok": False,
+            "uncovered_sections": [{"section_id": "4.9", "heading": "Spare"}],
+        }
+        gaps = fe.conservation_pending_gaps(
+            report, [_item("F1", ["B1"])],
+            [_section("4.1", "The meter shall log events.", ["B1"]),
+             _section("4.9", "Spare parts list.", ["B9"])],
+        )
+        self.assertTrue(gaps)
+        self.assertTrue(all(not g.get("functional_requirement_id") for g in gaps))
+        self.assertEqual(gaps[0]["category"], "clause_gap")
+
+    def test_gaps_omit_uncovered_already_connected_to_declared_fre(self) -> None:
+        report = _report(uncovered=[{"section_id": "4.2", "sentence": "shall archive logs"}])
+        sections = [_section("4.2", "The logger shall archive logs.", ["B2"])]
+        items = [_item("F2", ["B2"])]
+        # 连带已挂 F2，gap 不得再为同一义务造无 id 行
+        gaps = fe.conservation_pending_gaps(report, items, sections)
+        self.assertEqual(gaps, [])
+
+    def test_gaps_include_uncovered_with_zero_declared_fre(self) -> None:
+        report = _report(uncovered=[{"section_id": "4.2", "sentence": "shall archive logs"}])
+        sections = [_section("4.2", "The logger shall archive logs.", ["B2"])]
+        # F1 只声明 B1——4.2 的义务零 FRE 可挂 → gap
+        gaps = fe.conservation_pending_gaps(report, [_item("F1", ["B1"])], sections)
+        self.assertEqual(len(gaps), 1)
+        self.assertEqual(gaps[0]["category"], "uncovered")
+        self.assertEqual(gaps[0]["section_id"], "4.2")
+        self.assertFalse(gaps[0]["functional_requirement_id"])
+
+    def test_gaps_empty_when_report_ok(self) -> None:
+        sections = [_section("4.1", "The meter shall log events.", ["B1"])]
+        self.assertEqual(
+            fe.conservation_pending_gaps(_report(ok=True), [], sections), [])
 
 
 if __name__ == "__main__":

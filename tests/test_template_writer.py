@@ -161,5 +161,91 @@ class RunWriterTests(unittest.TestCase):
                 tw.run_writer(Path(td), template)
 
 
+class PendingPresentationTests(unittest.TestCase):
+    """v3（Task4）：待核行红字 + 「守恒待核」清单 sheet；干净工作簿零漂移。"""
+
+    def test_pending_row_is_red_and_sheet_lists_fre(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            tpl = root / "tpl.xlsx"
+            make_template(tpl)
+            row = item("事件记录", "记录事件", text="电表应记录事件", seq_hint=1)
+            row["functional_requirement_id"] = "F1"
+            row["conservation_pending"] = {"classes": ["binding"]}
+            out = root / "软件需求列表-成文.xlsx"
+            report = tw.append_analysis_to_template(tpl, [row], out)
+            wb = load_workbook(out)
+            self.assertIn("守恒待核", wb.sheetnames)
+            ws = wb["事件需求"]
+            # 追加行 = 模板表头后第一条新数据（事件需求夹具无样例数据行）
+            notes_cell = ws.cell(row=2, column=7)
+            self.assertIn("⚠待核", str(notes_cell.value or ""))
+            self.assertEqual(str(notes_cell.font.color.rgb), "FFFF0000")
+            body_cell = ws.cell(row=2, column=6)
+            self.assertTrue(str(body_cell.value or "").strip())
+            self.assertEqual(str(body_cell.font.color.rgb), "FFFF0000")
+            seq_cell = ws.cell(row=2, column=2)
+            self.assertEqual(str(seq_cell.font.color.rgb), "FFFF0000")
+            pending = wb["守恒待核"]
+            blob = " ".join(
+                str(c or "") for r in pending.iter_rows(values_only=True) for c in r)
+            self.assertIn("F1", blob)
+            self.assertIn("不得作为已验收交付", blob)
+            self.assertGreater(
+                int((report.get("conservation_pending_export") or {}).get(
+                    "pending_sheet_rows") or 0), 0)
+
+    def test_gap_rows_rendered_without_fre_rows(self) -> None:
+        """零 FRE 缺口只进清单 sheet，不进需求 sheet（appended_total 不变）。"""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            tpl = root / "tpl.xlsx"
+            make_template(tpl)
+            row = item("事件记录", "记录事件", text="电表应记录事件", seq_hint=1)
+            row["functional_requirement_id"] = "F1"
+            gaps = [{"category": "clause_gap", "reason": "条款块无任何功能需求声明",
+                     "section_id": "4.9", "functional_requirement_id": "",
+                     "token": "", "detail": "Spare"}]
+            out = root / "out.xlsx"
+            report = tw.append_analysis_to_template(tpl, [row], out, gap_rows=gaps)
+            self.assertEqual(report["appended_total"], 1, "缺口不追加需求行")
+            wb = load_workbook(out)
+            self.assertIn("守恒待核", wb.sheetnames)
+            pending = wb["守恒待核"]
+            data = [
+                r for r in pending.iter_rows(min_row=3, values_only=True)
+                if r and any(c not in (None, "") for c in r)
+            ]
+            self.assertTrue(data, "清单应有缺口数据行")
+            # 与 FRE 行同形：类别=人读标签，原因=机键（不得把 clause_gap 给人看）
+            self.assertEqual(data[0][0], "条款缺口")
+            self.assertEqual(data[0][1], "clause_gap")
+            blob = " ".join(str(c or "") for r in data for c in r)
+            self.assertIn("4.9", blob)
+            block = report["conservation_pending_export"]
+            self.assertEqual(block["gap_rows"], 1)
+            # 该条目未挂 pending——清单只有缺口行；marked_rows=0 但 sheet 存在
+            self.assertEqual(block["pending_sheet_rows"], 1)
+            self.assertEqual(block["marked_rows"], 0)
+
+    def test_clean_workbook_has_no_pending_sheet_or_red_prefix(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            tpl = root / "tpl.xlsx"
+            make_template(tpl)
+            out = root / "out.xlsx"
+            report = tw.append_analysis_to_template(
+                tpl, [item("时钟", "历法", text="公历", seq_hint=1)], out)
+            wb = load_workbook(out)
+            self.assertNotIn("守恒待核", wb.sheetnames)
+            self.assertIsNone(report.get("conservation_pending_export"))
+            clock = wb["时钟需求"]
+            # 模板样例行（row 2）不得被涂红
+            sample = clock.cell(row=2, column=6)
+            color = sample.font.color
+            rgb = getattr(color, "rgb", None) if color is not None else None
+            self.assertNotEqual(str(rgb or ""), "FFFF0000")
+
+
 if __name__ == "__main__":
     unittest.main()

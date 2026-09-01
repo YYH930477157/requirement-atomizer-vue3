@@ -38,6 +38,14 @@
 
 ### 已完成（2026-09-01）
 
+- [x] **待核成文 v3 hotfix（分支 codex/partial-export-hotfix，基线 193efc8）**：
+  package_v1 寻址修复（governed 单源——桌面跑不再出零标记假干净表）+ draft+未
+  闭合一律拦 + 待核行红字 + 「守恒待核」清单 sheet（零 FRE 缺口只进清单不造
+  需求行）。`conservation-partial-export-v3` + template-write impl-v6（旧分析/
+  成文代失效重跑，零 LLM）。**验收闸零放宽**：claim shadow / full closure /
+  ab_runner / 结果包 completed 判定全部未动；门禁仍挂起（2026-08-31 裁定维持）。
+  方案 `docs/pending-export-v3-plan-2026-09-01.md`，聚焦 289 绿 + worktree 全量
+  4292/0 失败 + UI 289/289。
 - [x] **待核成文 partial export（政策反转，用户拍板）**：守恒未闭合/直抽 partial
   时分析·成文·澄清照跑并如实标 partial，失败面行级「⚠待核（失败类）」进 xlsx；
   首代发布走 record_analysis_partial（marker=incomplete）；failed/draft 仍拦；

@@ -162,6 +162,10 @@ class PartialExportChainTests(unittest.TestCase):
             texts = [str(r[5] or "") for r in rows]
             self.assertTrue(any("待核" in t and "抽取降级" in t for t in texts),
                             "stub 占位行说明列应带「⚠待核（抽取降级）」")
+            self.assertIn(
+                "守恒待核", load_workbook(xlsx).sheetnames,
+                "extract_degraded-only 也必须建「守恒待核」清单",
+            )
 
     def test_mixed_stub_row_merges_with_conservation_class(self) -> None:
         """v2：同一行既守恒待核又抽取降级——两类去重并存。"""
@@ -251,6 +255,74 @@ class ProducerStampTests(unittest.TestCase):
             desktop_tasks.update_run_manifest(
                 out, "template-write", "partial", action="ran")
             self.assertFalse(desktop_tasks.stage_is_reusable(out, "template-write"))
+
+
+# ---------------------------------------------------------------------------
+# v3 Task 1：package_v1 寻址——桌面新跑的 FR 在 .ratomizer/pipeline/，裸根读漏标记
+# ---------------------------------------------------------------------------
+
+def _init_package(root: Path) -> Path:
+    from result_package import initialize_result_package
+
+    src = root / "standard.docx"
+    src.write_bytes(b"docx-fixture")
+    initialize_result_package(
+        root, input_path=src,
+        requested_stages=["requirements-analysis", "template-write"],
+    )
+    return root
+
+
+def _seed_fr_governed(root: Path, **kwargs) -> None:
+    from result_package import governed_artifact_path
+
+    _seed_fr(root, **kwargs)  # 先写根目录（沿用既有夹具的 blocks/chunks 等）
+    # 桌面 package_v1：pipeline 产物不在根目录。FR 必须 unlink 才能逼出裸读漏洞；
+    # chunks/blocks 一并搬进 pipeline，让 load_clauses / gaps 走真实 governed 路径。
+    for name in ("functional_requirements.json", "blocks.jsonl",
+                 "chunks.jsonl", "table_items.jsonl"):
+        src = root / name
+        if not src.is_file():
+            continue
+        dest = governed_artifact_path(root, name, category="pipeline", for_write=True)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+        src.unlink()
+
+
+class PartialExportPackageV1Tests(unittest.TestCase):
+    def test_package_v1_unclosed_marks_rows_and_sets_partial_export(self) -> None:
+        """package_v1：根目录无 FR、pipeline 里有未闭合产物 → 成文必须带 ⚠待核。
+
+        v2 缺陷：attach / unclosed_basis 裸读根目录 → package_v1 桌面跑成文
+        照出、行不标、UI 当干净表。修复后 governed 双路径读取。
+        """
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _init_package(root)
+            tpl = root / "tpl.xlsx"
+            _make_template(tpl)
+            _seed_fr_governed(root, execution_status="ok", conservation_ok=False)
+            # 无原子：根目录也不得有 functional_requirements.json
+            self.assertFalse((root / "functional_requirements.json").exists())
+            payload = PartialExportChainTests()._run(root, tpl)
+            self.assertTrue(payload.get("partial_export"))
+            self.assertGreater(int(payload.get("pending_marked_rows") or 0), 0)
+            xlsx = root / "软件需求列表-成文.xlsx"
+            self.assertTrue(xlsx.is_file())
+            wb = load_workbook(xlsx)
+            self.assertIn("守恒待核", wb.sheetnames, "package_v1 成文必须含清单 sheet")
+            notes = []
+            for ws in wb.worksheets:
+                if ws.title == "守恒待核":
+                    continue
+                for row in ws.iter_rows(min_row=2, values_only=True):
+                    if row and any(c not in (None, "") for c in row):
+                        notes.append(" ".join(str(c or "") for c in row))
+            self.assertTrue(
+                any("⚠待核" in text for text in notes),
+                "package_v1 成文必须带待核前缀，不能是干净表",
+            )
 
 
 if __name__ == "__main__":
