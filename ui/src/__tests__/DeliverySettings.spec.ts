@@ -76,6 +76,12 @@ describe("delivery settings (§20)", () => {
     expect(advanced.find('[data-testid="stage-assemble"]').exists()).toBe(true)
     expect(panel.find('[data-testid="template-path"]').exists()).toBe(false)
     expect(panel.find('[data-testid="template-pick"]').exists()).toBe(false)
+    const analyzeToggle = panel.find('[data-testid="stage-analyze"]')
+    expect(analyzeToggle.exists()).toBe(true)
+    const analyzeLabel = analyzeToggle.element.closest("label")?.textContent ?? ""
+    expect(analyzeLabel).toContain("澄清清单")
+    expect(analyzeLabel).not.toContain("软件需求分析")
+    expect(panel.text()).not.toContain("software_requirements.xlsx")
 
     await modeSelect.setValue("off")
     expect(localStorage.getItem("ratomizer.translationMode.v1")).toBe("off")

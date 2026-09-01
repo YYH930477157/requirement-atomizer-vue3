@@ -172,7 +172,7 @@ describe("review workspace shell", () => {
     const atomize = wrapper.find('[data-testid="run-stage-atomize"]')
     expect(atomize.classes()).toContain("stage-running")
     expect(atomize.find(".stage-bar").classes()).toContain("is-indeterminate")
-    expect(wrapper.find('[data-testid="run-progress"]').text()).toContain("动效演示 1/10")
+    expect(wrapper.find('[data-testid="run-progress"]').text()).toContain("动效演示 1/9")
     expect(wrapper.find('[data-testid="run-progress"]').text()).toContain("0%")
     expect(getApiSession).not.toHaveBeenCalled()
     expect(getLlmSettings).not.toHaveBeenCalled()
@@ -1559,13 +1559,14 @@ describe("review workspace shell", () => {
     await vi.waitFor(() =>
       expect(window.ratomizerDesktop?.runChain).toHaveBeenCalledWith({
         outDir: "E:\\out\\abnt",
-        stages: ["ai-extract", "functional-synthesis", "assemble", "requirements-analysis", "clarification-report", "full-translation", "compose", "export-annotation-html"],
-        // bridge 提供已保存 enabled 设置 → onMounted 恢复（审计 A2）→ 真 LLM 路由 + 分析阶段过门控
+        stages: ["ai-extract", "functional-synthesis", "assemble", "clarification-report", "full-translation", "compose", "export-annotation-html"],
+        // bridge 提供已保存 enabled 设置 → onMounted 恢复（审计 A2）→ 真 LLM 路由 + 澄清过门控
         llmRoute: "openai_compatible",
         annotationLayoutMode: "pdf_original",
       }))
     await vi.waitFor(() =>
-      expect(wrapper.find('[data-testid="api-message"]').text()).toContain("软件需求分析"))
+      expect(wrapper.find('[data-testid="api-message"]').text()).toContain("澄清问题清单"))
+    expect(wrapper.find('[data-testid="api-message"]').text()).not.toContain("软件需求分析")
     // 一致性闭环：AI 抽取阶段的报表摘要透出到跑完消息
     expect(wrapper.find('[data-testid="api-message"]').text()).toContain("疑似跨章重复 3 组")
     expect(wrapper.find('[data-testid="api-message"]').text()).toContain("OBIS 数值待核 1")
@@ -1613,11 +1614,12 @@ describe("review workspace shell", () => {
     await vi.waitFor(() =>
       expect(window.ratomizerDesktop?.runChain).toHaveBeenCalledWith(
         expect.objectContaining({
-          stages: ["ai-extract", "functional-synthesis", "assemble", "requirements-analysis", "clarification-report", "full-translation"],
+          stages: ["ai-extract", "functional-synthesis", "assemble", "clarification-report", "full-translation"],
           llmRoute: "openai_compatible",
         })))
     await vi.waitFor(() =>
-      expect(wrapper.find('[data-testid="api-message"]').text()).toContain("软件需求分析"))
+      expect(wrapper.find('[data-testid="api-message"]').text()).toContain("澄清问题清单"))
+    expect(wrapper.find('[data-testid="api-message"]').text()).not.toContain("软件需求分析")
   })
 
   it("surfaces review insights suggestions after session load", async () => {
@@ -1740,11 +1742,11 @@ describe("review workspace shell", () => {
     await flushPromises()
     await wrapper.find('[data-testid="action-test-pipeline"]').trigger("click")
 
-    // 测试运行 = 一条样本链命令（1/5 试抽 + 分析 + 澄清，强制 openai_compatible）
+    // 测试运行 = 一条样本链命令（1/5 试抽 + 澄清，强制 openai_compatible）
     await vi.waitFor(() =>
       expect(window.ratomizerDesktop?.runChain).toHaveBeenCalledWith({
         outDir: "E:\\out\\abnt",
-        stages: ["ai-extract", "functional-synthesis", "requirements-analysis", "clarification-report"],
+        stages: ["ai-extract", "functional-synthesis", "clarification-report"],
         llmRoute: "openai_compatible", sampleRatio: 0.2,
       }))
     await vi.waitFor(() => {
@@ -1752,9 +1754,8 @@ describe("review workspace shell", () => {
       expect(message).toContain("试抽样本 10/54 章")
       expect(message).toContain("12 条")
       expect(message).toContain("78.5%")
-      expect(message).toContain("软件需求 11 条")
-      expect(message).toContain("富化 9、降级 2")   // 部分降级可见（0714 批次一 E1a）
-      expect(message).toContain("software_requirements.xlsx")
+      expect(message).not.toContain("软件需求")
+      expect(message).not.toContain("software_requirements.xlsx")
       expect(message).toContain("就绪判定 READY")
       expect(message).toContain("必答澄清 3 条")
     })

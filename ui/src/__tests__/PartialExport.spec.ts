@@ -37,7 +37,6 @@ function mockBridge(chainPayload: Record<string, unknown>) {
       }),
       startResultPackage: undefined,
       statDeliverables: vi.fn().mockResolvedValue({
-        "software_requirements.xlsx": { exists: true, path: "E:\\out\\sbd\\software_requirements.xlsx" },
         "document_annotation.html": { exists: false, path: null },
         "clarification_questions.xlsx": { exists: false, path: null },
         "run_manifest.json": { exists: true, path: "E:\\out\\sbd\\run_manifest.json" },
@@ -55,7 +54,7 @@ async function driveRun(wrapper: ReturnType<typeof mount>) {
   await flushPromises()
 }
 
-describe("partial export（待核分析）run summary & deliverable hint", () => {
+describe("partial export（守恒未闭合）run summary honesty", () => {
   beforeEach(() => {
     localStorage.clear()
     localStorage.setItem("ratomizer.runStages.v3", JSON.stringify(BASE_STAGES))
@@ -70,7 +69,7 @@ describe("partial export（待核分析）run summary & deliverable hint", () =>
     localStorage.clear()
   })
 
-  it("conservation-blocked partial export：消息与交付物提示如实标注「守恒未闭合的待核分析」", async () => {
+  it("conservation-blocked：只报功能需求未闭合，不冒充分析表已出", async () => {
     mockBridge({
       conservation_blocked: true,
       conservation_block_error: "功能需求守恒核对未闭合（义务未覆盖 5）",
@@ -81,32 +80,29 @@ describe("partial export（待核分析）run summary & deliverable hint", () =>
     await driveRun(wrapper)
 
     await vi.waitFor(() => {
-      expect(wrapper.text()).toContain("需求分析已出（5 条待核）")
+      expect(wrapper.text()).toContain("功能需求守恒未闭合")
     })
+    expect(wrapper.text()).not.toContain("需求分析已出")
     expect(wrapper.text()).not.toContain("需求分析已阻断")
-    const hint = wrapper.find('[data-testid="software-hint"]')
-    expect(hint.exists()).toBe(true)
-    expect(hint.text()).toContain("守恒未闭合的待核分析（5 条待核）")
-    expect(hint.text()).not.toContain("守恒待核")
+    expect(wrapper.text()).not.toContain("待核分析")
+    expect(wrapper.find('[data-testid="software-hint"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain("software_requirements.xlsx")
   })
 
-  it("degraded-only（守恒闭合 + mixed 降级行）：措辞用抽取降级，不冒充守恒未闭合", async () => {
+  it("degraded-only：抽取降级挂在功能需求上，不冒充分析表", async () => {
     mockBridge({ pending_marked_rows: 2 })
     const wrapper = mount(App)
     await driveRun(wrapper)
 
     await vi.waitFor(() => {
-      expect(wrapper.text()).toContain("需求分析已出（2 条抽取降级待核）")
+      expect(wrapper.text()).toContain("功能需求含 2 条抽取降级，待核对")
     })
+    expect(wrapper.text()).not.toContain("需求分析已出")
     expect(wrapper.text()).not.toContain("需求分析已阻断")
-    const hint = wrapper.find('[data-testid="software-hint"]')
-    expect(hint.exists()).toBe(true)
-    expect(hint.text()).toContain("待核分析（2 条抽取降级待核）")
-    expect(hint.text()).not.toContain("守恒待核")
-    expect(hint.text()).not.toContain("守恒未闭合")
+    expect(wrapper.find('[data-testid="software-hint"]').exists()).toBe(false)
   })
 
-  it("干净运行无待核行：交付物提示保持原 hint，不带待核字样", async () => {
+  it("干净运行无待核行：不写待核/分析表字样", async () => {
     mockBridge({})
     const wrapper = mount(App)
     await driveRun(wrapper)
@@ -115,8 +111,8 @@ describe("partial export（待核分析）run summary & deliverable hint", () =>
       expect(window.ratomizerDesktop?.runChain).toHaveBeenCalled()
     })
     expect(wrapper.text()).not.toContain("待核分析")
-    const hint = wrapper.find('[data-testid="software-hint"]')
-    expect(hint.exists()).toBe(true)
-    expect(hint.text()).not.toContain("待核")
+    expect(wrapper.text()).not.toContain("需求分析已出")
+    expect(wrapper.find('[data-testid="software-hint"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain("software_requirements.xlsx")
   })
 })

@@ -1,5 +1,19 @@
 # CLAUDE.md — Requirement Atomizer 项目上下文
 
+## 重大更新（2026-09-01e）——减法：GUI / 默认链去掉软件需求分析（分支 codex/drop-requirements-analysis，基线 2e92140）
+
+> 用户裁定分析表「没有意义，删掉」。成文已在 09-01d 退出日常产品；分析本是成文前的中间步
+> （归属拆分 + 可选富化），单独留下没有公司格式交付价值。日常 B 轨表面改回功能需求 + 澄清。
+
+- **产品面**：导航不再打开 `software_requirements.xlsx`；交付物面板 4→3（批注 / 澄清 /
+  manifest）；设置「软件需求分析」复用为「澄清清单」（`runStages.analyze` 键保留，避免
+  旧 localStorage 把澄清关掉）；默认链 / 测试样本链不再排 `requirements-analysis`。
+  READY 提示改为「功能需求已出」。守恒未闭合只报功能需求未闭合，不冒充分析表已出。
+- **保留**：`requirements_analysis.py` / 分析 xlsx 写入器 / CLI `requirements-analysis` /
+  `ab_runner` B 腿 / Electron `runRequirementsAnalysis` 仍在——门禁与命令行走分析，
+  不进日常 GUI。成文 CLI/门禁同样保留。守恒闸 / Claim / WS0 / `RATOMIZER_PARTIAL_EXPORT`
+  / 抽取指纹 / 富化默认关全部未动。不翻执行策略。
+
 ## 重大更新（2026-09-01d）——减法：GUI 去掉公司模板成文，日常交付改回需求分析表（分支 codex/drop-template-write，基线 9f40a78）
 
 > 用户裁定「模板功能先去掉，优先保证需求分析」。成文表实测整表掉进「其他需求(新增)」

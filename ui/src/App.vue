@@ -29,9 +29,6 @@
           <button class="nav-button" type="button" data-testid="nav-实现规格" @click="openDeliverable('dlms_cosem_spec_requirements.json')">
             <Braces class="nav-icon" :size="17" :stroke-width="1.9" aria-hidden="true" /><span>实现规格</span>
           </button>
-          <button class="nav-button" type="button" data-testid="nav-软件需求列表" @click="openDeliverable('software_requirements.xlsx')">
-            <FileSpreadsheet class="nav-icon" :size="17" :stroke-width="1.9" aria-hidden="true" /><span>软件需求列表</span>
-          </button>
           <button class="nav-button" type="button" data-testid="nav-澄清清单" @click="openDeliverable('clarification_questions.xlsx')">
             <CircleHelp class="nav-icon" :size="17" :stroke-width="1.9" aria-hidden="true" /><span>澄清清单</span>
           </button>
@@ -202,7 +199,7 @@
               <div class="dl-files" data-testid="deliverable-html">
                 <div v-for="f in DELIVERABLE_FILES" :key="f.key" class="dl-file" :class="{ 'is-missing': !deliverableExists(f.name) }">
                   <span class="dl-icon" :class="f.tone"><component :is="f.icon" :size="16" :stroke-width="1.9" aria-hidden="true" /></span>
-                  <span class="dl-name"><strong>{{ f.name }}</strong><small :data-testid="f.key === 'software' ? 'software-hint' : undefined">{{ deliverableHint(f) }}</small></span>
+                  <span class="dl-name"><strong>{{ f.name }}</strong><small>{{ deliverableHint(f) }}</small></span>
                   <button class="deliverable-open" type="button" :aria-label="`打开 ${f.name}`" :title="deliverableExists(f.name) ? `打开 ${f.name}` : `${f.name} 未生成`" :disabled="!deliverableExists(f.name)" @click="openDeliverable(f.name)"><ExternalLink :size="15" aria-hidden="true" /></button>
                 </div>
               </div>
@@ -563,13 +560,13 @@
                   </select>
                 </label>
               </div>
-              <p class="settings-hint">选择要交付什么：需求列表 / COSEM 规格按下方「交付阶段」自动决定；技术路径（A/B 轨）由系统自动路由，无需手动选择。</p>
+              <p class="settings-hint">选择要交付什么：功能需求 / COSEM 规格按下方「交付阶段」自动决定；技术路径（A/B 轨）由系统自动路由，无需手动选择。</p>
             </section>
             <section class="settings-section">
               <div class="settings-section-title">交付阶段</div>
               <label class="settings-toggle">
                 <input v-model="runStages.analyze" type="checkbox" data-testid="stage-analyze" />
-                <span><strong>软件需求分析</strong><small>软/硬/协同归属 + software_requirements.xlsx。<em>依赖 AI 抽取</em>。</small></span>
+                <span><strong>澄清清单</strong><small>生成 clarification_questions.xlsx。<em>依赖功能抽取</em>。</small></span>
               </label>
               <label class="settings-toggle">
                 <input v-model="runStages.compose" type="checkbox" data-testid="stage-compose" />
@@ -579,7 +576,7 @@
                 <input v-model="runStages.annotationHtml" type="checkbox" data-testid="stage-annotation-html" />
                 <span><strong>导出批注 HTML</strong><small>生成 document_annotation.html，用于专家离线阅读、批注和导出裁决 JSON。</small></span>
               </label>
-              <p class="settings-hint">LLM 富化跟随下方「LLM 富化」开关：开→AI 抽取/装配/分析走 openai_compatible，关→纯确定性。软件需求列表来自需求分析（software_requirements.xlsx），不再按公司模板成文。</p>
+              <p class="settings-hint">LLM 富化跟随下方「LLM 富化」开关：开→AI 抽取/装配走 openai_compatible，关→纯确定性。日常需求产品是功能需求，不再跑软件需求分析或公司模板成文。</p>
             </section>
             <details class="settings-section settings-advanced" data-testid="settings-advanced">
               <summary>高级：执行阶段（诊断 / 轨道对照用，普通交付无需调整）</summary>
@@ -722,7 +719,6 @@ import {
   ClipboardCheck,
   Download,
   ExternalLink,
-  FileSpreadsheet,
   FileText,
   FlaskConical,
   FolderOpen,
@@ -863,7 +859,6 @@ const tableDispositionOptions: Array<{ value: TableCellDisposition; label: strin
   { value: "excluded", label: "确认排除" },
 ]
 const DELIVERABLE_FILES = [
-  { key: "software", icon: FileSpreadsheet, tone: "xls", name: "software_requirements.xlsx", hint: "需求分析列表（B 轨主交付物）" },
   { key: "annotation", icon: FileText, tone: "htm", name: "document_annotation.html", hint: "批注视图 · 分享给专家离线裁决" },
   { key: "clarification", icon: CircleHelp, tone: "xls", name: "clarification_questions.xlsx", hint: "必答澄清 · 问客户/内部核对" },
   { key: "manifest", icon: Braces, tone: "jsn", name: "run_manifest.json", hint: "阶段台账 · 路由与续跑依据" },
@@ -872,11 +867,8 @@ const deliverablePresence = ref<Record<string, { exists: boolean; path: string |
 function deliverableExists(name: string): boolean {
   return Boolean(deliverablePresence.value[name]?.exists)
 }
-// partial export：待核分析存在时，软件需求列表条目的提示如实标注——
-// 措辞来自 run 完成时按形态生成的 pendingExportNote，不冒充干净分析表。
 function deliverableHint(f: { key: string; name: string; hint: string }): string {
   if (!deliverableExists(f.name)) return "未生成"
-  if (f.key === "software" && pendingExportNote.value) return pendingExportNote.value
   return f.hint
 }
 async function refreshDeliverablePresence() {
@@ -1059,9 +1051,6 @@ async function refreshUnitRouting(): Promise<void> {
 
 const runProgress = ref(0)
 const runStage = ref("待运行")
-// partial export：待核分析提示（分析表已出但带待核行时，交付物面板如实标注；
-// 措辞区分守恒未闭合与抽取降级两种形态）
-const pendingExportNote = ref<string | null>(null)
 const runProgressDetail = ref("等待开始")
 const latestTaskSummary = ref<Record<string, unknown> | null>(null)
 
@@ -1074,7 +1063,6 @@ const RUN_STAGE_DEFS = [
   { key: "ai-extract", label: "AI抽取" },
   { key: "functional-synthesis", label: "功能重组" },
   { key: "assemble", label: "组装功能" },
-  { key: "requirements-analysis", label: "需求分析" },
   { key: "clarification-report", label: "澄清清单" },
   { key: "full-translation", label: "全文翻译" },
   { key: "compose", label: "工程组装" },
@@ -1201,7 +1189,6 @@ function resetRunStageBoard() {
   }
   if (!runStages.value.assemble) next.assemble = { status: "disabled", percent: 0, detail: "未启用" }
   if (!runStages.value.analyze) {
-    next["requirements-analysis"] = { status: "disabled", percent: 0, detail: "未启用" }
     next["clarification-report"] = { status: "disabled", percent: 0, detail: "未启用" }
   }
   if (!llmMode.value) next["full-translation"] = { status: "disabled", percent: 0, detail: "LLM 关闭，未运行" }
@@ -2067,7 +2054,6 @@ function plannedAutomaticStages(options: { llmReviewLimit?: number }): string[] 
   }
   if (runStages.value.assemble) stages.push("assemble")
   if (runStages.value.analyze && useLlm) {
-    stages.push("requirements-analysis")
     stages.push("clarification-report")
   }
   if (useLlm && translationMode.value === "full") stages.push("full-translation")
@@ -2099,7 +2085,6 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
     isRunning.value = false
   }
   if (isRunning.value) return
-  pendingExportNote.value = null
   let stopProgress: (() => void) | undefined
   let packageRunId = ""
   let packageOutDir = ""
@@ -2189,17 +2174,16 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
         if (useLlm) stages.push("functional-synthesis")
       }
       if (runStages.value.assemble) stages.push("assemble")
-      // 分析/澄清硬依赖真 LLM 抽取产物（ai_requirements.jsonl，stub 路由不产）——
-      // LLM 关时带上它们必然断链，且把排在后面的 compose/批注 HTML 一起掐死（2026-07-08 审计 A3）
+      // 澄清硬依赖真 LLM 抽取产物——LLM 关时带上必然断链，
+      // 且把排在后面的 compose/批注 HTML 一起掐死（2026-07-08 审计 A3）
       const skippedForLlm: string[] = []
       if (runStages.value.analyze) {
         if (useLlm) {
-          stages.push("requirements-analysis")
           stages.push("clarification-report")
         } else {
-          skippedForLlm.push("功能重组", "需求分析", "澄清清单")
+          skippedForLlm.push("功能重组", "澄清清单")
           // 阶段卡同步:不然 LLM 关时这些卡永远停在"待完成"(0710 评审 R2)
-          for (const key of ["functional-synthesis", "requirements-analysis", "clarification-report"]) {
+          for (const key of ["functional-synthesis", "clarification-report"]) {
             setRunStageState(key, { status: "disabled", percent: 0, detail: "LLM 关闭，未运行" })
           }
         }
@@ -2252,19 +2236,10 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
         }
         if (chainPayload?.conservation_blocked) {
           const block = String(chainPayload.conservation_block_error || "功能需求守恒核对未闭合")
-          if (chainPayload?.partial_export) {
-            // partial export：未闭合但分析表已出——区分「拦住了、没有表」与「未闭合、表已出」
-            const pending = Number(chainPayload.pending_marked_rows ?? 0)
-            readinessNote += `；需求分析已出（${pending} 条待核）：${shortConservationError(block)}`
-            pendingExportNote.value = `守恒未闭合的待核分析（${pending} 条待核）`
-          } else {
-            readinessNote += `；需求分析已阻断：${shortConservationError(block)}`
-          }
+          readinessNote += `；功能需求守恒未闭合：${shortConservationError(block)}`
         } else if (Number(chainPayload?.pending_marked_rows ?? 0) > 0) {
-          // 守恒闭合但 mixed 降级（extract_degraded 行）——分析表已出且有待核行
           const pending = Number(chainPayload.pending_marked_rows ?? 0)
-          readinessNote += `；需求分析已出（${pending} 条抽取降级待核）`
-          pendingExportNote.value = `待核分析（${pending} 条抽取降级待核）`
+          readinessNote += `；功能需求含 ${pending} 条抽取降级，待核对`
         }
         lastStageNotes.value = chainNotes
         // 运行页总览瓦片（样机）：从链载荷提取,缺项保持 —
@@ -2278,7 +2253,7 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
           questions: chainPayload?.questions != null ? Number(chainPayload.questions) : runOverview.value.questions,
           verdict,
           deliverableHint: verdict === "READY"
-            ? "需求分析已出"
+            ? "功能需求已出"
             : (verdict ? "尚不能交货，先处理缺口" : runOverview.value.deliverableHint),
         }
         ranStages.push(...stages.map((s) => CHAIN_STEP_LABELS[s] || s))
@@ -2289,16 +2264,15 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
       }
     }
 
-    // 测试运行追加：样本交付物链（1/5 试抽 → 分析 → 澄清），同一条后端 chain 命令
+    // 测试运行追加：样本交付物链（1/5 试抽 → 澄清），同一条后端 chain 命令
     let sampleNote = ""
     if (options.llmReviewLimit && bridge?.runChain) {
       runStage.value = "样本交付物链"
       runProgress.value = 90
-      runProgressDetail.value = `均匀抽样全文 ${Math.round(TEST_AI_EXTRACT_SAMPLE_RATIO * 100)}% 章节试抽 + 分析…`
+      runProgressDetail.value = `均匀抽样全文 ${Math.round(TEST_AI_EXTRACT_SAMPLE_RATIO * 100)}% 章节试抽 + 澄清…`
       await nextUiTick()
       try {
-        const stages = ["ai-extract", "functional-synthesis", "requirements-analysis",
-                        "clarification-report"]
+        const stages = ["ai-extract", "functional-synthesis", "clarification-report"]
         const sample = await bridge.runChain({
           outDir: finalOutDir, stages, llmRoute: "openai_compatible",
           sampleRatio: TEST_AI_EXTRACT_SAMPLE_RATIO,
@@ -2308,11 +2282,6 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
         sampleNote = `；试抽样本 ${info?.sections ?? "?"}/${info?.total_sections ?? "?"} 章：` +
           `${Number(sample.count ?? 0)} 条` +
           (quality?.coverage_pct != null ? `、样本覆盖率 ${quality.coverage_pct}%` : "")
-        const a = objectValue(sample.analysis) as { analysis_count?: number; enriched?: number; enrich_degraded?: number } | null
-        if (a) {
-          const degraded = Number(a.enrich_degraded ?? 0)
-          sampleNote += `；软件需求 ${Number(a.analysis_count ?? 0)} 条（富化 ${Number(a.enriched ?? 0)}${degraded > 0 ? `、降级 ${degraded}` : ""}）→ software_requirements.xlsx`
-        }
         const r = objectValue(sample.readiness) as { verdict?: string } | null
         if (r?.verdict) sampleNote += `；就绪判定 ${r.verdict}，必答澄清 ${Number(sample.questions ?? 0)} 条`
         apiReconnectWarning ||= await refreshAfterDesktopTask(finalOutDir)
@@ -2389,7 +2358,7 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
 const CHAIN_STEP_LABELS: Record<string, string> = {
   "functional-synthesis": "功能重组",
   "functional-extract": "功能需求直抽（条款级，无原子化）",
-  "ai-extract": "AI 抽取（双引擎）", assemble: "装配实现规格", "requirements-analysis": "软件需求分析",
+  "ai-extract": "AI 抽取（双引擎）", assemble: "装配实现规格",
   "clarification-report": "澄清问题清单", compose: "组装工程需求",
   "full-translation": "生成全文双语交付物",
   "export-annotation-html": "导出批注视图",
@@ -2460,15 +2429,6 @@ function handleTaskProgress(event: { stage: string; step?: string; status?: stri
     runProgressDetail.value = event.model ? `模型：${event.model} · 逐章节调用 LLM` : "逐章节调用 LLM 抽取行为需求"
     return
   }
-  if (event.stage === "analyze") {
-    setRunStageState("requirements-analysis", { status: percent >= 100 ? "ok" : "running", percent, detail: total ? `${completed}/${total} 条` : "需求富化" })
-    runStage.value = total ? `软件需求分析 富化 ${completed}/${total}` : "软件需求分析"
-    runProgress.value = percent
-    runProgressDetail.value = event.model
-      ? `模型：${event.model} · 并发推导可研发软件需求（增量缓存，中断可续跑）`
-      : "并发推导可研发软件需求"
-    return
-  }
   if (event.stage !== "llm_review") return
   setRunStageState("llm-review", { status: percent >= 100 ? "ok" : "running", percent, detail: total ? `${completed}/${total} 条` : "逐条审查" })
   runStage.value = total ? `AI 审查 ${completed}/${total}` : "AI 审查"
@@ -2515,7 +2475,7 @@ async function handleImportAnswers() {
     const readiness = objectValue(payload.readiness) as { verdict?: string } | null
     apiMessage.value = `已导入客户答复 ${Number(payload.imported ?? 0)} 条、内部核对 ${Number(payload.internal_imported ?? 0)} 条` +
       (readiness?.verdict ? `；当前就绪判定：${readiness.verdict}` : "") +
-      "——客户答复将在下次软件需求分析时作为权威输入生效"
+      "——客户答复将在下次生成澄清清单时作为权威输入生效"
   } catch (error) {
     apiMessage.value = error instanceof Error ? error.message : "导入澄清答复失败"
   }
