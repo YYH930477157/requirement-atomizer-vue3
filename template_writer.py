@@ -122,9 +122,9 @@ def build_row_values(item: dict[str, Any], seq: int,
     ``columns`` 是按表头名解析的列位（v2）；缺省/None 回退固定列位常量（v1 契约，
     计量需求拆分列场景）。列语义键：seq/submodule/question/answer/notes/
     is_customer/section/hw。
-    v3（partial export，2026-09-01）：``conservation_pending.classes`` 非空的条目
-    说明列前缀「⚠待核（失败类标签）」——失败类措辞单源在
-    ``functional_extract.pending_class_label``；不打 draft 水印（那是 stub 语义）。
+    v3（partial export，2026-09-01）：待核前缀由 ``_notes_text`` 单源渲染
+    （``conservation_pending.classes`` → ``pending_class_label``）；此处不再二次加前缀。
+    不打 draft 水印（那是 stub 语义）。
     """
     hw = "是" if item.get("ownership") == OWNERSHIP_CO_DESIGN else ""
     resolved = columns or {}
@@ -139,13 +139,6 @@ def build_row_values(item: dict[str, Any], seq: int,
         if objective:
             body = f"目标：{objective}"
     notes = _notes_text(item)
-    pending = item.get("conservation_pending") if isinstance(
-        item.get("conservation_pending"), dict) else None
-    if pending and pending.get("classes"):
-        from functional_extract import pending_class_label
-
-        prefix = f"⚠待核（{pending_class_label(pending['classes'])}）"
-        notes = f"{prefix} {notes}".strip()
     return {
         resolved.get("seq", _COL_SEQ): seq,
         resolved.get("submodule", _COL_SUBMODULE): item.get("submodule") or item.get("module") or "",

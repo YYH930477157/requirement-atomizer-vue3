@@ -74,6 +74,8 @@ describe("delivery settings (§20)", () => {
     expect(advanced.find('[data-testid="stage-ai-extract"]').exists()).toBe(true)
     expect(advanced.find('[data-testid="stage-llm-review"]').exists()).toBe(true)
     expect(advanced.find('[data-testid="stage-assemble"]').exists()).toBe(true)
+    expect(panel.find('[data-testid="template-path"]').exists()).toBe(false)
+    expect(panel.find('[data-testid="template-pick"]').exists()).toBe(false)
 
     await modeSelect.setValue("off")
     expect(localStorage.getItem("ratomizer.translationMode.v1")).toBe("off")

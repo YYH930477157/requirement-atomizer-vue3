@@ -1,5 +1,20 @@
 # CLAUDE.md — Requirement Atomizer 项目上下文
 
+## 重大更新（2026-09-01d）——减法：GUI 去掉公司模板成文，日常交付改回需求分析表（分支 codex/drop-template-write，基线 9f40a78）
+
+> 用户裁定「模板功能先去掉，优先保证需求分析」。成文表实测整表掉进「其他需求(新增)」
+> （旧 FRE 的 module 是英文节题，对不上公司词表），分析本身才是要先保住的产品。
+
+- **产品面**：设置面板不再选模板；默认链 / 测试样本链不再排 `template-write`；
+  导航与交付物面板打开 `software_requirements.xlsx`；运行卡去掉「格式成文」；
+  READY 提示改为「需求分析已出」；待核 hint 改「待核分析」，不再提「守恒待核」清单
+  （那张 sheet 只存在于成文 xlsx）。
+- **分析表诚实**：`_notes_text` 单源渲染「⚠待核（失败类）」前缀（原只在
+  `template_writer.build_row_values`）；成文写入器改走同一前缀，避免双前缀。
+- **保留**：`template_writer.py` / `template-write` CLI / `ab_runner` / Electron
+  `writeTemplate` IPC 仍在——门禁与命令行走成文，不进日常 GUI。守恒闸 / Claim /
+  WS0 / `RATOMIZER_PARTIAL_EXPORT` / 抽取指纹全部未动。不翻执行策略、不默认开富化。
+
 ## 重大更新（2026-09-01c）——待核成文 v3 hotfix：package_v1 寻址 + draft 未闭合拦截 + 红字/「守恒待核」清单（分支 codex/partial-export-hotfix，基线 193efc8）
 
 > 2026-09-01 对照 origin/main 审查发现 v2 三缺口（方案

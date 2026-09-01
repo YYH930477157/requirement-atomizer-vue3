@@ -1914,7 +1914,7 @@ _PENDING_CLASS_LABELS = {
 
 
 def pending_class_label(classes: Sequence[str]) -> str:
-    """失败类 → 人读标签（成文说明列与 UI 共用，单一措辞权威）。"""
+    """失败类 → 人读标签（分析说明列 / 成文说明列共用，单一措辞权威）。"""
     return "、".join(
         _PENDING_CLASS_LABELS.get(str(cls), str(cls)) for cls in classes
     )
