@@ -287,6 +287,42 @@ def _attach_conservation_pending_marks(
     return marks
 
 
+def _attach_extract_degraded_marks(
+    out_dir: Path,
+    requirements: list[dict[str, Any]],
+) -> dict[str, list[str]]:
+    """partial export（v2）：mixed 载荷的 stub 占位条目挂 ``extract_degraded``。
+
+    与守恒待核独立（方案 grok 审核第 3 条行级补全）：mixed 运行中包级 stub 退化
+    的条款产出占位 FRE 且会无标注流进成文——经
+    ``functional_extract.extract_degraded_marks`` 确定性识别（与构造侧同源的
+    形状比对，仅 route=mixed 启用），合并进该行 ``conservation_pending.classes``
+    （与守恒失败类去重并存）。守恒闭合的 mixed 载荷同样适用（抽取降级不是守恒
+    缺口）。返回 ``{fre_id: ["extract_degraded"]}`` 供载荷计数。
+    """
+    try:
+        payload = json.loads(
+            (Path(out_dir) / "functional_requirements.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(payload, dict) or str(payload.get("route") or "") != "mixed":
+        return {}
+    from functional_extract import extract_degraded_marks, load_conservation_baseline
+
+    sections = load_conservation_baseline(out_dir)
+    degraded = extract_degraded_marks(payload, sections)
+    for row in requirements:
+        fre_id = str(row.get("functional_requirement_id") or "")
+        if fre_id not in degraded:
+            continue
+        pending = row.get("conservation_pending")
+        classes = list(pending.get("classes") or []) if isinstance(pending, dict) else []
+        if "extract_degraded" not in classes:
+            classes.append("extract_degraded")
+        row["conservation_pending"] = {"classes": classes}
+    return degraded
+
+
 def run_requirements_analysis(
     out_dir: Path,
     *,
@@ -326,6 +362,9 @@ def run_requirements_analysis(
                 unclosed_basis = False
             if unclosed_basis:
                 pending_marks = _attach_conservation_pending_marks(out_dir, requirements)
+            # v2：mixed 载荷的 stub 占位行挂 extract_degraded——与守恒状态独立
+            # （守恒闭合的 mixed 也有降级行），计数并入待核行数。
+            pending_marks.update(_attach_extract_degraded_marks(out_dir, requirements))
     else:
         raw_requirements = read_jsonl(source_path)
         if synthesized_path.exists():
@@ -353,6 +392,9 @@ def run_requirements_analysis(
                             unclosed_basis = True
                             pending_marks = _attach_conservation_pending_marks(
                                 out_dir, requirements)
+                        # v2：mixed 载荷的 stub 占位行挂 extract_degraded（与守恒独立）
+                        pending_marks.update(_attach_extract_degraded_marks(
+                            out_dir, requirements))
             if not isinstance(requirements, list):
                 requirements = raw_requirements
         else:
@@ -594,6 +636,9 @@ def run_requirements_analysis(
         # partial export：未闭合基线上的分析——chain 侧据此记阶段 partial（非 ok），
         # 待核行数供运行页「成文已出（N 条待核）」。
         result["unclosed_basis"] = True
+    if unclosed_basis or pending_marks:
+        # v2：守恒闭合但 mixed 降级的载荷也有待核行（extract_degraded）——行数照报，
+        # 不新增状态（unclosed_basis 只在守恒未闭合时置位，语义不变）。
         result["pending_marked_rows"] = len(pending_marks)
     if xlsx_path.name != "software_requirements.xlsx":
         result["note_xlsx"] = f"目标被占用，已另存 {xlsx_path.name}"

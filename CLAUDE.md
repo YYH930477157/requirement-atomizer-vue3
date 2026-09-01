@@ -1,5 +1,34 @@
 # CLAUDE.md — Requirement Atomizer 项目上下文
 
+## 重大更新（2026-09-01b）——待核成文 v2：extract_degraded 行级失败类补全（方案 grok 审核第 3 条收尾）
+
+> v1 实现曾以「stub 条款不产 FRE、无行可标」为由跳过 extract_degraded——该理由与
+> `_stub_item` 事实不符（stub 路径每条款产一条占位 FRE，mixed 运行中会无标注流进
+> 成文）。按 `docs/pending-export-plan-2026-08-31.md` grok 审核第 3 条补全。
+
+- **标记侧确定性识别（缓存安全）**：`functional_extract.extract_degraded_marks` ——
+  仅 `route=mixed` 载荷启用；条目与 `_stub_shape`（从 `_stub_item` 提取的构造
+  单源）逐字节形状比对。不在抽取侧打标 → 零缓存失效成本；守恒闭合的 mixed 同样
+  标记（抽取降级不是守恒缺口）。`conservation_pending_marks` 权威不动。
+- **接线**：`requirements_analysis._attach_extract_degraded_marks` 并入行的
+  `conservation_pending.classes`（与守恒类去重并存）；模板说明列经
+  `_PENDING_CLASS_LABELS["extract_degraded"]="抽取降级"` 单源渲染；
+  `pending_marked_rows` 独立上报（守恒闭合时也报行数，`unclosed_basis` 语义不变
+  ——只在守恒未闭合置位，template_write 自报同步收窄到「存在守恒类标记」）。
+- **UI（计划 2.5 后半 + 清单第 8 项）**：交付物面板成文条目 `deliverableHint`
+  如实标注——守恒未闭合形态「守恒未闭合的待核成文（N 条待核）」、降级-only 形态
+  「待核成文（N 条抽取降级待核）」；运行消息同步区分三形态（已出 N 待核/已出
+  N 降级待核/已阻断）。新增 `PartialExport.spec.ts` 三钉（本机缺 pdfjs-dist
+  无法跑 App 挂载 spec——与 DeliverySettings 同环境性失败，vue-tsc 零新增错误）。
+- **版本**：`CONSERVATION_PARTIAL_EXPORT_VERSION` v1→v2（标记算法身份——
+  registry/两阶段 producer/指纹同步；分析·成文旧产物复用自然失效）。
+- **测试**：marks 单测 5 新增（mixed 才标/纯 LLM 不标/LLM 叙述不标/标签单源/
+  形状同源自检）+ chain 集成 2 新增（守恒闭合 mixed 行标注与行数上报、双类
+  去重并存）。全量并行门 4281（+7），仅 4 个本机 golden 基线过期失败（历轮同源）。
+- **顺带观察（非本次引入）**：`test_platform_scaffold.test_api_review_action_
+  rejects_write_when_token_is_not_configured` 存在 ~1/5 概率的 HTTP 连接型
+  偶发（串行/并行都可复现，重跑即绿）——疑似本地端口/时序 flake，待单独排查。
+
 ## 重大更新（2026-08-31）——heading-only 出抽取池（routing v8）+ 绑定检查引句本地锚（conservation v7）
 
 > 用户裁定「开工」后两条 worktree 并行，顺序合入 main（未 push）。

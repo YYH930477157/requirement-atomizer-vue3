@@ -1213,9 +1213,10 @@ class ChainAndManifestTests(unittest.TestCase):
             "assemble": "assemble_spec/v1+enrich-v4+enrich-guards-v1+ai-supplement-v3-identity-preconditions+impl-v2",
             "functional-synthesis": "functional-synthesis-v8+ai-supplement-v3-identity-preconditions+impl-v4",
             # partial export（2026-09-01）：两阶段 producer 末尾追加待核标记算法
-            # 身份 + 开关有效值（测试环境未设开关 → 默认 True）
-            "requirements-analysis": "analyze-llm-v8+analyze-unfounded-v4+analyze-rules-v1+ai-supplement-v3-identity-preconditions+conservation-partial-export-v1+partial-export-True+impl-v6",
-            "template-write": "template_writer/v1+ai-supplement-v3-identity-preconditions+conservation-partial-export-v1+partial-export-True+impl-v5",
+            # 身份 + 开关有效值（测试环境未设开关 → 默认 True）；
+            # v2（2026-09-01b）：extract_degraded 标记类并入算法身份
+            "requirements-analysis": "analyze-llm-v8+analyze-unfounded-v4+analyze-rules-v1+ai-supplement-v3-identity-preconditions+conservation-partial-export-v2+partial-export-True+impl-v6",
+            "template-write": "template_writer/v1+ai-supplement-v3-identity-preconditions+conservation-partial-export-v2+partial-export-True+impl-v5",
             "clarification-report": "clarification/v8-param-row-aggregate+ai-supplement-v3-identity-preconditions+impl-v6",
             "compose": "engineering_composer/v1+ai-supplement-v3-identity-preconditions+impl-v2",
             "export-annotation-html": (

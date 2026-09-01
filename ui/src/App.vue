@@ -202,7 +202,7 @@
               <div class="dl-files" data-testid="deliverable-html">
                 <div v-for="f in DELIVERABLE_FILES" :key="f.key" class="dl-file" :class="{ 'is-missing': !deliverableExists(f.name) }">
                   <span class="dl-icon" :class="f.tone"><component :is="f.icon" :size="16" :stroke-width="1.9" aria-hidden="true" /></span>
-                  <span class="dl-name"><strong>{{ f.name }}</strong><small>{{ deliverableExists(f.name) ? f.hint : "未生成" }}</small></span>
+                  <span class="dl-name"><strong>{{ f.name }}</strong><small :data-testid="f.key === 'software' ? 'software-hint' : undefined">{{ deliverableHint(f) }}</small></span>
                   <button class="deliverable-open" type="button" :aria-label="`打开 ${f.name}`" :title="deliverableExists(f.name) ? `打开 ${f.name}` : `${f.name} 未生成`" :disabled="!deliverableExists(f.name)" @click="openDeliverable(f.name)"><ExternalLink :size="15" aria-hidden="true" /></button>
                 </div>
               </div>
@@ -879,6 +879,13 @@ const deliverablePresence = ref<Record<string, { exists: boolean; path: string |
 function deliverableExists(name: string): boolean {
   return Boolean(deliverablePresence.value[name]?.exists)
 }
+// partial export（计划 2.5 后半）：待核成文存在时，成文条目的提示如实标注——
+// 措辞来自 run 完成时按形态生成的 pendingExportNote，不冒充干净成文。
+function deliverableHint(f: { key: string; name: string; hint: string }): string {
+  if (!deliverableExists(f.name)) return "未生成"
+  if (f.key === "software" && pendingExportNote.value) return pendingExportNote.value
+  return f.hint
+}
 async function refreshDeliverablePresence() {
   const names = DELIVERABLE_FILES.map((item) => item.name)
   const dir = currentOutputDir.value
@@ -1074,6 +1081,9 @@ async function handleSelectTemplate() {
 
 const runProgress = ref(0)
 const runStage = ref("待运行")
+// partial export：待核成文提示（成文已出但带待核行时，交付物面板的成文条目如实标注；
+// 措辞区分守恒未闭合与抽取降级两种形态）
+const pendingExportNote = ref<string | null>(null)
 const runProgressDetail = ref("等待开始")
 const latestTaskSummary = ref<Record<string, unknown> | null>(null)
 
@@ -2115,6 +2125,7 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
     isRunning.value = false
   }
   if (isRunning.value) return
+  pendingExportNote.value = null
   let stopProgress: (() => void) | undefined
   let packageRunId = ""
   let packageOutDir = ""
@@ -2273,9 +2284,15 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
             // partial export：未闭合但表已出——区分「拦住了、没有表」与「未闭合、表已出」
             const pending = Number(chainPayload.pending_marked_rows ?? 0)
             readinessNote += `；成文已出（${pending} 条待核）：${shortConservationError(block)}`
+            pendingExportNote.value = `守恒未闭合的待核成文（${pending} 条待核）`
           } else {
             readinessNote += `；成文已阻断：${shortConservationError(block)}`
           }
+        } else if (Number(chainPayload?.pending_marked_rows ?? 0) > 0) {
+          // v2：守恒闭合但 mixed 降级（extract_degraded 行）——成文已出且有待核行
+          const pending = Number(chainPayload.pending_marked_rows ?? 0)
+          readinessNote += `；成文已出（${pending} 条抽取降级待核）`
+          pendingExportNote.value = `待核成文（${pending} 条抽取降级待核）`
         }
         lastStageNotes.value = chainNotes
         // 运行页总览瓦片（样机）：从链载荷提取,缺项保持 —

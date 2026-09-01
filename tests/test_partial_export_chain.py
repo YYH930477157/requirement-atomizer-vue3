@@ -35,7 +35,8 @@ def _make_template(path: Path) -> None:
 
 
 def _seed_fr(out: Path, *, execution_status: str = "ok",
-             conservation_ok: bool = False) -> None:
+             conservation_ok: bool = False, route: str = "stub",
+             stub_f2: bool = False) -> None:
     (out / "blocks.jsonl").write_text(
         '{"block_id":"B1","type":"paragraph","section_path":["4.1"],'
         '"text":"The meter shall log events.","order":1}\n', encoding="utf-8")
@@ -43,6 +44,21 @@ def _seed_fr(out: Path, *, execution_status: str = "ok",
         '{"section_path":["4.1"],"heading":"4.1",'
         '"text":"The meter shall log events.","block_ids":["B1"]}\n', encoding="utf-8")
     (out / "table_items.jsonl").write_text("", encoding="utf-8")
+    import functional_extract as fe
+
+    section = {"section_id": "4.1", "section_path": ["4.1"], "heading": "4.1",
+               "text": "The meter shall log events.", "block_ids": ["B1"]}
+    f2 = {"functional_requirement_id": "F2", "module": "事件记录", "submodule": "事件记录",
+          "title": "上报事件", "description": "上报事件",
+          "requirement": "目标：实现事件上报。",
+          "objective": "实现事件上报",
+          "source_block_ids": ["B1"], "source_quote": "The meter shall log events.",
+          "source_section": "4.1", "type": "functional", "priority": "P1"}
+    if stub_f2:
+        # v2：mixed 载荷中包级 stub 退化的占位条目——与 _stub_item 同形状
+        objective, behaviors = fe._stub_shape(section)
+        f2.update({"objective": objective, "behaviors": behaviors,
+                   "title": "4.1", "description": objective})
     items = [
         {"functional_requirement_id": "F1", "module": "事件记录", "submodule": "事件记录",
          "title": "记录事件", "description": "记录事件",
@@ -50,16 +66,11 @@ def _seed_fr(out: Path, *, execution_status: str = "ok",
          "objective": "实现事件记录",
          "source_block_ids": ["B1"], "source_quote": "The meter shall log events.",
          "source_section": "4.1", "type": "functional", "priority": "P1"},
-        {"functional_requirement_id": "F2", "module": "事件记录", "submodule": "事件记录",
-         "title": "上报事件", "description": "上报事件",
-         "requirement": "目标：实现事件上报。",
-         "objective": "实现事件上报",
-         "source_block_ids": ["B1"], "source_quote": "The meter shall log events.",
-         "source_section": "4.1", "type": "functional", "priority": "P1"},
+        f2,
     ]
     fr = {
-        "producer": "functional-extract/v1+test", "route": "stub",
-        "route_requested": "stub", "execution_status": execution_status,
+        "producer": "functional-extract/v1+test", "route": route,
+        "route_requested": route, "execution_status": execution_status,
         "schema_version": "functional-requirements/v1", "items": items,
         "conservation": {
             "ok": conservation_ok,
@@ -67,11 +78,11 @@ def _seed_fr(out: Path, *, execution_status: str = "ok",
                 "clause_coverage": {"ok": True, "uncovered_sections": []},
                 "obligation_coverage": {"ok": True, "uncovered_obligations": []},
                 "evidence_presence": {
-                    "ok": False,
-                    "binding_mismatches": [{
+                    "ok": conservation_ok,
+                    "binding_mismatches": ([] if conservation_ok else [{
                         "functional_requirement_id": "F1",
                         "reason": "narrative_covers_other_clauses_not_declared",
-                    }],
+                    }]),
                     "evidence_mismatches": [], "items_without_evidence": [],
                 },
                 "duplicates": {"ok": True, "groups": []},
@@ -127,6 +138,55 @@ class PartialExportChainTests(unittest.TestCase):
             payload = self._run(out, tpl)
             self.assertTrue(payload.get("partial_export"))
             self.assertTrue((out / "软件需求列表-成文.xlsx").exists())
+
+    def test_mixed_stub_rows_marked_extract_degraded_even_when_conservation_ok(self) -> None:
+        """v2：mixed 载荷的 stub 占位行挂 extract_degraded——与守恒状态独立。
+
+        守恒闭合（ok=True）+ mixed：阶段照跑不记 partial（无守恒缺口），但降级行
+        必须在 xlsx 上可见、行数进链载荷。
+        """
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            tpl = out / "tpl.xlsx"
+            _make_template(tpl)
+            _seed_fr(out, execution_status="partial", conservation_ok=True,
+                     route="mixed", stub_f2=True)
+            payload = self._run(out, tpl)
+            self.assertFalse(payload.get("conservation_blocked"), "守恒闭合不应记未闭合")
+            self.assertEqual(payload.get("pending_marked_rows"), 1, "降级行数上报")
+            manifest = desktop_tasks.read_run_manifest(out)["stages"]
+            self.assertEqual(manifest["requirements-analysis"]["status"], "ok",
+                             "守恒闭合的 mixed 不记 partial（降级不是守恒缺口）")
+            xlsx = out / "软件需求列表-成文.xlsx"
+            rows = list(load_workbook(xlsx)["事件需求"].iter_rows(values_only=True))
+            texts = [str(r[5] or "") for r in rows]
+            self.assertTrue(any("待核" in t and "抽取降级" in t for t in texts),
+                            "stub 占位行说明列应带「⚠待核（抽取降级）」")
+
+    def test_mixed_stub_row_merges_with_conservation_class(self) -> None:
+        """v2：同一行既守恒待核又抽取降级——两类去重并存。"""
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            tpl = out / "tpl.xlsx"
+            _make_template(tpl)
+            # F1 = binding 失配点名；F2 = stub 占位 → 两行各一类；再让 F2 也被
+            # binding 点名构造同类合并场景：把 binding 指向 F2
+            _seed_fr(out, execution_status="partial", conservation_ok=False,
+                     route="mixed", stub_f2=True)
+            # 把 binding_mismatches 的点名从 F1 改为 F2（占位行叠加守恒类）
+            fr_path = out / "functional_requirements.json"
+            fr = json.loads(fr_path.read_text(encoding="utf-8"))
+            fr["conservation"]["checks"]["evidence_presence"]["binding_mismatches"] = [{
+                "functional_requirement_id": "F2", "reason": "r"}]
+            fr_path.write_text(json.dumps(fr, ensure_ascii=False), encoding="utf-8")
+            payload = self._run(out, tpl)
+            self.assertTrue(payload.get("partial_export"))
+            xlsx = out / "软件需求列表-成文.xlsx"
+            rows = list(load_workbook(xlsx)["事件需求"].iter_rows(values_only=True))
+            texts = [str(r[5] or "") for r in rows]
+            merged = [t for t in texts if "抽取降级" in t]
+            self.assertTrue(merged, "F2 行应有抽取降级类")
+            self.assertIn("绑定失配", merged[0], "两类并存同一行去重展示")
 
     def test_extraction_failed_still_blocks(self) -> None:
         with tempfile.TemporaryDirectory() as td:

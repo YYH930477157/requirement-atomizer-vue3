@@ -105,7 +105,10 @@ FUNCTIONAL_EXTRACT_CACHE = "functional_extract_cache.jsonl"
 # 算法身份。进 requirements-analysis / template-write 的 stage producer 与阶段
 # 指纹（含 RATOMIZER_PARTIAL_EXPORT 有效值）——不进 functional-extract 指纹，
 # 不 bump 守恒模型（判定语义零改动）。开关 RATOMIZER_PARTIAL_EXPORT=0 回旧行为。
-CONSERVATION_PARTIAL_EXPORT_VERSION = "conservation-partial-export-v1"
+# v2（2026-09-01b，方案 grok 审核第 3 条补全）：mixed 载荷的 stub 占位条目加
+# 独立失败类 extract_degraded（标记侧确定性形状比对，抽取侧/缓存零改动）——
+# 分析行与成文说明列新增一类标记，旧产物复用时无该类（算法身份随版本失效）。
+CONSERVATION_PARTIAL_EXPORT_VERSION = "conservation-partial-export-v2"
 
 # P0-8：负例 few-shot 注入数量上限（可配）。§3.6：改经 config 单源读取（运行时求值，
 # 进程内改 env 即生效——旧 import 时常量在同进程 shadow 场景下不刷新）。
@@ -544,19 +547,30 @@ def _render_description(objective: str, behaviors: list[str], constraints: list[
 # stub 路由（LLM 不可用 / 无 key / 调用失败）——诚实退化，不伪装
 # ---------------------------------------------------------------------------
 
-def _stub_item(section: dict[str, Any], index: int) -> dict[str, Any]:
+def _stub_shape(section: dict[str, Any]) -> tuple[str, list[str]]:
+    """stub 占位条目的确定性形状（objective, behaviors）——``_stub_item`` 与
+    ``extract_degraded_marks`` 的比对同源，形状变了两处一起变。
+
+    提取为独立函数是 extract_degraded 标记（2026-09-01b）的前提：标记侧不信任
+    字段标记（缓存产物可能早于本版本），改用与构造侧逐字节的形状比对。
+    """
     source_text = _source_text(section)
     heading = str(section.get("heading") or "未命名功能").strip() or "未命名功能"
     objective = f"实现{heading}，并满足来源条款。"
+    behaviors = [source_text] if source_text.strip() else [heading]
+    return objective, behaviors
+
+
+def _stub_item(section: dict[str, Any], index: int) -> dict[str, Any]:
     # §3.1：回显全文（旧 [:200] 截断会让长条款的义务句在守恒核对中"失踪"——stub 是
     # 占位条目，逐字回显是它对条款集合最诚实的覆盖方式）。
-    behaviors = [source_text] if source_text.strip() else [heading]
+    objective, behaviors = _stub_shape(section)
     return _coerce_item(
         {
             "objective": objective,
             "behaviors": behaviors,
             "description": _render_description(objective, behaviors, []),
-            "source_quote": str(section.get("text") or source_text),
+            "source_quote": str(section.get("text") or _source_text(section)),
         },
         section,
         index,
@@ -1888,6 +1902,9 @@ _PENDING_CLASS_LABELS = {
     "uncovered": "义务未覆盖",
     "preservation": "保留丢失",
     "duplicate": "重复需求",
+    # 2026-09-01b（方案 grok 审核第 3 条补全）：mixed 载荷中 stub 退化占位条的
+    # 独立失败类——与守恒待核区分（数据降级，不是守恒缺口）。
+    "extract_degraded": "抽取降级",
 }
 
 
@@ -1954,6 +1971,55 @@ def _clause_block_candidates(
             if narrowed:
                 return narrowed
     return candidates
+
+
+def extract_degraded_marks(
+    payload: dict[str, Any],
+    sections: Sequence[dict[str, Any]],
+) -> dict[str, list[str]]:
+    """mixed 载荷中 stub 退化占位条目 → ``{fre_id: ["extract_degraded"]}``。
+
+    方案 pending-export-plan grok 审核第 3 条的行级补全：partial（mixed）运行中
+    包级 stub 退化的条款**确实产出占位 FRE**（``_stub_item`` 每条款一条），这些
+    行会无标注流进成文——本函数把它们确定性识别出来，标记侧挂独立失败类
+    ``extract_degraded``（与守恒待核区分：这是抽取降级，不是守恒缺口）。
+
+    判据（缓存安全，不在抽取侧打标）：
+    - 仅 ``payload["route"] == "mixed"`` 启用（纯 llm 载荷没有 stub 条目；
+      纯 stub 载荷 execution_status=failed 一律仍拦，到不了标记层）；
+    - item 声明块与某条款块相交，且 ``(objective, behaviors)`` 与该条款的
+      ``_stub_shape`` **逐字节相等**（与构造侧同源，不另立启发式）。
+    LLM 真产出恰好逐字复刻占位模板的概率可忽略；即使发生，内容即占位文本，
+    标记语义仍成立。
+    """
+    if str(payload.get("route") or "") != "mixed":
+        return {}
+    sections_by_block: dict[str, dict[str, Any]] = {}
+    for section in sections:
+        for block_id in (section.get("block_ids") or []):
+            sections_by_block.setdefault(str(block_id), section)
+    marks: dict[str, list[str]] = {}
+    items = payload.get("items") if isinstance(payload.get("items"), list) else []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        declared = {str(b) for b in (item.get("source_block_ids") or []) if str(b)}
+        if not declared:
+            continue
+        for block_id in declared:
+            section = sections_by_block.get(block_id)
+            if section is None:
+                continue
+            objective, behaviors = _stub_shape(section)
+            if (
+                str(item.get("objective") or "") == objective
+                and [str(b) for b in (item.get("behaviors") or [])] == behaviors
+            ):
+                fre_id = str(item.get("functional_requirement_id") or "")
+                if fre_id:
+                    marks[fre_id] = ["extract_degraded"]
+                break
+    return marks
 
 
 def conservation_pending_marks(

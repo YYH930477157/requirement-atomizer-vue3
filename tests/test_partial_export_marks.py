@@ -1,4 +1,5 @@
-"""待核成文（partial export）标记权威：conservation_pending_marks 的类与连带口径。
+"""待核成文（partial export）标记权威：conservation_pending_marks 的类与连带口径
++ extract_degraded_marks（v2）。
 
 方案 docs/pending-export-plan-2026-08-31.md v2（grok 审核三条）：
 - binding/evidence 直接点名 FRE；uncovered/preservation 连带「声明在该条款块上的
@@ -6,8 +7,10 @@
 - 定位键 = 条款 block_ids，禁 section_id 字符串定位（SBD 撞名病理）——finding 只
   带 section_id 时按 id + 内容证据（义务句包含/保留 token 在场）确定性还原；
 - duplicates 只标组内成员（组自带 FRE id 清单）；零 FRE 条款不造占位行；
-- 直抽 partial（mixed）行不加 extract_degraded（stub 条款不产 FRE，无行可标，
-  payload 级如实记录即可）。
+- 直抽 partial（mixed）行加 extract_degraded（2026-09-01b 修正：v1 实现曾以
+  「stub 条款不产 FRE」为由不做——该理由与 _stub_item 事实不符，stub 路径每条款
+  产一条占位 FRE 且会无标注流进成文；现按方案 grok 审核第 3 条以标记侧确定性
+  形状比对补全，仅 route=mixed 载荷启用）。
 """
 from __future__ import annotations
 
@@ -129,6 +132,67 @@ class AllowUnclosedTests(unittest.TestCase):
         summary = fe.raise_if_unconserved(report, allow_unclosed=True)
         self.assertFalse(summary["ok"])
         self.assertEqual(summary["pending_fre_ids"], ["F1"])
+
+
+class ExtractDegradedMarksTests(unittest.TestCase):
+    """v2（2026-09-01b）：mixed 载荷的 stub 占位条目识别——方案 grok 审核第 3 条。
+
+    事实基线：_stub_item 每条款产一条占位 FRE（objective=「实现{heading}，并满足
+    来源条款。」、behaviors=[全文回显]），mixed 运行中这些行会无标注流进成文。
+    """
+
+    def _payload(self, route: str, items: list[dict]) -> dict:
+        return {"route": route, "items": items}
+
+    def _stub_shaped_item(self, fre_id: str, section: dict) -> dict:
+        objective, behaviors = fe._stub_shape(section)
+        return {
+            "functional_requirement_id": fre_id,
+            "source_block_ids": list(section["block_ids"]),
+            "source_quote": section.get("text") or "",
+            "objective": objective,
+            "behaviors": behaviors,
+            "description": "占位",
+        }
+
+    def test_mixed_payload_marks_stub_shaped_items(self) -> None:
+        section = _section("4.1", "The meter shall log events.", ["B1"])
+        clean = _item("F-LLM", ["B2"])
+        clean.update({"objective": "记录事件", "behaviors": ["log events"]})
+        sections = [section, _section("4.2", "The meter shall tariff switch.", ["B2"])]
+        payload = self._payload(
+            "mixed", [self._stub_shaped_item("F-STUB", section), clean])
+        marks = fe.extract_degraded_marks(payload, sections)
+        self.assertEqual(marks, {"F-STUB": ["extract_degraded"]})
+
+    def test_non_mixed_payload_never_marks(self) -> None:
+        # 纯 LLM 载荷没有 stub 条目；即使条目形状恰似占位（LLM 逐字复刻模板）也不标
+        section = _section("4.1", "The meter shall log events.", ["B1"])
+        payload = self._payload("llm:deepseek-v4-flash",
+                                [self._stub_shaped_item("F1", section)])
+        self.assertEqual(fe.extract_degraded_marks(payload, [section]), {})
+
+    def test_llm_narrative_not_marked_in_mixed(self) -> None:
+        # mixed 载荷里的真 LLM 叙述条目（形状≠占位模板）不标
+        section = _section("4.1", "The meter shall log events.", ["B1"])
+        item = self._stub_shaped_item("F1", section)
+        item["objective"] = "电表记录事件日志"
+        payload = self._payload("mixed", [item])
+        self.assertEqual(fe.extract_degraded_marks(payload, [section]), {})
+
+    def test_label_single_source(self) -> None:
+        self.assertEqual(
+            fe.pending_class_label(["extract_degraded"]), "抽取降级")
+        self.assertEqual(
+            fe.pending_class_label(["binding", "extract_degraded"]),
+            "绑定失配、抽取降级")
+
+    def test_stub_shape_matches_stub_item(self) -> None:
+        # 与构造侧同源：_stub_shape 必须还原 _stub_item 的 objective/behaviors
+        section = _section("4.1", "The meter shall log events.", ["B1"])
+        item = fe._stub_item(section, 1)
+        self.assertEqual(
+            (item["objective"], item["behaviors"]), fe._stub_shape(section))
 
 
 if __name__ == "__main__":

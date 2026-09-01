@@ -574,10 +574,12 @@ def requirements_analysis_task(
         "out_dir": str(out_dir),
         "analysis": analysis,
         # partial export：未闭合基线自报（_stage_completion_status 据此记 partial；
-        # chain 聚合 partial_export / pending_marked_rows）
-        **({"unclosed_basis": True,
-            "pending_marked_rows": int(analysis.get("pending_marked_rows") or 0)}
-           if analysis.get("unclosed_basis") else {}),
+        # chain 聚合 partial_export / pending_marked_rows）。v2：守恒闭合但 mixed
+        # 降级的载荷也有待核行（extract_degraded）——行数独立上报，unclosed_basis
+        # 语义不变（只在守恒未闭合置位）。
+        **({"unclosed_basis": True} if analysis.get("unclosed_basis") else {}),
+        **({"pending_marked_rows": int(analysis.get("pending_marked_rows") or 0)}
+           if analysis.get("pending_marked_rows") else {}),
         "written": written,
         "summary": _stage_summary(out_dir),
     }
@@ -870,13 +872,19 @@ def template_write_task(out_dir: Path, template_path: Path) -> dict[str, Any]:
     report = run_writer(out_dir, template_path.expanduser().resolve())
     pending = report.get("conservation_pending_export") if isinstance(
         report.get("conservation_pending_export"), dict) else None
+    # v2：待核行可能全部是 extract_degraded（守恒闭合、仅抽取降级）——
+    # unclosed_basis 只在存在守恒类标记时置位，行数则独立上报。
+    pending_classes = pending.get("classes") if isinstance(
+        pending.get("classes"), dict) else {}
+    unclosed_marks = bool(pending) and any(
+        str(cls) != "extract_degraded" for cls in pending_classes)
     return {
         "kind": "template_write",
         "out_dir": str(out_dir),
         "report": report,
         # partial export：v3 成文报告带待核导出块——自报供阶段记 partial/链聚合
-        **({"unclosed_basis": True,
-            "pending_marked_rows": int(pending.get("marked_rows") or 0)}
+        **({"unclosed_basis": True} if unclosed_marks else {}),
+        **({"pending_marked_rows": int(pending.get("marked_rows") or 0)}
            if pending else {}),
         "written": [str(out_dir / name) for name in report.get("written") or []
                     if (out_dir / name).exists()],
@@ -2756,6 +2764,9 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
                     "功能需求守恒核比对未闭合——待核成文旁路（partial export）",
                 )
                 payload["partial_export"] = True
+            if stage == "requirements-analysis" and stage_payload.get("pending_marked_rows"):
+                # v2：待核行数独立聚合——守恒闭合但 mixed 降级（extract_degraded 行）
+                # 也要让运行页看见行数；取 max 防多阶段重复计。
                 payload["pending_marked_rows"] = max(
                     int(payload.get("pending_marked_rows") or 0),
                     int(stage_payload.get("pending_marked_rows") or 0),
