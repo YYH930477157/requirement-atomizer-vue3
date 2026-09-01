@@ -211,6 +211,18 @@ def _excel_row(index: int, item: dict[str, Any]) -> list[Any]:
     ]
 
 
+def _pending_notes_prefix(item: dict[str, Any]) -> str:
+    """守恒/抽取待核前缀——分析表说明列与模板成文共用，避免只写在成文侧。"""
+    pending = item.get("conservation_pending") if isinstance(
+        item.get("conservation_pending"), dict) else None
+    classes = pending.get("classes") if pending else None
+    if not classes:
+        return ""
+    from functional_extract import pending_class_label
+
+    return f"⚠待核（{pending_class_label(classes)}）"
+
+
 def _notes_text(item: dict[str, Any]) -> str:
     notes: list[str] = []
     objective = str(item.get("objective") or "").strip()
@@ -295,7 +307,11 @@ def _notes_text(item: dict[str, Any]) -> str:
         notes.append(f"需求追溯ID：{trace_id}")
     if item.get("_manual"):
         notes.append("来源：手工录入（无文档来源）")
-    return "\n".join(notes)
+    body = "\n".join(notes)
+    prefix = _pending_notes_prefix(item)
+    if not prefix:
+        return body
+    return f"{prefix} {body}".strip()
 
 
 def _style_header(ws: Any) -> None:

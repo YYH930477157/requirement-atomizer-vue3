@@ -149,5 +149,38 @@ class HardwareDependencyRenderTests(unittest.TestCase):
         self.assertTrue(any("硬件依赖：需内置继电器" in text for text in texts))
 
 
+class ConservationPendingNotesTests(unittest.TestCase):
+    """减法后分析表是日常交付物：待核前缀必须落在 _notes_text / xlsx 说明列。"""
+
+    def test_notes_prefix_uses_pending_class_label(self) -> None:
+        from requirements_analysis_excel import _notes_text
+
+        notes = _notes_text({
+            "objective": "保持时钟",
+            "conservation_pending": {"classes": ["binding", "extract_degraded"]},
+        })
+        self.assertTrue(notes.startswith("⚠待核（绑定失配、抽取降级）"))
+        self.assertIn("功能目标：保持时钟", notes)
+
+    def test_clean_item_has_no_pending_prefix(self) -> None:
+        from requirements_analysis_excel import _notes_text
+
+        notes = _notes_text({"objective": "保持时钟"})
+        self.assertNotIn("⚠待核", notes)
+
+    def test_xlsx_notes_column_carries_pending_prefix(self) -> None:
+        items = [{
+            "ownership": "software", "module": "时钟", "description": "守时",
+            "software_requirement_text": "时钟保持同步",
+            "conservation_pending": {"classes": ["preservation"]},
+        }]
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "software.xlsx"
+            write_software_requirements_xlsx(items, path)
+            wb = load_workbook(path, data_only=True)
+            texts = [str(c.value) for ws in wb.worksheets for row in ws.iter_rows() for c in row if c.value]
+        self.assertTrue(any("⚠待核（保留丢失）" in text for text in texts))
+
+
 if __name__ == "__main__":
     unittest.main()

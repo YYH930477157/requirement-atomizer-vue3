@@ -29,7 +29,7 @@
           <button class="nav-button" type="button" data-testid="nav-实现规格" @click="openDeliverable('dlms_cosem_spec_requirements.json')">
             <Braces class="nav-icon" :size="17" :stroke-width="1.9" aria-hidden="true" /><span>实现规格</span>
           </button>
-          <button class="nav-button" type="button" data-testid="nav-软件需求列表" @click="openDeliverable('软件需求列表-成文.xlsx')">
+          <button class="nav-button" type="button" data-testid="nav-软件需求列表" @click="openDeliverable('software_requirements.xlsx')">
             <FileSpreadsheet class="nav-icon" :size="17" :stroke-width="1.9" aria-hidden="true" /><span>软件需求列表</span>
           </button>
           <button class="nav-button" type="button" data-testid="nav-澄清清单" @click="openDeliverable('clarification_questions.xlsx')">
@@ -579,13 +579,7 @@
                 <input v-model="runStages.annotationHtml" type="checkbox" data-testid="stage-annotation-html" />
                 <span><strong>导出批注 HTML</strong><small>生成 document_annotation.html，用于专家离线阅读、批注和导出裁决 JSON。</small></span>
               </label>
-              <div class="template-row">
-                <span class="field-label">需求列表模板（xlsx，选填）</span>
-                <input :value="templatePath" readonly placeholder="未设置——设置后分析结果按公司模板格式成文" data-testid="template-path" />
-                <button class="button" type="button" data-testid="template-pick" @click="handleSelectTemplate"><FolderOpen :size="15" aria-hidden="true" />选择</button>
-                <button class="button" type="button" :disabled="!templatePath" @click="templatePath = ''"><Trash2 :size="15" aria-hidden="true" />清除</button>
-              </div>
-              <p class="settings-hint">LLM 富化跟随下方「LLM 富化」开关：开→AI 抽取/装配/分析走 openai_compatible，关→纯确定性。</p>
+              <p class="settings-hint">LLM 富化跟随下方「LLM 富化」开关：开→AI 抽取/装配/分析走 openai_compatible，关→纯确定性。软件需求列表来自需求分析（software_requirements.xlsx），不再按公司模板成文。</p>
             </section>
             <details class="settings-section settings-advanced" data-testid="settings-advanced">
               <summary>高级：执行阶段（诊断 / 轨道对照用，普通交付无需调整）</summary>
@@ -747,7 +741,6 @@ import {
   Settings,
   ShieldCheck,
   Sparkles,
-  Trash2,
   Upload,
   UserRound,
   X,
@@ -870,7 +863,7 @@ const tableDispositionOptions: Array<{ value: TableCellDisposition; label: strin
   { value: "excluded", label: "确认排除" },
 ]
 const DELIVERABLE_FILES = [
-  { key: "software", icon: FileSpreadsheet, tone: "xls", name: "软件需求列表-成文.xlsx", hint: "V2.3.x 模板成文（B 轨主交付物）" },
+  { key: "software", icon: FileSpreadsheet, tone: "xls", name: "software_requirements.xlsx", hint: "需求分析列表（B 轨主交付物）" },
   { key: "annotation", icon: FileText, tone: "htm", name: "document_annotation.html", hint: "批注视图 · 分享给专家离线裁决" },
   { key: "clarification", icon: CircleHelp, tone: "xls", name: "clarification_questions.xlsx", hint: "必答澄清 · 问客户/内部核对" },
   { key: "manifest", icon: Braces, tone: "jsn", name: "run_manifest.json", hint: "阶段台账 · 路由与续跑依据" },
@@ -879,8 +872,8 @@ const deliverablePresence = ref<Record<string, { exists: boolean; path: string |
 function deliverableExists(name: string): boolean {
   return Boolean(deliverablePresence.value[name]?.exists)
 }
-// partial export（计划 2.5 后半）：待核成文存在时，成文条目的提示如实标注——
-// 措辞来自 run 完成时按形态生成的 pendingExportNote，不冒充干净成文。
+// partial export：待核分析存在时，软件需求列表条目的提示如实标注——
+// 措辞来自 run 完成时按形态生成的 pendingExportNote，不冒充干净分析表。
 function deliverableHint(f: { key: string; name: string; hint: string }): string {
   if (!deliverableExists(f.name)) return "未生成"
   if (f.key === "software" && pendingExportNote.value) return pendingExportNote.value
@@ -1064,24 +1057,9 @@ async function refreshUnitRouting(): Promise<void> {
   }
 }
 
-// 公司标准化需求列表模板（V2.3.x）：设置后 analyze 用其词表，且分析结果按模板格式成文
-const TEMPLATE_PATH_KEY = "ratomizer.templatePath"
-const templatePath = ref<string>((() => {
-  try { return localStorage?.getItem(TEMPLATE_PATH_KEY) || "" } catch { return "" }
-})())
-watch(templatePath, (value) => {
-  try { localStorage?.setItem(TEMPLATE_PATH_KEY, value || "") } catch { /* 忽略 */ }
-})
-async function handleSelectTemplate() {
-  const bridge = window.ratomizerDesktop
-  if (!bridge?.selectTemplate) return
-  const picked = await bridge.selectTemplate()
-  if (picked) templatePath.value = picked
-}
-
 const runProgress = ref(0)
 const runStage = ref("待运行")
-// partial export：待核成文提示（成文已出但带待核行时，交付物面板的成文条目如实标注；
+// partial export：待核分析提示（分析表已出但带待核行时，交付物面板如实标注；
 // 措辞区分守恒未闭合与抽取降级两种形态）
 const pendingExportNote = ref<string | null>(null)
 const runProgressDetail = ref("等待开始")
@@ -1097,7 +1075,6 @@ const RUN_STAGE_DEFS = [
   { key: "functional-synthesis", label: "功能重组" },
   { key: "assemble", label: "组装功能" },
   { key: "requirements-analysis", label: "需求分析" },
-  { key: "template-write", label: "格式成文" },
   { key: "clarification-report", label: "澄清清单" },
   { key: "full-translation", label: "全文翻译" },
   { key: "compose", label: "工程组装" },
@@ -1225,11 +1202,9 @@ function resetRunStageBoard() {
   if (!runStages.value.assemble) next.assemble = { status: "disabled", percent: 0, detail: "未启用" }
   if (!runStages.value.analyze) {
     next["requirements-analysis"] = { status: "disabled", percent: 0, detail: "未启用" }
-    next["template-write"] = { status: "disabled", percent: 0, detail: "未启用" }
     next["clarification-report"] = { status: "disabled", percent: 0, detail: "未启用" }
   }
   if (!llmMode.value) next["full-translation"] = { status: "disabled", percent: 0, detail: "LLM 关闭，未运行" }
-  if (!templatePath.value) next["template-write"] = { status: "disabled", percent: 0, detail: "未配置模板" }
   if (!runStages.value.compose) next.compose = { status: "disabled", percent: 0, detail: "未启用" }
   if (!runStages.value.annotationHtml) next["export-annotation-html"] = { status: "disabled", percent: 0, detail: "未启用" }
   runStageStates.value = next
@@ -2093,7 +2068,6 @@ function plannedAutomaticStages(options: { llmReviewLimit?: number }): string[] 
   if (runStages.value.assemble) stages.push("assemble")
   if (runStages.value.analyze && useLlm) {
     stages.push("requirements-analysis")
-    if (templatePath.value) stages.push("template-write")
     stages.push("clarification-report")
   }
   if (useLlm && translationMode.value === "full") stages.push("full-translation")
@@ -2215,18 +2189,17 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
         if (useLlm) stages.push("functional-synthesis")
       }
       if (runStages.value.assemble) stages.push("assemble")
-      // 分析/成文/澄清硬依赖真 LLM 抽取产物（ai_requirements.jsonl，stub 路由不产）——
+      // 分析/澄清硬依赖真 LLM 抽取产物（ai_requirements.jsonl，stub 路由不产）——
       // LLM 关时带上它们必然断链，且把排在后面的 compose/批注 HTML 一起掐死（2026-07-08 审计 A3）
       const skippedForLlm: string[] = []
       if (runStages.value.analyze) {
         if (useLlm) {
           stages.push("requirements-analysis")
-          if (templatePath.value) stages.push("template-write")
           stages.push("clarification-report")
         } else {
-          skippedForLlm.push("功能重组", "需求分析", "按模板成文", "澄清清单")
+          skippedForLlm.push("功能重组", "需求分析", "澄清清单")
           // 阶段卡同步:不然 LLM 关时这些卡永远停在"待完成"(0710 评审 R2)
-          for (const key of ["functional-synthesis", "requirements-analysis", "template-write", "clarification-report"]) {
+          for (const key of ["functional-synthesis", "requirements-analysis", "clarification-report"]) {
             setRunStageState(key, { status: "disabled", percent: 0, detail: "LLM 关闭，未运行" })
           }
         }
@@ -2251,7 +2224,6 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
         try {
           chainPayload = await bridge.runChain({
             outDir: finalOutDir, stages, llmRoute,
-            templatePath: templatePath.value || undefined,
             ...(stages.includes("export-annotation-html")
               ? { annotationLayoutMode: "pdf_original" }
               : {}),
@@ -2281,18 +2253,18 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
         if (chainPayload?.conservation_blocked) {
           const block = String(chainPayload.conservation_block_error || "功能需求守恒核对未闭合")
           if (chainPayload?.partial_export) {
-            // partial export：未闭合但表已出——区分「拦住了、没有表」与「未闭合、表已出」
+            // partial export：未闭合但分析表已出——区分「拦住了、没有表」与「未闭合、表已出」
             const pending = Number(chainPayload.pending_marked_rows ?? 0)
-            readinessNote += `；成文已出（${pending} 条待核）：${shortConservationError(block)}`
-            pendingExportNote.value = `守恒未闭合的待核成文（${pending} 条待核）；工作簿含「守恒待核」清单`
+            readinessNote += `；需求分析已出（${pending} 条待核）：${shortConservationError(block)}`
+            pendingExportNote.value = `守恒未闭合的待核分析（${pending} 条待核）`
           } else {
-            readinessNote += `；成文已阻断：${shortConservationError(block)}`
+            readinessNote += `；需求分析已阻断：${shortConservationError(block)}`
           }
         } else if (Number(chainPayload?.pending_marked_rows ?? 0) > 0) {
-          // v2：守恒闭合但 mixed 降级（extract_degraded 行）——成文已出且有待核行
+          // 守恒闭合但 mixed 降级（extract_degraded 行）——分析表已出且有待核行
           const pending = Number(chainPayload.pending_marked_rows ?? 0)
-          readinessNote += `；成文已出（${pending} 条抽取降级待核）`
-          pendingExportNote.value = `待核成文（${pending} 条抽取降级待核）；工作簿含「守恒待核」清单`
+          readinessNote += `；需求分析已出（${pending} 条抽取降级待核）`
+          pendingExportNote.value = `待核分析（${pending} 条抽取降级待核）`
         }
         lastStageNotes.value = chainNotes
         // 运行页总览瓦片（样机）：从链载荷提取,缺项保持 —
@@ -2306,7 +2278,7 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
           questions: chainPayload?.questions != null ? Number(chainPayload.questions) : runOverview.value.questions,
           verdict,
           deliverableHint: verdict === "READY"
-            ? "可以写成文"
+            ? "需求分析已出"
             : (verdict ? "尚不能交货，先处理缺口" : runOverview.value.deliverableHint),
         }
         ranStages.push(...stages.map((s) => CHAIN_STEP_LABELS[s] || s))
@@ -2317,7 +2289,7 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
       }
     }
 
-    // 测试运行追加：样本交付物链（1/5 试抽 → 分析 → 成文 → 澄清），同一条后端 chain 命令
+    // 测试运行追加：样本交付物链（1/5 试抽 → 分析 → 澄清），同一条后端 chain 命令
     let sampleNote = ""
     if (options.llmReviewLimit && bridge?.runChain) {
       runStage.value = "样本交付物链"
@@ -2326,10 +2298,9 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
       await nextUiTick()
       try {
         const stages = ["ai-extract", "functional-synthesis", "requirements-analysis",
-                        ...(templatePath.value ? ["template-write"] : []), "clarification-report"]
+                        "clarification-report"]
         const sample = await bridge.runChain({
           outDir: finalOutDir, stages, llmRoute: "openai_compatible",
-          templatePath: templatePath.value || undefined,
           sampleRatio: TEST_AI_EXTRACT_SAMPLE_RATIO,
         })
         const info = objectValue(sample.sampled) as { sections?: number; total_sections?: number } | null
@@ -2342,8 +2313,6 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
           const degraded = Number(a.enrich_degraded ?? 0)
           sampleNote += `；软件需求 ${Number(a.analysis_count ?? 0)} 条（富化 ${Number(a.enriched ?? 0)}${degraded > 0 ? `、降级 ${degraded}` : ""}）→ software_requirements.xlsx`
         }
-        const w = objectValue(sample.template) as { appended_total?: number } | null
-        if (w) sampleNote += `；成文 ${Number(w.appended_total ?? 0)} 行 → 软件需求列表-成文.xlsx`
         const r = objectValue(sample.readiness) as { verdict?: string } | null
         if (r?.verdict) sampleNote += `；就绪判定 ${r.verdict}，必答澄清 ${Number(sample.questions ?? 0)} 条`
         apiReconnectWarning ||= await refreshAfterDesktopTask(finalOutDir)
@@ -2421,7 +2390,7 @@ const CHAIN_STEP_LABELS: Record<string, string> = {
   "functional-synthesis": "功能重组",
   "functional-extract": "功能需求直抽（条款级，无原子化）",
   "ai-extract": "AI 抽取（双引擎）", assemble: "装配实现规格", "requirements-analysis": "软件需求分析",
-  "template-write": "成文需求列表", "clarification-report": "澄清问题清单", compose: "组装工程需求",
+  "clarification-report": "澄清问题清单", compose: "组装工程需求",
   "full-translation": "生成全文双语交付物",
   "export-annotation-html": "导出批注视图",
 }

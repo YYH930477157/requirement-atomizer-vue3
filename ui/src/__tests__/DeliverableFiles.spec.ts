@@ -15,7 +15,7 @@ function mockBridge(overrides: Record<string, unknown> = {}) {
       startApiSession: vi.fn().mockResolvedValue(null),
       getOutputSummary: vi.fn().mockResolvedValue({ summary: {} }),
       statDeliverables: vi.fn().mockResolvedValue({
-        "软件需求列表-成文.xlsx": { exists: false, path: null },
+        "software_requirements.xlsx": { exists: false, path: null },
         "document_annotation.html": { exists: true, path: "E:\\out\\abnt\\document_annotation.html" },
         "clarification_questions.xlsx": { exists: false, path: null },
         "run_manifest.json": { exists: true, path: "E:\\out\\abnt\\.ratomizer\\stages\\run_manifest.json" },
@@ -56,7 +56,7 @@ describe("deliverable presence panel", () => {
     const rows = panel.findAll(".dl-file")
     expect(rows).toHaveLength(4)
 
-    const missingXlsx = rows.find((row) => row.text().includes("软件需求列表-成文.xlsx"))
+    const missingXlsx = rows.find((row) => row.text().includes("software_requirements.xlsx"))
     expect(missingXlsx?.classes()).toContain("is-missing")
     expect(missingXlsx?.text()).toContain("未生成")
     expect(missingXlsx?.find("button").attributes("disabled")).toBeDefined()
@@ -70,7 +70,7 @@ describe("deliverable presence panel", () => {
   it("renders all four files as missing when none exist", async () => {
     mockBridge({
       statDeliverables: vi.fn().mockResolvedValue({
-        "软件需求列表-成文.xlsx": { exists: false, path: null },
+        "software_requirements.xlsx": { exists: false, path: null },
         "document_annotation.html": { exists: false, path: null },
         "clarification_questions.xlsx": { exists: false, path: null },
         "run_manifest.json": { exists: false, path: null },
