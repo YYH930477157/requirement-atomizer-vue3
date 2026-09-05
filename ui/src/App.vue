@@ -2237,6 +2237,11 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
         if (chainPayload?.conservation_blocked) {
           const block = String(chainPayload.conservation_block_error || "功能需求守恒核对未闭合")
           readinessNote += `；功能需求守恒未闭合：${shortConservationError(block)}`
+        } else if (String(chainPayload?.functional_conservation_error || "")) {
+          // 日常链无分析/成文阶段时，守恒未闭合被 partial export 吸收——
+          // conservation_blocked 不置位，链尾信号是运行页唯一提示，必须如实可见
+          const open = String(chainPayload.functional_conservation_error)
+          readinessNote += `；功能需求守恒未闭合（待核放行）：${shortConservationError(open)}`
         } else if (Number(chainPayload?.pending_marked_rows ?? 0) > 0) {
           const pending = Number(chainPayload.pending_marked_rows ?? 0)
           readinessNote += `；功能需求含 ${pending} 条抽取降级，待核对`

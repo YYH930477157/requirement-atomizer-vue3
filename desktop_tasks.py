@@ -876,13 +876,18 @@ def template_write_task(out_dir: Path, template_path: Path) -> dict[str, Any]:
     # unclosed_basis 只在存在守恒类标记时置位，行数则独立上报。
     # v3（Task1 审出）：干净工作簿 pending=None——先判 None 再取 classes，
     # 否则无标记链路径（package_v1 干净代/守恒闭合）整段崩。
+    # 2026-09-05（review P3）：gap-only 边缘——守恒未闭合但失败面全是零 FRE
+    # 缺口（marked_rows=0、只有「守恒待核」清单的 gap 行）也必须自报未闭合，
+    # 否则链/manifest 记 ok、与清单 sheet 的红字总述矛盾。
     pending_classes = (
         pending.get("classes")
         if isinstance(pending, dict) and isinstance(pending.get("classes"), dict)
         else {}
     )
-    unclosed_marks = bool(pending) and any(
-        str(cls) != "extract_degraded" for cls in pending_classes)
+    unclosed_marks = bool(pending) and (
+        any(str(cls) != "extract_degraded" for cls in pending_classes)
+        or int(pending.get("gap_rows") or 0) > 0
+    )
     return {
         "kind": "template_write",
         "out_dir": str(out_dir),
@@ -2847,6 +2852,21 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
                 payload["reconcile"] = reconcile_task(out_dir, route=route)
         except Exception as exc:  # noqa: BLE001
             LOGGER.warning("整篇对账 sidecar 失败（不阻断链）：%s", exc)
+        # 2026-09-05（review P2）：GUI 日常链无分析/成文阶段时，守恒未闭合被
+        # partial export 吸收——conservation_blocked 只在 gated 阶段 raise/自报时
+        # 置位，链层零信号。链尾从产物单源如实上报（与 raise 文案同源）；不改
+        # conservation_blocked 语义，UI 据此在运行页提示。
+        try:
+            from functional_extract import conservation_failure_detail
+            from requirements_analysis_rules import _read_functional_requirements_payload
+            fr = _read_functional_requirements_payload(out_dir)
+            conservation = fr.get("conservation") if isinstance(fr, dict) else None
+            if isinstance(conservation, dict) and not conservation.get("ok", True):
+                payload["functional_conservation_error"] = (
+                    "功能需求守恒核对未闭合"
+                    f"（{conservation_failure_detail(conservation)}）")
+        except Exception:  # noqa: BLE001 — 信号聚合失败不影响链结果
+            LOGGER.warning("功能守恒链层信号聚合失败（忽略）", exc_info=True)
     finally:
         _CHAIN_ACTIVE = False
         _detach_budget_ledger(chain_budget)  # S1-1：落盘 cost-report 数据源 + 卸载钩子

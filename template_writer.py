@@ -328,9 +328,10 @@ def _write_pending_sheet(
     data_rows = 0
     for fre_id, classes, section in item_rows:
         for cls in classes:
-            # 类别=人读标签（与需求 sheet 说明列前缀同措辞）；原因=类键（机器可归并）
+            # 类别=人读标签（与需求 sheet 说明列前缀同措辞）；原因=类键（机器可归并）；
+            # 说明列留空——类别已表达该行信息，不再重复一遍人读标签（2026-09-05 review P3）
             ws.append([pending_class_label([cls]), cls,
-                       fre_id, section, "", pending_class_label([cls])])
+                       fre_id, section, "", ""])
             data_rows += 1
     for gap in gap_rows:
         category = str(gap.get("category") or "")

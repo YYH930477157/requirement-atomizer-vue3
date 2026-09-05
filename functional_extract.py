@@ -1874,22 +1874,31 @@ def raise_if_unconserved(
         return {"ok": True, "pending_fre_ids": []}
     if allow_unclosed:
         return {"ok": False, "pending_fre_ids": sorted(_pending_direct_fre_ids(report))}
+    raise FunctionalConservationError(
+        f"功能需求守恒核对未闭合（{conservation_failure_detail(report)}），"
+        "阻塞成文导出（强制人工）"
+    )
+
+
+def conservation_failure_detail(report: dict[str, Any]) -> str:
+    """守恒失败面 → 分项计数摘要（raise 文案与链层运行页信号同源单源）。
+
+    2026-09-05（review P2）：GUI 日常链无分析/成文阶段时，守恒未闭合被 partial
+    export 吸收、链层无任何信号——chain 尾聚合复用本函数生成人读摘要，与
+    FunctionalConservationError 措辞一致。新旧形报告兼容口径与原 raise 分支相同。
+    """
     checks = report.get("checks") if isinstance(report.get("checks"), dict) else {}
     if checks:
-        detail = "；".join(
+        return "；".join(
             f"{name}={_check_failure_count(name, result)}"
             for name, result in sorted(checks.items())
             if not result.get("ok", True)
         )
-    else:
-        detail = (
-            f"missing={len(report.get('missing_block_ids') or [])} "
-            f"duplicate={len(report.get('duplicate_assignments') or [])} "
-            f"extra={len(report.get('extra_block_ids') or [])} "
-            f"evidence_mismatch={len(report.get('evidence_mismatches') or [])}"
-        )
-    raise FunctionalConservationError(
-        f"功能需求守恒核对未闭合（{detail}），阻塞成文导出（强制人工）"
+    return (
+        f"missing={len(report.get('missing_block_ids') or [])} "
+        f"duplicate={len(report.get('duplicate_assignments') or [])} "
+        f"extra={len(report.get('extra_block_ids') or [])} "
+        f"evidence_mismatch={len(report.get('evidence_mismatches') or [])}"
     )
 
 
@@ -2005,6 +2014,9 @@ def extract_degraded_marks(
     for section in sections:
         for block_id in (section.get("block_ids") or []):
             sections_by_block.setdefault(str(block_id), section)
+    # stub 形状按块 memoize（2026-09-05 review P3）——原实现每 item×声明块重建一次
+    # 完整 _stub_item（含 description 渲染 + coerce），大文档纯浪费；比对语义不变。
+    stub_fields_by_block: dict[str, tuple[str, list[str]]] = {}
     marks: dict[str, list[str]] = {}
     items = payload.get("items") if isinstance(payload.get("items"), list) else []
     for item in items:
@@ -2013,16 +2025,19 @@ def extract_degraded_marks(
         declared = {str(b) for b in (item.get("source_block_ids") or []) if str(b)}
         if not declared:
             continue
+        item_objective = str(item.get("objective") or "")
+        item_behaviors = [str(b) for b in (item.get("behaviors") or [])]
         for block_id in declared:
             section = sections_by_block.get(block_id)
             if section is None:
                 continue
-            stub = _stub_item(section, 1)
-            if (
-                str(item.get("objective") or "") == str(stub.get("objective") or "")
-                and [str(b) for b in (item.get("behaviors") or [])]
-                == [str(b) for b in (stub.get("behaviors") or [])]
-            ):
+            stub_fields = stub_fields_by_block.get(block_id)
+            if stub_fields is None:
+                stub = _stub_item(section, 1)
+                stub_fields = (str(stub.get("objective") or ""),
+                               [str(b) for b in (stub.get("behaviors") or [])])
+                stub_fields_by_block[block_id] = stub_fields
+            if item_objective == stub_fields[0] and item_behaviors == stub_fields[1]:
                 fre_id = str(item.get("functional_requirement_id") or "")
                 if fre_id:
                     marks[fre_id] = ["extract_degraded"]

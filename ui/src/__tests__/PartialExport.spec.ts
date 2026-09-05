@@ -89,6 +89,23 @@ describe("partial export（守恒未闭合）run summary honesty", () => {
     expect(wrapper.text()).not.toContain("software_requirements.xlsx")
   })
 
+  it("conservation open but absorbed（无 conservation_blocked）：运行页仍提示守恒未闭合", async () => {
+    // 2026-09-05 review P2：日常链无分析/成文阶段时守恒未闭合被 partial export
+    // 吸收——conservation_blocked 不置位，链尾 functional_conservation_error
+    // 是运行页唯一信号，不得静默
+    mockBridge({
+      functional_extract: { count: 12, route: "llm", execution_status: "ok", conservation: { ok: false } },
+      functional_conservation_error: "功能需求守恒核对未闭合（obligation_coverage=2）",
+    })
+    const wrapper = mount(App)
+    await driveRun(wrapper)
+
+    await vi.waitFor(() => {
+      expect(wrapper.text()).toContain("功能需求守恒未闭合（待核放行）")
+    })
+    expect(wrapper.text()).toContain("功能需求守恒核对未闭合（obligation_coverage=2）")
+  })
+
   it("degraded-only：抽取降级挂在功能需求上，不冒充分析表", async () => {
     mockBridge({ pending_marked_rows: 2 })
     const wrapper = mount(App)

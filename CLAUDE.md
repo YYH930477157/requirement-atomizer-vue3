@@ -1,5 +1,34 @@
 # CLAUDE.md — Requirement Atomizer 项目上下文
 
+## 修复（2026-09-05）——review 四项：GUI 守恒信号 + gap-only 自报 + 清单说明列 + stub 形状 memoize（main 工作树，未提交）
+
+> 对照 origin/main（880cfd2）review 产出。P2：09-01e 把 requirements-analysis/
+> template-write 移出 GUI 默认链后，守恒未闭合被 partial export 吸收时链层零信号
+> （`conservation_blocked` 只在 gated 阶段 raise/自报时置位；`pending_marked_rows`
+> 只聚合 requirements-analysis）——运行页静默、verdict 可 READY。P3 三项见下。
+
+- **P2 守恒信号**：`chain_task` 链尾从 FR 产物单源上报 `functional_conservation_error`
+  （新 `functional_extract.conservation_failure_detail` 与 raise 文案同源单源——
+  `raise_if_unconserved` 的 detail 构造提取复用，措辞不变）；App.vue 新分支
+  「功能需求守恒未闭合（待核放行）：…」（blocked 分支优先、语义不变）；
+  `env.d.ts` 补键。钉测：chain 两形态（未闭合有信号/闭合无信号）+ UI spec 新形态
+  （无 conservation_blocked 时运行页仍提示）。
+- **P3 gap-only**：`template_write_task` 的 `unclosed_marks` 补 `gap_rows>0`——
+  守恒未闭合但失败面全是零 FRE 缺口（marked_rows=0、只有「守恒待核」清单 gap 行）
+  此前不自报 unclosed_basis，链/manifest 记 ok 与清单 sheet 红字矛盾。钉测：
+  纯缺口链（stages=[template-write]，分析不进链）自报 partial。
+- **P3 清单列**：`_write_pending_sheet` FRE 行说明列不再重复类别人读标签（留空，
+  类别/原因两列已表达）。零 LLM，无指纹影响。
+- **P3 memoize**：`extract_degraded_marks` 的 stub 形状按 block memoize（原每
+  item×声明块重建完整 `_stub_item` 含 description 渲染+coerce）；比对语义逐字节不变。
+- **缓建（review 记录在案，未做）**：`engineering_analysis.json` governed 寻址——
+  写（requirements_analysis:598）/读（template_writer/clarification_report×2/
+  api_server `_analysis_enrichment`+`artifact_is_current`+`_source_signature` 备忘录
+  失效签名）全为裸根，写读一致能工作；pre-existing、日常 GUI 链不跑分析无暴露，
+  迁移是独立 worktree 级改动（含注册 _ARTIFACTS 与 api_server 备忘录签名），另立决策。
+- **验证**：聚焦 partial-export/conservation/desktop_tasks/analysis 模块全绿；UI
+  vitest 290/290（+1）+ vue-tsc 0 错；全量并行门见下方当日记录。
+
 ## 重大更新（2026-09-01e）——减法：GUI / 默认链去掉软件需求分析（分支 codex/drop-requirements-analysis，基线 2e92140）
 
 > 用户裁定分析表「没有意义，删掉」。成文已在 09-01d 退出日常产品；分析本是成文前的中间步

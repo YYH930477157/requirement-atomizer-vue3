@@ -127,6 +127,10 @@ class PartialExportChainTests(unittest.TestCase):
                             "F2 干净行不应带待核标记")
             self.assertFalse(any("draft" in t for t in texts), "不打 draft 水印")
             self.assertGreaterEqual(payload.get("pending_marked_rows", 0), 1)
+            # 2026-09-05 P2：链尾产物单源信号——守恒未闭合必须在链载荷可见
+            # （GUI 日常链无分析/成文阶段时这是运行页唯一信号）
+            self.assertIn("功能需求守恒核对未闭合",
+                          str(payload.get("functional_conservation_error")))
 
     def test_extraction_partial_mixed_also_bypasses(self) -> None:
         """grok 第 3 条：execution_status=partial（mixed）走旁路——SBD 主形态。"""
@@ -153,6 +157,8 @@ class PartialExportChainTests(unittest.TestCase):
                      route="mixed", stub_f2=True)
             payload = self._run(out, tpl)
             self.assertFalse(payload.get("conservation_blocked"), "守恒闭合不应记未闭合")
+            self.assertFalse(payload.get("functional_conservation_error"),
+                             "守恒闭合不应有未闭合链层信号")
             self.assertEqual(payload.get("pending_marked_rows"), 1, "降级行数上报")
             manifest = desktop_tasks.read_run_manifest(out)["stages"]
             self.assertEqual(manifest["requirements-analysis"]["status"], "ok",
@@ -191,6 +197,50 @@ class PartialExportChainTests(unittest.TestCase):
             merged = [t for t in texts if "抽取降级" in t]
             self.assertTrue(merged, "F2 行应有抽取降级类")
             self.assertIn("绑定失配", merged[0], "两类并存同一行去重展示")
+
+    def test_gap_only_unclosed_template_write_self_reports_partial(self) -> None:
+        """2026-09-05 P3：gap-only 边缘——守恒未闭合但失败面全是零 FRE 缺口
+        （marked_rows=0、只有「守恒待核」清单的 gap 行）。
+
+        template-write 不进 GUI 默认链，此形态走 CLI/门禁——成文也必须自报
+        unclosed_basis（链记 partial），否则 manifest 记 ok、与清单 sheet 的
+        红字总述矛盾。分析不进链：engineering_analysis 直接落盘，隔离成文自报。
+        """
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            tpl = out / "tpl.xlsx"
+            _make_template(tpl)
+            _seed_fr(out, execution_status="ok", conservation_ok=False)
+            # 失败面改成纯缺口：evidence 恢复 ok，唯一失败 = 条款覆盖缺口章节
+            fr_path = out / "functional_requirements.json"
+            fr = json.loads(fr_path.read_text(encoding="utf-8"))
+            checks = fr["conservation"]["checks"]
+            checks["evidence_presence"]["ok"] = True
+            checks["evidence_presence"]["binding_mismatches"] = []
+            checks["clause_coverage"]["ok"] = False
+            checks["clause_coverage"]["uncovered_sections"] = [
+                {"section_id": "9.9", "heading": "9.9 Spare"}]
+            fr_path.write_text(json.dumps(fr, ensure_ascii=False), encoding="utf-8")
+            (out / "engineering_analysis.json").write_text(
+                json.dumps({"items": fr["items"]}, ensure_ascii=False),
+                encoding="utf-8")
+            with mock.patch.dict("os.environ", {"RATOMIZER_PARTIAL_EXPORT": "1"}):
+                payload = desktop_tasks.chain_task(
+                    out, stages=["template-write"],
+                    route="openai_compatible", template_path=tpl)
+            self.assertTrue(payload.get("conservation_blocked"),
+                            "gap-only 也要自报未闭合（清单 sheet 红字在、链不能记 ok）")
+            self.assertTrue(payload.get("partial_export"))
+            manifest = desktop_tasks.read_run_manifest(out)["stages"]
+            self.assertEqual(manifest["template-write"]["status"], "partial")
+            report = payload["results"]["template-write"]["report"]
+            block = report["conservation_pending_export"]
+            self.assertEqual(block["marked_rows"], 0, "失败面没有可挂 FRE 的行")
+            self.assertEqual(block["gap_rows"], 1, "缺口行进清单")
+            self.assertGreaterEqual(int(block["pending_sheet_rows"] or 0), 1)
+            # 链尾产物单源信号在本形态同样可见（run 页提示数据源）
+            self.assertIn("功能需求守恒核对未闭合",
+                          str(payload.get("functional_conservation_error")))
 
     def test_extraction_failed_still_blocks(self) -> None:
         with tempfile.TemporaryDirectory() as td:

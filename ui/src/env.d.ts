@@ -69,6 +69,8 @@ declare global {
     /** partial export（2026-09-01）：未闭合但成文已出——区别于「拦住了、没有表」 */
     partial_export?: boolean
     pending_marked_rows?: number
+    /** 守恒未闭合链尾产物信号（2026-09-05）——无 gated 阶段自报时的运行页提示数据源 */
+    functional_conservation_error?: string
   }
 
   interface Window {
