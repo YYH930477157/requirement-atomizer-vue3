@@ -57,7 +57,7 @@ async function driveRun(wrapper: ReturnType<typeof mount>) {
 describe("partial export（守恒未闭合）run summary honesty", () => {
   beforeEach(() => {
     localStorage.clear()
-    localStorage.setItem("ratomizer.runStages.v3", JSON.stringify(BASE_STAGES))
+    localStorage.setItem("ratomizer.runStages.v4", JSON.stringify(BASE_STAGES))
     vi.spyOn(globalThis, "fetch").mockResolvedValue({
       ok: true,
       json: async () => [],

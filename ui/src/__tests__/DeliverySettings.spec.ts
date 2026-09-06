@@ -87,8 +87,27 @@ describe("delivery settings (§20)", () => {
     expect(localStorage.getItem("ratomizer.translationMode.v1")).toBe("off")
   })
 
+  it("keeps DLMS assembly and engineering composition off in the default functional flow", async () => {
+    mockBridge()
+    const wrapper = mount(App)
+    await wrapper.find('[data-testid="nav-设置"]').trigger("click")
+    await flushPromises()
+
+    expect((wrapper.find('[data-testid="stage-assemble"]').element as HTMLInputElement).checked).toBe(false)
+    expect((wrapper.find('[data-testid="stage-compose"]').element as HTMLInputElement).checked).toBe(false)
+
+    await wrapper.find('[data-testid="settings-close"]').trigger("click")
+    await driveRun(wrapper)
+    await vi.waitFor(() => {
+      expect(window.ratomizerDesktop?.runChain).toHaveBeenCalled()
+    })
+    const call = (window.ratomizerDesktop?.runChain as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    expect(call.stages).not.toContain("assemble")
+    expect(call.stages).not.toContain("compose")
+  })
+
   it("translation mode off excludes full-translation from the chain and passes the mode through", async () => {
-    localStorage.setItem("ratomizer.runStages.v3", JSON.stringify(BASE_STAGES))
+    localStorage.setItem("ratomizer.runStages.v4", JSON.stringify(BASE_STAGES))
     localStorage.setItem("ratomizer.translationMode.v1", "off")
     mockBridge()
     const wrapper = mount(App)
@@ -104,7 +123,7 @@ describe("delivery settings (§20)", () => {
   })
 
   it("default translation mode keeps the existing chain shape (full translation, no explicit mode key)", async () => {
-    localStorage.setItem("ratomizer.runStages.v3", JSON.stringify(BASE_STAGES))
+    localStorage.setItem("ratomizer.runStages.v4", JSON.stringify(BASE_STAGES))
     mockBridge()
     const wrapper = mount(App)
     await driveRun(wrapper)

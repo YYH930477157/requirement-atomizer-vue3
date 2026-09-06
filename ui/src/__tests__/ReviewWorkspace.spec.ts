@@ -27,7 +27,7 @@ async function openReview(wrapper: ReturnType<typeof mount>) {
 describe("review workspace shell", () => {
   beforeEach(() => {
     // 默认「运行」只跑基础解析+审查，不追加交付物链——各测试按需在 mount 前开启对应阶段
-    localStorage.setItem("ratomizer.runStages.v3", ALL_STAGES_OFF)
+    localStorage.setItem("ratomizer.runStages.v4", ALL_STAGES_OFF)
   })
   afterEach(() => {
     vi.restoreAllMocks()
@@ -1094,7 +1094,7 @@ describe("review workspace shell", () => {
 
   it("runs pipeline then the enabled AI-extract stage as one chain from the Run button", async () => {
     // 开启 AI 抽取阶段：点一次「运行」应先跑 runPipeline 再自动接 aiExtract
-    localStorage.setItem("ratomizer.runStages.v3",
+    localStorage.setItem("ratomizer.runStages.v4",
       JSON.stringify({ llmReview: true, aiExtract: true, assemble: false, analyze: false, compose: false, annotationHtml: false }))
     const startResultPackage = vi.fn().mockResolvedValue({
       kind: "result_package_start",
@@ -1203,7 +1203,7 @@ describe("review workspace shell", () => {
   })
 
   it("keeps completed outputs when the API session refresh times out after a run", async () => {
-    localStorage.setItem("ratomizer.runStages.v3",
+    localStorage.setItem("ratomizer.runStages.v4",
       JSON.stringify({ aiExtract: false, assemble: false, analyze: false, compose: false, annotationHtml: false }))
     Object.defineProperty(window, "ratomizerDesktop", {
       configurable: true,
@@ -1243,7 +1243,7 @@ describe("review workspace shell", () => {
   it("reruns a legacy output directory without package tracking (I5)", async () => {
     // legacy 目录重跑：startResultPackage 返回 layout=legacy（主进程分类后不创建
     // marker/.ratomizer）——运行按旧管线完成，不要求 run_id，也不触 complete/fail
-    localStorage.setItem("ratomizer.runStages.v3",
+    localStorage.setItem("ratomizer.runStages.v4",
       JSON.stringify({ aiExtract: false, assemble: false, analyze: false, compose: false, annotationHtml: false }))
     const startResultPackage = vi.fn().mockResolvedValue({
       kind: "result_package_start",
@@ -1295,7 +1295,7 @@ describe("review workspace shell", () => {
   it("shows a partial-completion notice instead of a run failure (I6)", async () => {
     // 部分阶段降级：completeResultPackage 返回稳定错误码 requested_stage_partial——
     // UI 如实显示「分析未完成（部分阶段降级）」，不走「运行失败」也不把尝试记为失败
-    localStorage.setItem("ratomizer.runStages.v3",
+    localStorage.setItem("ratomizer.runStages.v4",
       JSON.stringify({ aiExtract: true, assemble: false, analyze: false, compose: false, annotationHtml: false }))
     const startResultPackage = vi.fn().mockResolvedValue({
       kind: "result_package_start",
@@ -1436,7 +1436,7 @@ describe("review workspace shell", () => {
 
   it("derives the default output directory from the Electron documents root (S16)", async () => {
     // 未选输出目录时默认落到 Electron documents 派生目录——禁止硬编码 E:\Codex（换机即失效）
-    localStorage.setItem("ratomizer.runStages.v3",
+    localStorage.setItem("ratomizer.runStages.v4",
       JSON.stringify({ aiExtract: false, assemble: false, analyze: false, compose: false, annotationHtml: false }))
     const runPipeline = vi.fn().mockResolvedValue({
       kind: "pipeline",
@@ -1544,7 +1544,7 @@ describe("review workspace shell", () => {
   }
 
   it("runs all enabled deliverable stages including annotation HTML as one Run chain", async () => {
-    localStorage.setItem("ratomizer.runStages.v3",
+    localStorage.setItem("ratomizer.runStages.v4",
       JSON.stringify({ aiExtract: true, assemble: true, analyze: true, compose: true, annotationHtml: true }))
     Object.defineProperty(window, "ratomizerDesktop", { configurable: true, value: deliverableBridge() })
     vi.spyOn(globalThis, "fetch").mockResolvedValue({ ok: true, json: async () => [] } as Response)
@@ -1573,7 +1573,7 @@ describe("review workspace shell", () => {
   })
 
   it("disabled stages are skipped in the Run chain", async () => {
-    localStorage.setItem("ratomizer.runStages.v3",
+    localStorage.setItem("ratomizer.runStages.v4",
       JSON.stringify({ aiExtract: true, assemble: false, analyze: false, compose: false, annotationHtml: false }))
     Object.defineProperty(window, "ratomizerDesktop", { configurable: true, value: deliverableBridge() })
     vi.spyOn(globalThis, "fetch").mockResolvedValue({ ok: true, json: async () => [] } as Response)
@@ -1590,7 +1590,7 @@ describe("review workspace shell", () => {
   })
 
   it("chain stages use openai_compatible routes when the LLM toggle is on", async () => {
-    localStorage.setItem("ratomizer.runStages.v3",
+    localStorage.setItem("ratomizer.runStages.v4",
       JSON.stringify({ aiExtract: true, assemble: true, analyze: true, compose: false, annotationHtml: false }))
     Object.defineProperty(window, "ratomizerDesktop", {
       configurable: true,
@@ -1762,7 +1762,7 @@ describe("review workspace shell", () => {
   })
 
   it("disabling the rule-candidate LLM review skips review in both run modes", async () => {
-    localStorage.setItem("ratomizer.runStages.v3",
+    localStorage.setItem("ratomizer.runStages.v4",
       JSON.stringify({ llmReview: false, aiExtract: false, assemble: false, analyze: false, compose: false, annotationHtml: false }))
     Object.defineProperty(window, "ratomizerDesktop", {
       configurable: true,
@@ -1964,7 +1964,7 @@ describe("review workspace shell", () => {
   })
 
   it("passes the LLM enrichment route to the AI-extract stage when LLM mode is on", async () => {
-    localStorage.setItem("ratomizer.runStages.v3",
+    localStorage.setItem("ratomizer.runStages.v4",
       JSON.stringify({ aiExtract: true, assemble: false, analyze: false, compose: false, annotationHtml: false }))
     Object.defineProperty(window, "ratomizerDesktop", {
       configurable: true,
@@ -2005,7 +2005,7 @@ describe("review workspace shell", () => {
   })
 
   it("marks functional synthesis disabled when LLM and analysis are off", async () => {
-    localStorage.setItem("ratomizer.runStages.v3",
+    localStorage.setItem("ratomizer.runStages.v4",
       JSON.stringify({ aiExtract: true, assemble: false, analyze: false, compose: false, annotationHtml: false }))
     Object.defineProperty(window, "ratomizerDesktop", {
       configurable: true,

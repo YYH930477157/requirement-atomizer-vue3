@@ -977,16 +977,16 @@ type RunStages = {
   compose: boolean
   annotationHtml: boolean
 }
-// v3（2026-08-19）：碎原子不再是需求产品——llmReview 默认关。换键让旧 v2（llmReview:true）
-// 一次性拿到新默认；用户仍可在高级区打开原子审查。代价是自定义阶段重置一次。
-const RUN_STAGES_KEY = "ratomizer.runStages.v3"
+// v4：完整功能需求是日常交付单位。逐原子审查、DLMS 实现规格和工程组装只在
+// 高级/专用轨道显式开启，避免功能需求运行隐式回到原子化装配链。
+const RUN_STAGES_KEY = "ratomizer.runStages.v4"
 function loadRunStages(): RunStages {
   const fallback: RunStages = {
     llmReview: false,
     aiExtract: true,
-    assemble: true,
+    assemble: false,
     analyze: true,
-    compose: true,
+    compose: false,
     annotationHtml: true,
   }
   try {
@@ -1058,7 +1058,7 @@ type RunStageStatus = "pending" | "running" | "ok" | "skipped" | "failed" | "dis
 type RunStageState = { status: RunStageStatus; percent: number; detail: string }
 type RelayConnectorStatus = "idle" | "ready" | "handoff" | "complete" | "bypass" | "blocked"
 const RUN_STAGE_DEFS = [
-  { key: "atomize", label: "原子化" },
+  { key: "atomize", label: "文档解析" },
   { key: "llm-review", label: "LLM审核" },
   { key: "ai-extract", label: "AI抽取" },
   { key: "functional-synthesis", label: "功能重组" },
@@ -6329,7 +6329,5 @@ tbody tr.selected td {
   }
 }
 </style>
-
-
 
 
