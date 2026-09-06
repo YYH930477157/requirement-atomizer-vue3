@@ -1,15 +1,18 @@
 # Requirement Atomizer
 
-Requirement Atomizer is a local tool for extracting, reviewing, and exporting atomic requirements from technical standards.
+Requirement Atomizer is a local tool for extracting, reviewing, and exporting complete functional
+requirements from technical standards. Fine-grained source anchors are retained for auditability;
+they are not automatically presented as separate requirements.
 
 It is built for DLMS/COSEM-style documents where requirements are scattered across chapters, protocol descriptions, object definitions, and tables. The current desktop product uses a Vue3 + Electron UI with a Python backend.
 
 ## What It Supports
 
 - Inputs: `.docx`, `.xlsx`, and text-layer `.pdf`
-- Outputs: structured blocks, table rows, atomic requirement candidates, LLM review results, review states, Markdown/CSV exports, assembled specification files, and engineering requirement summaries
+- Outputs: structured blocks, table rows, functional requirements, source evidence, review states, Markdown/CSV exports, assembled specification files, and engineering requirement summaries
 - Knowledge base: reusable `requirement_kb` Python package, with Obsidian as the human-editing source
-- Review flow: deterministic extraction first, then optional OpenAI-compatible LLM review and expert review
+- Review flow: clause-level functional extraction first, then optional clarification and expert review.
+  The legacy atomic/A-track path remains available for DLMS profile documents and historical results.
 
 Scanned PDFs without text are not supported yet. Save them as `.docx` first or handle OCR separately.
 
@@ -36,12 +39,15 @@ The main output files are written under the selected `out` directory:
 ```text
 blocks.jsonl
 table_items.jsonl
-atomic_requirements.jsonl
-llm_review_results.jsonl
-review_states.jsonl
-quality_report.json
+functional_requirements.json
+clarification_report.json
 manifest.json
 summary.md
+
+Legacy A-track runs may additionally contain `atomic_requirements.jsonl`,
+`llm_review_results.jsonl`, and `review_states.jsonl`. These files support
+DLMS/COSEM compatibility and diagnostics; normal functional extraction does
+not use them as its requirement source.
 ```
 
 Compose developer-facing requirements from an existing output directory:
@@ -57,9 +63,11 @@ This writes `engineering_requirements/` with two sections:
 
 Function outputs include deterministic acceptance criteria derived from source atom metadata. DLMS object outputs include implementation and access summaries for handoff to development.
 
-## Requirements Analysis Agent
+## Legacy Requirements Analysis Agent
 
-After AI extraction and expert adjudication, normalize related atomic items into functional requirements before analysis:
+For historical A-track outputs, normalize related atomic items into functional
+requirements before analysis. This compatibility path is not the default product
+flow; ordinary runs use clause-level functional extraction directly:
 
 ```powershell
 python -m desktop_tasks functional-synthesis --out ".\out\run-001"
