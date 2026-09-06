@@ -127,7 +127,8 @@ FUNCTIONAL_EXTRACT_NEGATIVE_K = functional_extract_negative_k()
 
 LOGGER = logging.getLogger("requirement_atomizer")
 
-# 入口开关（config.ENV_REGISTRY 登记）：默认 0=旧原子化路径，本模块不运行。
+# 入口开关（config.ENV_REGISTRY 登记）：默认 1=功能需求直抽路径；显式 0
+# 仅用于兼容旧 A 轨/迁移回放。本模块不应因普通运行配置而退回碎原子链。
 ENTRY_SWITCH_ENV = "RATOMIZER_FUNCTIONAL_EXTRACT"
 
 # --- V3 WS-A A2 上下文包策略 ---

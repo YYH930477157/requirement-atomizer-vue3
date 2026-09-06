@@ -61,6 +61,21 @@ def _direct_item() -> dict:
 
 
 class ChainSubstitutionTests(unittest.TestCase):
+    def test_default_switch_is_functional_path(self) -> None:
+        """产品默认不能因环境缺省而回到碎原子 A 轨。
+
+        旧路径仍可用作显式迁移回放（``RATOMIZER_FUNCTIONAL_EXTRACT=0``），
+        但普通进程没有该环境变量时必须保持功能需求直抽入口开启。
+        """
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertTrue(fe.functional_extract_enabled())
+            stages = desktop_tasks._replace_functional_extract_stages(
+                ["ai-extract", "functional-synthesis", "clarification-report"]
+            )
+        self.assertIn("functional-extract", stages)
+        self.assertNotIn("ai-extract", stages)
+        self.assertNotIn("functional-synthesis", stages)
+
     def test_switch_on_replaces_atom_stages_with_functional_extract(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             out = Path(td)
