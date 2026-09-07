@@ -1,5 +1,21 @@
 # CLAUDE.md — Requirement Atomizer 项目上下文
 
+## WS0 冒烟（2026-09-08）——100 节限量门禁 FAIL（单条款 stub 回退）；08-17 三大失败面全部收敛（e4382bb + 本档）
+
+> 用户授权付费并裁定「只抽 100 节控成本」。`--limit-sections` 贯通提交 `e4382bb`
+> （A/B 两轨同截、条款池与守恒基线同源同截、指纹隔离）。结果档
+> `docs/ws0-smoke-100-2026-09-08.md`，报告 `out/ab-gate-report-v8.json`。
+
+- **判定：FAIL，唯一失败项 B_direct execution_status=partial（mixed → fail-closed）**。
+  唯一 stub 回退条款 =「2 20 Control of」（BLK-000363，LLM 调用失败退占位）；该族另有
+  preservation 否定词 2 条 blocking——失败面全部集中在任务 D 表格病理条款族。
+- **对照 08-17 全量门禁：三大失败面全部消失**——B duplicates 6→0（clause_family+routing
+  v8 根治）、B binding/evidence 全绿（v8 豁免未被触发）、A reader 别名 FAIL→通过。
+- A 轨 100 节 → 935 FRE → 成文在场（29 次 max_tokens 截断升级重试全部成功）。
+- **口径红线：限量冒烟不作 Go/No-Go 依据**。真实路径：①对「2 20 Control of」条款族
+  targeted reextract（块锚在场，M5 可执行，费用极小）消 mixed；②任务 D 闭环处理
+  preservation；③然后全量 343 节正式门禁。
+
 ## 裁定+闭环（2026-09-07b）——#3 裁「豁免逐字重复」落地：conservation v8 reason 2 重复文本豁免；#4 WS0 已授权待 key
 
 > 用户裁定（AskUserQuestion）：b 类重复文本语义取**豁免**——被覆盖义务句逐字出现在
