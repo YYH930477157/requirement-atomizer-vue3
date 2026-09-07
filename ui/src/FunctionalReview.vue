@@ -1312,7 +1312,7 @@ function toggleChildren(itemId: string) {
     <div v-if="mode === 'functional'" class="fr-split">
       <div class="fr-list" data-testid="functional-list">
         <div v-if="!functionalItems.length && !loading" class="fr-empty" data-testid="functional-empty">
-          当前输出目录暂无功能需求条目。请先在「运行」页执行功能合成（functional-synthesis），或通过「新建条目」手工录入。
+          当前输出目录暂无功能需求条目。请先在「运行」页执行功能需求抽取，或通过「新建条目」手工录入。
         </div>
         <button
           v-for="item in functionalItems"

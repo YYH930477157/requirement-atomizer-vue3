@@ -453,7 +453,7 @@
               </section>
 
               <section class="readonly-card">
-                <div class="readonly-head">③ 原子化需求</div>
+                <div class="readonly-head">③ 完整功能需求</div>
                 <div class="readonly-body">{{ atomizedRequirementText }}</div>
               </section>
 
@@ -587,7 +587,7 @@
               </label>
               <label class="settings-toggle">
                 <input v-model="runStages.aiExtract" type="checkbox" data-testid="stage-ai-extract" />
-                <span><strong>AI 抽取（双引擎）</strong><small>LLM 行为需求 + 确定性结构合并，产 merged_spec 与一致性报表。</small></span>
+                <span><strong>功能需求抽取</strong><small>按完整条款生成可审查的功能需求；原子候选仅保留在兼容诊断轨道。</small></span>
               </label>
               <label class="settings-toggle">
                 <input v-model="runStages.assemble" type="checkbox" data-testid="stage-assemble" />
@@ -1060,8 +1060,8 @@ type RelayConnectorStatus = "idle" | "ready" | "handoff" | "complete" | "bypass"
 const RUN_STAGE_DEFS = [
   { key: "atomize", label: "文档解析" },
   { key: "llm-review", label: "LLM审核" },
-  { key: "ai-extract", label: "AI抽取" },
-  { key: "functional-synthesis", label: "功能重组" },
+  { key: "ai-extract", label: "功能需求抽取" },
+  { key: "functional-synthesis", label: "兼容重组（旧）" },
   { key: "assemble", label: "组装功能" },
   { key: "clarification-report", label: "澄清清单" },
   { key: "full-translation", label: "全文翻译" },
@@ -1471,7 +1471,7 @@ const translationText = computed(() => {
   if (selectedRequirement.value.translation) return selectedRequirement.value.translation
   return "（尚未翻译，点击右上角“翻译”生成中文译文）"
 })
-const atomizedRequirementText = computed(() => selectedRequirement.value.chineseText || "（尚未生成原子化需求）")
+const atomizedRequirementText = computed(() => selectedRequirement.value.chineseText || "（尚未生成完整功能需求）")
 const metadataRows = computed(() => [
   { key: "编号", value: selectedRequirement.value.id },
   { key: "模块", value: selectedRequirement.value.module || "未分模块" },
@@ -2049,8 +2049,7 @@ function plannedAutomaticStages(options: { llmReviewLimit?: number }): string[] 
   if (options.llmReviewLimit) return stages
   const useLlm = llmMode.value
   if (runStages.value.aiExtract) {
-    stages.push("ai-extract")
-    if (useLlm) stages.push("functional-synthesis")
+    stages.push("functional-extract")
   }
   if (runStages.value.assemble) stages.push("assemble")
   if (runStages.value.analyze && useLlm) {
@@ -2172,8 +2171,7 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
       // 编排在后端（desktop_tasks chain）：UI 只发一条命令 + 渲染进度。阶段名与后端子命令一致。
       const stages: string[] = []
       if (runStages.value.aiExtract) {
-        stages.push("ai-extract")
-        if (useLlm) stages.push("functional-synthesis")
+        stages.push("functional-extract")
       }
       if (runStages.value.assemble) stages.push("assemble")
       // 澄清硬依赖真 LLM 抽取产物——LLM 关时带上必然断链，
@@ -2183,9 +2181,9 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
         if (useLlm) {
           stages.push("clarification-report")
         } else {
-          skippedForLlm.push("功能重组", "澄清清单")
+          skippedForLlm.push("澄清清单")
           // 阶段卡同步:不然 LLM 关时这些卡永远停在"待完成"(0710 评审 R2)
-          for (const key of ["functional-synthesis", "clarification-report"]) {
+          for (const key of ["clarification-report"]) {
             setRunStageState(key, { status: "disabled", percent: 0, detail: "LLM 关闭，未运行" })
           }
         }
@@ -2279,7 +2277,7 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
       runProgressDetail.value = `均匀抽样全文 ${Math.round(TEST_AI_EXTRACT_SAMPLE_RATIO * 100)}% 章节试抽 + 澄清…`
       await nextUiTick()
       try {
-        const stages = ["ai-extract", "functional-synthesis", "clarification-report"]
+        const stages = ["functional-extract", "clarification-report"]
         const sample = await bridge.runChain({
           outDir: finalOutDir, stages, llmRoute: "openai_compatible",
           sampleRatio: TEST_AI_EXTRACT_SAMPLE_RATIO,
@@ -2363,9 +2361,9 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
 }
 
 const CHAIN_STEP_LABELS: Record<string, string> = {
-  "functional-synthesis": "功能重组",
+  "functional-synthesis": "兼容重组（旧）",
   "functional-extract": "功能需求直抽（条款级，无原子化）",
-  "ai-extract": "AI 抽取（双引擎）", assemble: "装配实现规格",
+  "ai-extract": "功能需求抽取", assemble: "装配实现规格",
   "clarification-report": "澄清问题清单", compose: "组装工程需求",
   "full-translation": "生成全文双语交付物",
   "export-annotation-html": "导出批注视图",
@@ -6331,5 +6329,3 @@ tbody tr.selected td {
   }
 }
 </style>
-
-

@@ -48,7 +48,7 @@ describe("review workspace shell", () => {
     expect(wrapper.text()).toContain("待专家")
     expect(wrapper.text()).toContain("① 原始需求")
     expect(wrapper.text()).toContain("② 中文翻译")
-    expect(wrapper.text()).toContain("③ 原子化需求")
+    expect(wrapper.text()).toContain("③ 完整功能需求")
     expect(wrapper.text()).not.toContain("③ AI 理解的需求")
     expect(wrapper.text()).toContain("REQ-2024-0001")
     expect(wrapper.find('[data-testid="phase1-stats"]').exists()).toBe(true)
@@ -1177,7 +1177,7 @@ describe("review workspace shell", () => {
     await vi.waitFor(() => {
       expect(window.ratomizerDesktop?.runChain).toHaveBeenCalledWith({
         outDir: "E:\\out\\abnt",
-        stages: ["ai-extract"],
+        stages: ["functional-extract"],
         llmRoute: "stub",
       })
     })
@@ -1187,15 +1187,15 @@ describe("review workspace shell", () => {
     expect(startResultPackage).toHaveBeenCalledWith({
       outDir: "E:\\out\\abnt",
       inputPath: "C:\\input\\Appendix 9.docx",
-      stages: ["atomize", "llm-review", "ai-extract"],
+      stages: ["atomize", "llm-review", "functional-extract"],
     })
     expect(completeResultPackage).toHaveBeenCalledWith({
       outDir: "E:\\out\\abnt",
       runId: "RUN-ui-lifecycle",
-      completedStages: ["atomize", "llm-review", "ai-extract"],
+      completedStages: ["atomize", "llm-review", "functional-extract"],
     })
     expect(wrapper.find('[data-testid="result-package-status"]').text()).toContain("已完成")
-    expect(wrapper.find('[data-testid="api-message"]').text()).toContain("AI 抽取")
+    expect(wrapper.find('[data-testid="api-message"]').text()).toContain("功能需求直抽")
     await openReview(wrapper)
     await vi.waitFor(() => {
       expect(wrapper.find('[data-testid="row-SREQ-RUN-1"]').exists()).toBe(true)
@@ -1564,7 +1564,7 @@ describe("review workspace shell", () => {
     await vi.waitFor(() =>
       expect(window.ratomizerDesktop?.runChain).toHaveBeenCalledWith({
         outDir: "E:\\out\\abnt",
-        stages: ["ai-extract", "functional-synthesis", "assemble", "clarification-report", "full-translation", "compose", "export-annotation-html"],
+        stages: ["functional-extract", "assemble", "clarification-report", "full-translation", "compose", "export-annotation-html"],
         // bridge 提供已保存 enabled 设置 → onMounted 恢复（审计 A2）→ 真 LLM 路由 + 澄清过门控
         llmRoute: "openai_compatible",
         annotationLayoutMode: "pdf_original",
@@ -1591,7 +1591,7 @@ describe("review workspace shell", () => {
 
     await vi.waitFor(() =>
       expect(window.ratomizerDesktop?.runChain).toHaveBeenCalledWith(
-        expect.objectContaining({ stages: ["ai-extract", "functional-synthesis", "full-translation"] })))
+        expect.objectContaining({ stages: ["functional-extract", "full-translation"] })))
   })
 
   it("chain stages use openai_compatible routes when the LLM toggle is on", async () => {
@@ -1619,7 +1619,7 @@ describe("review workspace shell", () => {
     await vi.waitFor(() =>
       expect(window.ratomizerDesktop?.runChain).toHaveBeenCalledWith(
         expect.objectContaining({
-          stages: ["ai-extract", "functional-synthesis", "assemble", "clarification-report", "full-translation"],
+          stages: ["functional-extract", "assemble", "clarification-report", "full-translation"],
           llmRoute: "openai_compatible",
         })))
     await vi.waitFor(() =>
@@ -1752,7 +1752,7 @@ describe("review workspace shell", () => {
     await vi.waitFor(() =>
       expect(window.ratomizerDesktop?.runChain).toHaveBeenCalledWith({
         outDir: "E:\\out\\abnt",
-        stages: ["ai-extract", "functional-synthesis", "clarification-report"],
+        stages: ["functional-extract", "clarification-report"],
         llmRoute: "openai_compatible", sampleRatio: 0.2,
       }))
     await vi.waitFor(() => {
@@ -2004,7 +2004,7 @@ describe("review workspace shell", () => {
       expect(window.ratomizerDesktop?.runChain).toHaveBeenCalledWith(
         expect.objectContaining({
           outDir: "E:\\out\\abnt",
-          stages: ["ai-extract", "functional-synthesis", "full-translation"],
+          stages: ["functional-extract", "full-translation"],
           llmRoute: "openai_compatible",
         }))
     })
@@ -2128,7 +2128,7 @@ describe("review workspace shell", () => {
       expect(extractCard).toContain("已完成")             // 步名变化 → 上一步翻绿
       expect(extractCard).not.toContain("14%")            // 链百分比不覆盖卡片
       const synthCard = wrapper.find('[data-testid="run-stage-functional-synthesis"]').text()
-      expect(synthCard).toContain("功能重组")
+      expect(synthCard).toContain("兼容重组（旧）")
       expect(synthCard).not.toContain("14%")
       expect(wrapper.find('[data-testid="run-progress"]').text()).toContain("2/7")
     })
@@ -2178,7 +2178,7 @@ describe("review workspace shell", () => {
       await flushPromises()
       expect(wrapper.find('[data-testid="run-stage-ai-extract"]').text()).toContain("已用时")
       expect(wrapper.find('[data-testid="run-stall-ai-extract"]').text()).toContain("无新进度")
-      expect(wrapper.find('[data-testid="run-stall-hint"]').text()).toContain("AI抽取")
+      expect(wrapper.find('[data-testid="run-stall-hint"]').text()).toContain("功能需求抽取")
 
       progressHandler({ stage: "ai_extract", completed: 12, total: 46, percent: 26 })
       await flushPromises()
