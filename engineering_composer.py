@@ -70,6 +70,9 @@ METHOD_NAMES = {
 
 def compose_engineering_requirements(out_dir: Path) -> dict[str, Any]:
     out_dir = out_dir.expanduser().resolve()
+    from pipeline_track import require_legacy_track
+
+    require_legacy_track(out_dir, "compose")
     atomic_rows = read_jsonl(out_dir / "atomic_requirements.jsonl")
     source_index = build_source_index(read_jsonl(out_dir / "table_items.jsonl"))
     object_model = build_object_model(out_dir)

@@ -47,6 +47,9 @@ def _resolve_catalog_chat(route: str | None, chat: CatalogChat | None) -> tuple[
 def run_functional_synthesis(out_dir: Path, *, route: str | None = "stub",
                              chat: CatalogChat | None = None) -> dict[str, Any]:
     out_dir = Path(out_dir).expanduser().resolve()
+    from pipeline_track import require_legacy_track
+
+    require_legacy_track(out_dir, "functional-synthesis")
     source = out_dir / "ai_requirements.jsonl"
     if not source.exists():
         raise FileNotFoundError(f"ai_requirements.jsonl not found in {out_dir}")

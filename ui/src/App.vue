@@ -2138,6 +2138,8 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
       inputPath: currentInputPath.value,
       outDir,
       skipReview: !reviewEnabled,
+      track: (reviewEnabled || (!options.llmReviewLimit && (runStages.value.assemble || runStages.value.compose)))
+        ? "legacy_a" : "functional",
       llmRoute: useLlmReview ? "openai_compatible" : undefined,
       reviewScope: useLlmReview ? "targeted" : undefined,
       ...(options.llmReviewLimit && reviewEnabled ? { llmReviewLimit: options.llmReviewLimit } : {}),

@@ -239,6 +239,7 @@ def run_pipeline_task(
     out_dir: Path,
     *,
     skip_review: bool = False,
+    track: str | None = None,
     llm_route: str | None = None,
     review_scope: str | None = None,
     llm_review_limit: int = 0,
@@ -248,18 +249,17 @@ def run_pipeline_task(
 ) -> dict[str, Any]:
     input_path = input_path.expanduser().resolve()
     out_dir = out_dir.expanduser().resolve()
+    from pipeline_track import resolve_run_track
+
+    resolved_track = resolve_run_track(track, skip_review=skip_review)
     out_dir.mkdir(parents=True, exist_ok=True)
     # S1-1：开启 RATOMIZER_LLM_BUDGET 时挂文档预算单（attach 后所有 LLM 调用经钩子扣减 +
     # 超额事前拦截；save 落盘 cost-report 数据源）。开关未开返回 None，行为逐字节不变。
     budget = _attach_budget_ledger_for_run(out_dir, input_path)
     _attach_dual_track_proposer(llm_route)  # S1-4：双轨开且有 route 时挂提议器（atomize 用）
     try:
-        from functional_extract import functional_extract_enabled
-
-        # The normal desktop run skips the legacy per-atom review. In that
-        # mode the parser still produces blocks/chunks/table evidence, but it
-        # must not build the old atomic requirement candidates.
-        parser_only = functional_extract_enabled() and skip_review
+        # Track is explicit in the current UI; review is an independent stage.
+        parser_only = resolved_track == "functional"
         atomize_outputs = PARSER_STAGE_OUTPUTS if parser_only else STAGE_REQUIRED_OUTPUTS["atomize"]
         atomize_config = {
             "chunk_chars": chunk_chars,
@@ -355,6 +355,7 @@ def run_pipeline_task(
             "out_dir": str(out_dir),
             "input": str(input_path),
             "manifest": manifest,
+            "track": resolved_track,
             "review": review,
             "summary": _stage_summary(out_dir),
         }
@@ -1349,7 +1350,8 @@ def _stage_outputs(stage: str, entry: dict[str, Any] | None = None) -> list[str]
     return list(STAGE_REQUIRED_OUTPUTS.get(stage, []))
 
 
-def _outputs_exist(out_dir: Path, outputs: list[str]) -> bool:
+def _outputs_exist(out_dir: Path, outputs: list[str], *,
+                   allowed_empty: frozenset[str] = frozenset()) -> bool:
     if not outputs:
         return False
     root = Path(out_dir).expanduser().resolve()
@@ -1358,7 +1360,7 @@ def _outputs_exist(out_dir: Path, outputs: list[str]) -> bool:
         if not path.exists() or path.is_dir():
             return False
         try:
-            if path.stat().st_size <= 0 and name not in {
+            if path.stat().st_size <= 0 and name not in allowed_empty and name not in {
                 "ai_requirements.jsonl",
                 "claim_catalog.jsonl",
                 "claim_coverage_groups.jsonl",
@@ -1773,7 +1775,23 @@ def _stage_reuse_check(out_dir: Path, stage: str, *,
         ]
     if stage == "ai-extract" and not require_claim_generation:
         outputs = [name for name in outputs if Path(name).name not in _CLAIM_STAGE_OUTPUTS]
-    if not _outputs_exist(out_dir, outputs):
+    allowed_empty: frozenset[str] = frozenset()
+    if stage == "atomize" and (config or {}).get("mode") == "functional_parser_only":
+        # Prose documents legitimately have no tables. Require the files, but
+        # accept empty JSONL only when the parser manifest confirms zero rows.
+        try:
+            manifest = json.loads((Path(out_dir) / "manifest.json").read_text(encoding="utf-8"))
+            if manifest.get("track") != "functional":
+                return False, None
+            counts = manifest.get("counts", {})
+            allowed_empty = frozenset(
+                f"{key}.jsonl" for key in
+                ("table_items", "table_cell_items", "table_cell_dispositions")
+                if counts.get(key) == 0
+            )
+        except (OSError, ValueError, AttributeError):
+            return False, None
+    if not _outputs_exist(out_dir, outputs, allowed_empty=allowed_empty):
         return False, None
     if stage == "ai-extract" and require_claim_generation:
         try:
@@ -2540,6 +2558,8 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
     逐阶段发进度事件并记 run_manifest；任一阶段失败 → 记账后整链响亮失败。
     """
     out_dir = out_dir.expanduser().resolve()
+    from pipeline_track import LEGACY_STAGES, require_legacy_track, result_track
+
     unknown = [s for s in stages if s not in CHAIN_ORDER]
     if unknown:
         raise ValueError(f"未知阶段：{', '.join(unknown)}（可用：{', '.join(CHAIN_ORDER)}）")
@@ -2555,11 +2575,18 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
         FunctionalExtractionIncompleteError,
         functional_extract_enabled,
     )
-    if functional_extract_enabled():
+    existing_track = result_track(out_dir)
+    # A-track deliverables are an explicit choice. If the caller asks for one
+    # of them, keep the legacy B-stage names so the compatibility chain can
+    # build its atomic inputs. A functional result is rejected above instead.
+    has_legacy_stage = bool(set(ordered) & LEGACY_STAGES)
+    if functional_extract_enabled() and not has_legacy_stage and existing_track != "legacy_a":
         legacy_pair = [s for s in ("ai-extract", "functional-synthesis") if s in ordered]
         if legacy_pair:
             functional_extract_replaced = legacy_pair
             ordered = [s for s in CHAIN_ORDER if s in set(_replace_functional_extract_stages(ordered))]
+    for stage in sorted(set(ordered) & LEGACY_STAGES):
+        require_legacy_track(out_dir, stage)
     if "template-write" in ordered and template_path is None:
         raise ValueError("template-write 阶段需要 --template（公司需求列表模板路径）")
     # 翻译交付模式（§12.1，M6/§20）：off/markers 明确不需要全文双语——full-translation
@@ -2627,7 +2654,8 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
     conservation_gated = {
         "requirements-analysis", "template-write", "clarification-report",
     }
-    payload: dict[str, Any] = {"kind": "chain", "out_dir": str(out_dir), "stages": ordered}
+    payload: dict[str, Any] = {"kind": "chain", "out_dir": str(out_dir), "stages": ordered,
+                               "track": result_track(out_dir)}
     if translation_mode is not None or translation_dropped:
         payload["translation_mode"] = resolved_translation_mode
     if translation_dropped:
@@ -3374,16 +3402,21 @@ def main(argv: list[str] | None = None) -> int:
     logging.getLogger("requirement_atomizer").info("desktop task 开始：%s", args.command)
     try:
         if args.command == "run":
+            run_kwargs = {
+                "skip_review": args.skip_review,
+                "llm_route": args.llm_route,
+                "review_scope": args.review_scope,
+                "llm_review_limit": args.llm_review_limit,
+                "chunk_chars": args.chunk_chars,
+                "kb_paths": args.kb,
+                "domain_pack_dir": args.domain_pack,
+            }
+            if args.track is not None:
+                run_kwargs["track"] = args.track
             payload = run_pipeline_task(
                 args.input,
                 args.out,
-                skip_review=args.skip_review,
-                llm_route=args.llm_route,
-                review_scope=args.review_scope,
-                llm_review_limit=args.llm_review_limit,
-                chunk_chars=args.chunk_chars,
-                kb_paths=args.kb,
-                domain_pack_dir=args.domain_pack,
+                **run_kwargs,
             )
         elif args.command == "export":
             payload = export_task(args.out, split_formats(args.formats))

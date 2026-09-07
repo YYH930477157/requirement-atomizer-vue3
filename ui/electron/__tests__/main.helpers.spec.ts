@@ -66,6 +66,13 @@ describe("Electron main helpers", () => {
     ])
   })
 
+  it("passes explicit track independently of review", () => {
+    for (const track of ["functional", "legacy_a"]) {
+      expect(buildRunPipelineArgs({ inputPath: "a.docx", outDir: "out", skipReview: true, track }))
+        .toEqual(["run", "--input", "a.docx", "--out", "out", "--skip-review", "--track", track])
+    }
+  })
+
   it("builds run pipeline args with ABNT preset inputs", () => {
     expect(buildRunPipelineArgs({
       inputPath: "C:\\input\\Appendix 9.docx",

@@ -20,6 +20,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     run_parser.add_argument("--input", type=Path, required=True)
     run_parser.add_argument("--out", type=Path, required=True)
     run_parser.add_argument("--skip-review", action="store_true")
+    run_parser.add_argument("--track", choices=["functional", "legacy_a"], default=None,
+                            help="完整需求或显式旧 A 轨；旧调用方未传时保留兼容选择。")
     run_parser.add_argument("--llm-route", choices=["stub", "openai_compatible"], default=None)
     run_parser.add_argument("--review-scope", choices=["targeted", "all"], default=None)
     run_parser.add_argument("--llm-review-limit", type=int, default=0)

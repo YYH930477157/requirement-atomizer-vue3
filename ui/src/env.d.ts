@@ -143,6 +143,7 @@ declare global {
         inputPath: string
         outDir: string
         skipReview?: boolean
+        track?: "functional" | "legacy_a"
         llmRoute?: string
         reviewScope?: string
         llmReviewLimit?: number

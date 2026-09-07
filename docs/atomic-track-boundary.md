@@ -24,3 +24,27 @@
 缓存读者，再移除 A 轨命令与测试，最后删除候选生成和 schema。解析主干与物理
 表格证据必须保留。一次性删除 `atomize.py` 会同时破坏解析主线，不能作为普通
 代码清理执行。
+
+## 执行边界（2026-09-07）
+
+- 桌面 `run` 接受 `--track functional|legacy_a`。当前 UI 总是显式传入：日常运行
+  为 `functional`，勾选逐原子审查、旧装配或旧组装时为 `legacy_a`。单独勾选装配
+  即可生成所需候选，不必开启逐原子审查；测试运行仅按实际执行的阶段选择。
+- `functional` 必须同时跳过逐原子审查（`--skip-review`）；冲突参数在解析前报错。
+  未传 track 的旧桌面桥接/脚本保留原来的环境开关与 skip-review 兼容选择。
+  独立 `ratomizer run` CLI 仍是原子化兼容入口；上述参数属于 `desktop_tasks run`。
+- `manifest.json.track` 标记解析结果类型，pipeline/chain 响应同样返回 track。
+  `GET /pipeline-track` 提供结果包或旧目录的只读契约：功能需求接口为
+  `/functional-requirements`，`/requirements` 保持旧原子诊断列表协议。
+  无 track 的历史结果返回 `unknown` / `undeclared`，不猜测或写回其来源。
+- functional 结果禁止 `llm-review`、`assemble`、`compose` 以及直接调用旧
+  `ai-extract` / `functional-synthesis`。默认 chain 先将旧 B 轨阶段名转换为
+  `functional-extract`，再检查边界；环境开关显式关掉转换时不能绕过结果类型。
+  chain 在执行任何阶段前检查，底层入口也检查，防止单命令绕过。
+- 解析缓存按流程模式区分。纯文字文档可以产生空表格 JSONL；仅当 manifest
+  对应计数明确为 0 时允许复用空表文件，文件缺失仍须重跑。旧 A 轨切回功能
+  流程时继续清除旧原子候选和任务文件。
+
+验收使用合成 DOCX、stub/mock 与 HTTP 本地服务，覆盖流程切换、重复运行、
+缺失文件、旧阶段拦截、旧目录和结果包寻址。它证明流程边界，不代表真实语料
+的需求抽取质量或 token 节省比例；后者仍需真实文档评测。

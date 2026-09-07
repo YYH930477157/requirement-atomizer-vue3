@@ -1163,6 +1163,7 @@ describe("review workspace shell", () => {
         inputPath: "C:\\input\\Appendix 9.docx",
         outDir: "E:\\out\\abnt",
         skipReview: false,
+        track: "legacy_a",
         llmRoute: undefined,
         reviewScope: undefined,
         chunkChars: 3500,
@@ -1555,6 +1556,10 @@ describe("review workspace shell", () => {
     await flushPromises()
     await wrapper.find('[data-testid="action-run-pipeline"]').trigger("click")
 
+    await vi.waitFor(() =>
+      expect(window.ratomizerDesktop?.runPipeline).toHaveBeenCalledWith(
+        expect.objectContaining({ skipReview: true, track: "legacy_a" })))
+
     // 一次 Run 发一条后端 chain 命令（编排在后端；LLM 关 → stub）
     await vi.waitFor(() =>
       expect(window.ratomizerDesktop?.runChain).toHaveBeenCalledWith({
@@ -1698,6 +1703,7 @@ describe("review workspace shell", () => {
         inputPath: "C:\\input\\Appendix 9.docx",
         outDir: "E:\\out\\abnt",
         skipReview: false,
+        track: "legacy_a",
         llmRoute: "openai_compatible",
         reviewScope: "targeted",
         llmReviewLimit: 50,
@@ -1788,7 +1794,7 @@ describe("review workspace shell", () => {
 
     await vi.waitFor(() =>
       expect(window.ratomizerDesktop?.runPipeline).toHaveBeenCalledWith(
-        expect.objectContaining({ skipReview: true, llmRoute: undefined })))
+        expect.objectContaining({ skipReview: true, track: "functional", llmRoute: undefined })))
   })
 
   it("shows module and precise backend classification for ABNT extracted rows", async () => {

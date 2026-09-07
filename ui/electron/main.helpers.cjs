@@ -11,6 +11,7 @@ function buildRunPipelineArgs(input) {
     "--out",
     input.outDir,
     ...(input.skipReview ? ["--skip-review"] : []),
+    ...(input.track ? ["--track", input.track] : []),
     ...(input.llmRoute ? ["--llm-route", input.llmRoute] : []),
     ...(input.reviewScope ? ["--review-scope", input.reviewScope] : []),
     ...(input.llmReviewLimit ? ["--llm-review-limit", String(input.llmReviewLimit)] : []),

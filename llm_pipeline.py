@@ -1833,6 +1833,9 @@ def run_review_pipeline(
     kb_paths: list[Path] | None = None,
 ) -> dict[str, Any]:
     out_dir = out_dir.expanduser().resolve()
+    from pipeline_track import require_legacy_track
+
+    require_legacy_track(out_dir, "llm-review")
     pipeline_path = pipeline_path.expanduser().resolve()
     LOGGER.info("loading review pipeline")
     requirements, authority_preconditions = _load_automatic_review_snapshot(

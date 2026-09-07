@@ -4036,6 +4036,9 @@ def run_ai_extract(out_dir: Path, *, route: str | None, merge_chars: int = DEFAU
     from omission_actions import extraction_operation_lock
 
     out_dir = out_dir.expanduser().resolve()
+    from pipeline_track import require_legacy_track
+
+    require_legacy_track(out_dir, "ai-extract")
     with extraction_operation_lock(out_dir, operation="full"):
         previous_partial = read_partial_snapshot(out_dir / AI_REQUIREMENTS_PARTIAL)
         previous_run_id = str((previous_partial or {}).get("run_id") or "")

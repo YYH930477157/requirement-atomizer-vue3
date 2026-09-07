@@ -331,6 +331,14 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(raw)
             return
+        if parsed.path == "/pipeline-track":
+            from pipeline_track import track_contract
+
+            try:
+                self.send_json(track_contract(self.output_dir))
+            except (OSError, ValueError) as exc:
+                self.send_json({"error": str(exc), "retryable": True}, status=503)
+            return
         if parsed.path == "/manifest":
             self.send_file_json("manifest.json")
             return

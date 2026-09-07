@@ -258,6 +258,9 @@ def _strip_behavior_class_ids(requirements: list[dict[str, Any]]) -> None:
 def assemble(out_dir: Path, reviews_path: Path | None, *, source: str, extracted_at: str,
              enrich_route: str | None = None, blue_book_index_path: Path | None = None) -> tuple[dict, dict]:
     out_dir = out_dir.expanduser().resolve()
+    from pipeline_track import require_legacy_track
+
+    require_legacy_track(out_dir, "assemble")
     p1 = build_object_model(out_dir)
     p2 = build_access_security(out_dir)
     p3 = build_behavior_spec(out_dir, reviews_path)
