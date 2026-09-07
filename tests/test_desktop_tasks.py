@@ -203,6 +203,7 @@ class DesktopTaskTests(unittest.TestCase):
 
         atomize.assert_called_once()
         self.assertEqual(atomize.call_args.kwargs["kb_paths"], [root / "default-a.json", root / "default-b.json"])
+        self.assertFalse(atomize.call_args.kwargs["include_atomic_candidates"])
 
     def test_run_pipeline_task_writes_outputs_and_review_summary(self) -> None:
         from desktop_tasks import run_pipeline_task
@@ -2481,6 +2482,7 @@ class ChainAndManifestTests(unittest.TestCase):
                 "chunk_chars": 3500,
                 "kb_paths": [str(path) for path in desktop_tasks.resolve_kb_paths(None)],
                 "domain_pack_dir": "",
+                "mode": "legacy_a_track",
             }
             desktop_tasks.update_run_manifest(
                 out, "atomize", "ok", input_path=input_path, config=atomize_config)
@@ -2683,6 +2685,7 @@ class FingerprintReuseAndLockHardeningTests(unittest.TestCase):
                 "chunk_chars": 3500,
                 "kb_paths": [str(path) for path in desktop_tasks.resolve_kb_paths(None)],
                 "domain_pack_dir": "",
+                "mode": "legacy_a_track",
             }
             desktop_tasks.update_run_manifest(
                 out, "atomize", "ok", input_path=input_path, config=atomize_config)
@@ -2741,6 +2744,7 @@ class FingerprintReuseAndLockHardeningTests(unittest.TestCase):
                 "chunk_chars": 3500,
                 "kb_paths": [str(path) for path in desktop_tasks.resolve_kb_paths(None)],
                 "domain_pack_dir": "",
+                "mode": "legacy_a_track",
             }
             desktop_tasks.update_run_manifest(
                 out, "atomize", "ok", input_path=input_path, config=atomize_config)

@@ -61,6 +61,29 @@ def _direct_item() -> dict:
 
 
 class ChainSubstitutionTests(unittest.TestCase):
+    def test_parser_only_mode_does_not_publish_legacy_atomic_candidates(self) -> None:
+        from docx import Document
+        from atomize import run_atomizer_pipeline
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            source = root / "source.docx"
+            document = Document()
+            document.add_paragraph("The meter shall log events.")
+            document.save(source)
+
+            out = root / "out"
+            manifest = run_atomizer_pipeline(
+                source, out, kb_paths=[], include_atomic_candidates=False,
+            )
+
+            self.assertEqual(manifest["track"], "functional")
+            self.assertEqual(manifest["atomic_candidates"], "disabled")
+            self.assertTrue((out / "blocks.jsonl").exists())
+            self.assertTrue((out / "chunks.jsonl").exists())
+            self.assertFalse((out / "atomic_requirements.jsonl").exists())
+            self.assertFalse((out / "llm_tasks.jsonl").exists())
+
     def test_default_switch_is_functional_path(self) -> None:
         """产品默认不能因环境缺省而回到碎原子 A 轨。
 

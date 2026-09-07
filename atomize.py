@@ -2833,6 +2833,7 @@ def run_atomizer_pipeline(
     chunk_chars: int = 3500,
     kb_paths: list[Path] | None = None,
     domain_pack_dir: Path | None = None,
+    include_atomic_candidates: bool = True,
 ) -> dict[str, Any]:
     input_path = input_path.expanduser().resolve()
     out_dir = out_dir.expanduser().resolve()
@@ -2894,18 +2895,23 @@ def run_atomizer_pipeline(
     chunks = build_chunks(blocks, target_chars=chunk_chars, include_regions={"body"})
     body_table_items = [item for item in table_items if item.get("doc_region") == "body"]
     body_table_cells = [cell for cell in table_cell_items if cell.get("doc_region") == "body"]
-    LOGGER.info("building candidates")
-    atomic_candidates = build_atomic_candidates(
-        blocks,
-        body_table_items,
-        include_regions={"body"},
-        table_cell_items=body_table_cells,
-    )
-    try:
-        assert_valid_atomic_requirements(atomic_candidates)
-    except ValueError as exc:
-        raise AtomizerPipelineError(str(exc)) from exc
-    llm_tasks = build_llm_tasks(chunks, body_table_items)
+    if include_atomic_candidates:
+        LOGGER.info("building candidates")
+        atomic_candidates = build_atomic_candidates(
+            blocks,
+            body_table_items,
+            include_regions={"body"},
+            table_cell_items=body_table_cells,
+        )
+        try:
+            assert_valid_atomic_requirements(atomic_candidates)
+        except ValueError as exc:
+            raise AtomizerPipelineError(str(exc)) from exc
+        llm_tasks = build_llm_tasks(chunks, body_table_items)
+    else:
+        LOGGER.info("skipping legacy atomic candidates (parser-only mode)")
+        atomic_candidates = []
+        llm_tasks = []
     quality_report = build_quality_report(blocks, table_items, atomic_candidates, llm_tasks, pattern_shadow=pattern_shadow, out_dir=out_dir)
 
     LOGGER.info("writing outputs")
@@ -2917,8 +2923,28 @@ def run_atomizer_pipeline(
         governed_artifact_path(out_dir, "table_cell_dispositions.jsonl"),
         table_cell_dispositions,
     )
-    atomic_count = write_jsonl(out_dir / "atomic_requirements.jsonl", atomic_candidates)
-    task_count = write_jsonl(out_dir / "llm_tasks.jsonl", llm_tasks)
+    atomic_path = out_dir / "atomic_requirements.jsonl"
+    llm_tasks_path = out_dir / "llm_tasks.jsonl"
+    if include_atomic_candidates:
+        atomic_count = write_jsonl(atomic_path, atomic_candidates)
+        task_count = write_jsonl(llm_tasks_path, llm_tasks)
+    else:
+        # Remove stale legacy outputs when a previously full run is resumed in
+        # parser-only mode; leaving them behind would make old readers mistake
+        # the functional run for an A-track result.
+        for path in (atomic_path, llm_tasks_path):
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+        for name in ("atomic_requirements.jsonl", "llm_tasks.jsonl"):
+            for category in ("pipeline", "state", "cache"):
+                try:
+                    governed_artifact_path(out_dir, name, category=category, for_write=False).unlink()
+                except FileNotFoundError:
+                    pass
+        atomic_count = 0
+        task_count = 0
     write_json(out_dir / "quality_report.json", quality_report)
 
     domain_counts: Counter[str] = Counter()
@@ -2938,6 +2964,8 @@ def run_atomizer_pipeline(
         "input": str(input_path),
         "input_format": input_format.lstrip("."),
         "output_dir": str(out_dir),
+        "track": "legacy_a" if include_atomic_candidates else "functional",
+        "atomic_candidates": "enabled" if include_atomic_candidates else "disabled",
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "knowledge_bases": [
             {
@@ -2965,13 +2993,14 @@ def run_atomizer_pipeline(
             "table_items": "table_items.jsonl",
             "table_cell_items": "table_cell_items.jsonl",
             "table_cell_dispositions": "table_cell_dispositions.jsonl",
-            "atomic_requirements": "atomic_requirements.jsonl",
-            "llm_tasks": "llm_tasks.jsonl",
             "quality_report": "quality_report.json",
             "unextracted_registry": "unextracted_registry.json",
             "summary": "summary.md",
         },
     }
+    if include_atomic_candidates:
+        manifest["files"]["atomic_requirements"] = "atomic_requirements.jsonl"
+        manifest["files"]["llm_tasks"] = "llm_tasks.jsonl"
     # S1-4：双轨开且有签发假设时，登记到 manifest 计数/文件（OFF 或无假设 → manifest 不变）。
     if hypothesis_count:
         manifest["counts"]["table_structure_hypotheses"] = hypothesis_count

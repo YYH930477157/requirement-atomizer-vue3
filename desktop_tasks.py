@@ -254,10 +254,18 @@ def run_pipeline_task(
     budget = _attach_budget_ledger_for_run(out_dir, input_path)
     _attach_dual_track_proposer(llm_route)  # S1-4：双轨开且有 route 时挂提议器（atomize 用）
     try:
+        from functional_extract import functional_extract_enabled
+
+        # The normal desktop run skips the legacy per-atom review. In that
+        # mode the parser still produces blocks/chunks/table evidence, but it
+        # must not build the old atomic requirement candidates.
+        parser_only = functional_extract_enabled() and skip_review
+        atomize_outputs = PARSER_STAGE_OUTPUTS if parser_only else STAGE_REQUIRED_OUTPUTS["atomize"]
         atomize_config = {
             "chunk_chars": chunk_chars,
             "kb_paths": [str(path) for path in resolve_kb_paths(kb_paths)],
             "domain_pack_dir": str(resolve_bundled_path(domain_pack_dir) or ""),
+            "mode": "functional_parser_only" if parser_only else "legacy_a_track",
         }
         atomize_reused, atomize_fingerprint = _stage_reuse_check(
             out_dir, "atomize", input_path=input_path, config=atomize_config)
@@ -265,7 +273,7 @@ def run_pipeline_task(
             manifest = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))
             manifest["resume_action"] = "skipped"
             # 复用检查刚验证过输入未变：记账直接复用该指纹，不再整批重哈希
-            update_run_manifest(out_dir, "atomize", "ok", outputs=STAGE_REQUIRED_OUTPUTS["atomize"],
+            update_run_manifest(out_dir, "atomize", "ok", outputs=atomize_outputs,
                                 action="skipped", input_path=input_path, config=atomize_config,
                                 input_fingerprint=atomize_fingerprint)
             emit_progress({"stage": "pipeline_stage", "step": "atomize", "status": "skipped", "percent": 100})
@@ -281,11 +289,12 @@ def run_pipeline_task(
                         chunk_chars=chunk_chars,
                         kb_paths=resolve_kb_paths(kb_paths),
                         domain_pack_dir=resolve_bundled_path(domain_pack_dir),
+                        include_atomic_candidates=not parser_only,
                     )
             except Exception as exc:
                 update_run_manifest(out_dir, "atomize", "failed", error=str(exc))
                 raise
-            update_run_manifest(out_dir, "atomize", "ok", outputs=STAGE_REQUIRED_OUTPUTS["atomize"],
+            update_run_manifest(out_dir, "atomize", "ok", outputs=atomize_outputs,
                                 action="ran", input_path=input_path, config=atomize_config)
             emit_progress({"stage": "pipeline_stage", "step": "atomize", "status": "ok", "percent": 100})
 
@@ -1044,6 +1053,20 @@ STAGE_REQUIRED_OUTPUTS: dict[str, list[str]] = {
     "compose": ["engineering_requirements/engineering_requirements.json"],
     "export-annotation-html": ["document_annotation.html"],
 }
+
+# Functional extraction only needs the parser products.  Keep the full atomize
+# contract for explicit A-track/legacy runs, but do not require or publish the
+# legacy candidate files on the default functional path.
+PARSER_STAGE_OUTPUTS = [
+    "manifest.json",
+    "blocks.jsonl",
+    "chunks.jsonl",
+    "table_items.jsonl",
+    "table_cell_items.jsonl",
+    "table_cell_dispositions.jsonl",
+    "quality_report.json",
+    "summary.md",
+]
 
 
 STAGE_IMPLEMENTATION_REVISIONS = {
