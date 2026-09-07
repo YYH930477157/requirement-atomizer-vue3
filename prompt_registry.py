@@ -75,7 +75,10 @@ PROMPT_REGISTRY: list[dict[str, str]] = [
     # （_is_fragment_obligation_unit），剔除量在 conservation 报告 fragment_units_excluded 审计。
     # v7（2026-08-31）：绑定检查 reason 1 承认「引句逐字锚定声明条款」为本地锚
     # （义务覆盖检查 2 不动；放行后 reason 2 不再被短路）。
-    {"id": "functional-extract-conservation", "version": "functional-conservation-obligation-evidence-v7",
+    # v8（2026-09-07 用户裁定）：reason 2 豁免逐字重复——被覆盖义务句逐字出现在
+    # 声明条款基线文本内判疑似误报豁免（covered_clause_text_dup_exemptions 审计，
+    # 不影响 ok）；任一被覆盖句不在声明条款内照旧 blocking。
+    {"id": "functional-extract-conservation", "version": "functional-conservation-obligation-evidence-v8",
      "owner_module": "functional_extract",
      "purpose": "Functional extract obligation/evidence conservation model version"},
 

@@ -133,6 +133,7 @@ class CliContractTests(unittest.TestCase):
         )
 
     def test_run_happy_path_writes_clean_stdout_json_and_logs_to_stderr(self) -> None:
+        """默认 track=functional（docs/cli-contract.md）：完整功能需求产品，不产原子/审查产物。"""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             input_path = tmp_path / "minimal.docx"
@@ -140,8 +141,9 @@ class CliContractTests(unittest.TestCase):
             write_minimal_docx(input_path)
 
             result = self.run_cli("run", str(input_path), "--out", str(out_dir))
-            atomic_exists = (out_dir / "atomic_requirements.jsonl").exists()
-            review_exists = (out_dir / "llm_review_results.jsonl").exists()
+            atomic_absent = not (out_dir / "atomic_requirements.jsonl").exists()
+            review_absent = not (out_dir / "llm_review_results.jsonl").exists()
+            functional_exists = (out_dir / "functional_requirements.json").exists()
 
         self.assertEqual(result.returncode, 0, result.stderr)
         envelope = json.loads(result.stdout)
@@ -149,12 +151,18 @@ class CliContractTests(unittest.TestCase):
         self.assertEqual(envelope["schema_version"], "1.0")
         self.assertEqual(envelope["command"], "run")
         self.assertTrue(envelope["ok"])
-        self.assertEqual(envelope["manifest"]["counts"]["atomic_requirements"], 2)
-        self.assertEqual(envelope["quality_summary"]["atomic_requirements"], 2)
+        self.assertEqual(envelope["track"], "functional")
+        self.assertEqual(envelope["manifest"]["counts"]["atomic_requirements"], 0)
+        self.assertEqual(envelope["manifest"]["track"], "functional")
+        self.assertEqual(envelope["quality_summary"]["atomic_requirements"], 0)
+        self.assertEqual(envelope["functional_extract"]["route"], "stub")
+        self.assertEqual(envelope["functional_extract"]["execution_status"], "ok")
+        self.assertIsNone(envelope["review"])
         self.assertIn("timing_ms", envelope)
         self.assertIn("extracting docx", result.stderr)
-        self.assertTrue(atomic_exists)
-        self.assertTrue(review_exists)
+        self.assertTrue(atomic_absent, "功能轨不写原子产物")
+        self.assertTrue(review_absent, "功能轨不跑原子审查")
+        self.assertTrue(functional_exists)
 
     def test_run_quiet_keeps_stdout_json_and_suppresses_info_logs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -242,6 +250,7 @@ class CliContractTests(unittest.TestCase):
         self.assertFalse((out_dir / "engineering_analysis.json").exists())
 
     def test_run_full_pipeline_works_from_non_repo_cwd(self) -> None:
+        """legacy_a 显式兼容轨从任意 cwd 完整跑通（原子 + 审查）。"""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             input_path = tmp_path / "minimal.docx"
@@ -250,12 +259,14 @@ class CliContractTests(unittest.TestCase):
             launch_cwd.mkdir()
             write_minimal_docx(input_path)
 
-            result = self.run_cli("run", str(input_path), "--out", str(out_dir), "--quiet", cwd=launch_cwd)
+            result = self.run_cli("run", str(input_path), "--out", str(out_dir),
+                                  "--track", "legacy_a", "--quiet", cwd=launch_cwd)
 
         self.assertEqual(result.returncode, 0, result.stderr)
         envelope = json.loads(result.stdout)
         self.assertTrue(envelope["ok"])
         self.assertEqual(envelope["command"], "run")
+        self.assertEqual(envelope["track"], "legacy_a")
         self.assertEqual(envelope["review"]["reviews"], 2)
 
     def test_review_openai_route_reports_llm_review_counts(self) -> None:
@@ -264,7 +275,8 @@ class CliContractTests(unittest.TestCase):
             input_path = tmp_path / "minimal.docx"
             out_dir = tmp_path / "out"
             write_minimal_docx(input_path)
-            atomize = self.run_cli("run", str(input_path), "--out", str(out_dir), "--skip-review", "--quiet")
+            atomize = self.run_cli("run", str(input_path), "--out", str(out_dir),
+                                   "--track", "legacy_a", "--skip-review", "--quiet")
             self.assertEqual(atomize.returncode, 0, atomize.stderr)
 
             with MockReviewService() as service:
@@ -413,6 +425,10 @@ class CliContractTests(unittest.TestCase):
         self.assertFalse(manifest_exists)
 
     def test_run_export_writes_markdown_and_utf8_sig_csv(self) -> None:
+        """默认功能轨导出：functional_requirements.csv（utf-8-sig）+ 字节级兼容别名 + md。
+
+        exports 列表为裸文件名——与 legacy export_requirements 的 envelope 约定一致。
+        """
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             input_path = tmp_path / "minimal.docx"
@@ -420,6 +436,47 @@ class CliContractTests(unittest.TestCase):
             write_minimal_docx(input_path)
 
             result = self.run_cli("run", str(input_path), "--out", str(out_dir), "--export", "md,csv", "--quiet")
+
+            csv_path = out_dir / "functional_requirements.csv"
+            alias_path = out_dir / "requirements_export.csv"
+            md_path = out_dir / "functional_requirements.md"
+            csv_bytes = csv_path.read_bytes()
+            alias_bytes = alias_path.read_bytes()
+            md_exists = md_path.exists()
+            with csv_path.open(encoding="utf-8-sig", newline="") as f:
+                header = next(csv.reader(f))
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        envelope = json.loads(result.stdout)
+        self.assertEqual(envelope["exports"], [
+            "functional_requirements.csv", "requirements_export.csv",
+            "functional_requirements.md"])
+        self.assertTrue(md_exists)
+        self.assertTrue(csv_bytes.startswith(b"\xef\xbb\xbf"))
+        self.assertEqual(alias_bytes, csv_bytes, "别名与主文件字节一致")
+        self.assertEqual(
+            header,
+            [
+                "functional_requirement_id",
+                "title",
+                "objective",
+                "behaviors",
+                "data_constraints",
+                "source_section",
+                "source_quote",
+            ],
+        )
+
+    def test_run_export_legacy_track_keeps_atomic_exporter_contract(self) -> None:
+        """legacy_a 轨导出仍走原子导出器：旧文件名与 13 列头契约不变。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            input_path = tmp_path / "minimal.docx"
+            out_dir = tmp_path / "out"
+            write_minimal_docx(input_path)
+
+            result = self.run_cli("run", str(input_path), "--out", str(out_dir),
+                                  "--track", "legacy_a", "--export", "md,csv", "--quiet")
 
             csv_path = out_dir / "requirements_export.csv"
             md_path = out_dir / "requirements_export.md"

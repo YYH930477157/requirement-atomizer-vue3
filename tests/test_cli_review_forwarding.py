@@ -12,12 +12,15 @@ class CliReviewForwardingTests(unittest.TestCase):
     审查恒落默认 KB/默认捆绑包。"""
 
     def _run_args(self, root: Path, **overrides) -> argparse.Namespace:
+        # track=legacy_a：审查转发语义只存在于原子兼容轨（功能轨不跑 review）
         args = argparse.Namespace(
             input=root / "input.docx",
             out=root / "out",
             chunk_chars=3500,
             kb=[],
             domain_pack=None,
+            track="legacy_a",
+            truth_set=None,
             skip_review=False,
             export="",
             llm_route=None,

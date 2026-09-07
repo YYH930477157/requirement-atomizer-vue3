@@ -193,6 +193,71 @@ class FiveChecksTests(unittest.TestCase):
         self.assertEqual(loss["section_heading"], "Security")
         self.assertEqual(loss["section_index"], 0)
 
+    def test_number_kept_in_data_constraints_is_not_a_preservation_loss(self) -> None:
+        """任务 D 设计②回归（table-preservation-design §2）：参数值进了所属需求的
+        data_constraints 就不是保留丢失——受保护 token 的叙述并集覆盖
+        behaviors/data_constraints 等全字段，不只 objective。"""
+        sections = [_clause("4.3", ["B1"], "The meter shall measure voltage at 230 V.")]
+        kept_item = dict(
+            _item("F1", ["B1"], "The meter shall measure voltage"),
+            data_constraints=["nominal voltage 230 V"],
+        )
+        kept = fe.conservation_report(sections, [kept_item])
+        self.assertTrue(kept["checks"]["preservation"]["ok"],
+                        "数字保在 data_constraints 里不得误报 blocking")
+        lost = fe.conservation_report(
+            sections, [_item("F1", ["B1"], "The meter shall measure voltage")])
+        tokens = [f["token"] for f in lost["checks"]["preservation"]["blocking_losses"]]
+        self.assertIn("230", tokens, "同一数字整体丢失才是 blocking")
+
+    def test_binding_reason2_exempts_covered_text_duplicated_in_declared_clause(self) -> None:
+        """conservation v8（2026-09-07 用户裁定）：标准同段落在多条款逐字重复——
+        FRE 合法覆盖自己条款的文本，被覆盖义务句逐字出现在声明条款内时，
+        「覆盖他款」判疑似误报豁免（审计列表非静默、不影响 evidence ok）。"""
+        dup = "The meter shall support insertion of IEC 62056 objects."
+        sections = [
+            # home：重复文本作为更长句的片段在场（home 自身单元词面覆盖不足 0.6，
+            # 不进 covered）；引句锚句让 reason 1 放行、reason 2 得以评估
+            _clause("1 METER TECHNICAL SPECIFICATION", ["B1"],
+                    "The supplier shall provide the compliance manual and shall "
+                    "support insertion of IEC 62056 objects, including legacy "
+                    "object tables."),
+            _clause("8.10 Net Metering", ["B2"], dup),
+        ]
+        item = dict(
+            _item("F1", ["B1"], dup,
+                  quote="The supplier shall provide the compliance manual"),
+        )
+        report = fe.conservation_report(sections, [item])
+        evidence = report["checks"]["evidence_presence"]
+        self.assertTrue(evidence["ok"], "逐字重复豁免后 evidence 不应 blocking")
+        self.assertEqual(evidence["binding_mismatches"], [])
+        exempted = evidence["covered_clause_text_dup_exemptions"]
+        self.assertEqual(len(exempted), 1, "豁免必须行级审计非静默")
+        self.assertEqual(exempted[0]["functional_requirement_id"], "F1")
+        self.assertEqual(exempted[0]["reason"],
+                         "covered_clause_text_duplicated_in_declared_clause")
+        self.assertIn("8.10 Net Metering", exempted[0]["covered_section_ids"])
+
+    def test_binding_reason2_still_blocks_genuine_cross_clause_borrowing(self) -> None:
+        """v8 反例：被覆盖义务句不在声明条款文本内（真借位）——照旧 blocking。"""
+        borrowed = "The meter shall support insertion of IEC 62056 objects."
+        sections = [
+            _clause("1 METER TECHNICAL SPECIFICATION", ["B1"],
+                    "The supplier shall provide the compliance manual and shall "
+                    "retain the register map."),
+            _clause("8.10 Net Metering", ["B2"], borrowed),
+        ]
+        item = dict(
+            _item("F1", ["B1"], borrowed,
+                  quote="The supplier shall provide the compliance manual"),
+        )
+        report = fe.conservation_report(sections, [item])
+        evidence = report["checks"]["evidence_presence"]
+        self.assertEqual(evidence["covered_clause_text_dup_exemptions"], [])
+        reasons = [m["reason"] for m in evidence["binding_mismatches"]]
+        self.assertIn("narrative_covers_other_clauses_not_declared", reasons)
+
     def test_pending_preservation_uses_explicit_block_identity_on_duplicate_ids(self) -> None:
         report = {
             "ok": False,
@@ -732,10 +797,10 @@ class ConservationV7QuoteLocalAnchorTests(unittest.TestCase):
             1,
         )
 
-    def test_conservation_model_version_is_v7(self) -> None:
+    def test_conservation_model_version_is_v8(self) -> None:
         self.assertEqual(
             fe.FUNCTIONAL_CONSERVATION_MODEL_VERSION,
-            "functional-conservation-obligation-evidence-v7",
+            "functional-conservation-obligation-evidence-v8",
         )
         import prompt_registry
         registered = {

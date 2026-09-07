@@ -12,8 +12,9 @@ class RunSmokeTests(unittest.TestCase):
         modules = run_smoke.load_modules(run_smoke.DEFAULT_MANIFEST)
         suite = run_smoke.build_suite(modules)
         self.assertEqual(len(modules), 91)
-        # 1818 = 1792 + 23（队列收敛第 2 步） + 3（功能产物 governed/API 回归）
-        self.assertEqual(suite.countTestCases(), 1818)
+        # 1819 = 1792 + 23（队列收敛第 2 步） + 3（功能产物 governed/API 回归）
+        #        + 1（任务 D 闭环：保留丢失 data_constraints 回归钉）
+        self.assertEqual(suite.countTestCases(), 1819)
 
     def test_manifest_rejects_duplicates_and_non_test_modules(self) -> None:
         for content in ("tests.test_atomize\ntests.test_atomize\n", "atomize\n"):

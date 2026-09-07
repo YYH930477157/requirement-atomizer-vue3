@@ -84,7 +84,13 @@ FUNCTIONAL_EXTRACT_GUARDS_VERSION = "functional-extract-guards-v6"
 # （行渲染文本对不上条款扁平 text 时不再静默失败）；部分委托整块保留。
 # v4 → v5（2026-08-27 审查修复）：同文本多表格块按委托块数剔除出现位置——
 # replace-all 会把字节级相同的非委托块一并剥出基线（无 cell 守恒兜底的静默丢账）。
-FUNCTIONAL_CONSERVATION_MODEL_VERSION = "functional-conservation-obligation-evidence-v7"
+FUNCTIONAL_CONSERVATION_MODEL_VERSION = "functional-conservation-obligation-evidence-v8"
+# v7 → v8（2026-09-07，用户裁定：豁免逐字重复）：绑定检查 reason 2
+# （narrative_covers_other_clauses_not_declared）——被覆盖义务句逐字出现在声明条款
+# 基线文本内时，条款间共享文本使「覆盖他款」与「覆盖本款」不可区分，判疑似检查
+# 误报豁免（审计列表 covered_clause_text_dup_exemptions，不静默、不影响 ok）；
+# 任一被覆盖句不在声明条款内 → 照旧 blocking（真借位）。豁免口径与
+# tools/binding_attribution.py 的 covered_clause_text_in_home 信号（b 类）同源。
 # v6 → v7（2026-08-31，绑定检查 reason 1 本地锚）：声明条款含义务单元却建不成
 # lexical/cross_script/source_quote 边时，若引句（剥表格标记后）逐字落在该声明条款
 # 基线文本内，不再判「占位声明」——SBD 清单/表格行无模态动词、永远成不了义务单元，
@@ -1103,6 +1109,41 @@ def _quote_verbatim_in_home_clauses(
     return False
 
 
+def _unit_sentence_duplicated_in_home_clauses(
+    sentence: str,
+    baseline_sections: Sequence[dict[str, Any]],
+    home_indices: Sequence[int],
+) -> bool:
+    """义务句逐字落在任一声明条款的基线文本内（内容级 squash：小写 + 剥全部
+    标点/空白，保留字母数字与 CJK）。
+
+    conservation v8（2026-09-07 用户裁定：豁免逐字重复）用于绑定检查 reason 2
+    （narrative_covers_other_clauses_not_declared）的疑似误报豁免：条款间共享
+    文本使「覆盖他款」与「覆盖本款」不可区分。口径源自 tools/binding_attribution.py
+    的 covered_other_text_in_home 信号（b 类），边界略宽：句末/句中标点不敏感
+    （重复句常作为更长句的片段出现在声明条款内）。
+    """
+    sentence_sq = _dup_content_squash(sentence)
+    if not sentence_sq:
+        return False
+    for index in home_indices:
+        if index < 0 or index >= len(baseline_sections):
+            continue
+        text_sq = _dup_content_squash(
+            str(baseline_sections[index].get("text") or ""))
+        if sentence_sq in text_sq:
+            return True
+    return False
+
+
+def _dup_content_squash(text: str) -> str:
+    """重复文本比对用的内容级归一（v8 豁免专用）：小写 + 只留字母数字与 CJK。"""
+    return "".join(
+        ch for ch in str(text or "").lower()
+        if ch.isalnum() or "\u4e00" <= ch <= "\u9fff"
+    )
+
+
 def _sentence_covered_by(
     sentence: str, narrative: str, *, ignore_tokens: frozenset[str] | set[str] = frozenset(),
 ) -> bool:
@@ -1709,6 +1750,7 @@ def conservation_report(
     evidence_mismatches: list[dict[str, Any]] = []
     binding_mismatches: list[dict[str, Any]] = []
     quote_verbatim_local_anchors = 0
+    covered_clause_text_dup_exemptions: list[dict[str, Any]] = []
     # 错绑检测（审查 2026-08-15 P1）：声明的 source_block_ids 与叙述实际覆盖的义务单元
     # 所属条款不一致——叙述互换/错误溯源会让条款覆盖假通过。跨语种（token 覆盖失效）
     # 与无义务单元的家条款无从判定，跳过（宁漏勿错，不误报 blocking）。
@@ -1788,19 +1830,42 @@ def conservation_report(
             if covered_clause_indices and not (
                 set(home_with_units) & covered_clause_indices
             ):
-                binding_mismatches.append({
-                    "functional_requirement_id": fre_id,
-                    "reason": "narrative_covers_other_clauses_not_declared",
-                    "declared_block_ids": ids,
-                    "declared_section_ids": [
-                        str(baseline_sections[i].get("section_id") or "")
-                        for i in home_with_units
-                    ],
-                    "narrative_covers_section_ids": [
-                        str(baseline_sections[i].get("section_id") or "")
-                        for i in sorted(covered_clause_indices)
-                    ],
-                })
+                # conservation v8（2026-09-07 用户裁定：豁免逐字重复）：被覆盖义务句
+                # 逐字出现在声明条款基线文本内 → 条款间共享文本使「覆盖他款」与
+                # 「覆盖本款」不可区分，判疑似检查误报，豁免（审计列表非静默）；
+                # 任一被覆盖句不在声明条款内 → 照旧 blocking（真借位）。
+                duplicated_explained = all(
+                    _unit_sentence_duplicated_in_home_clauses(
+                        unit["sentence"], baseline_sections, home_with_units)
+                    for i in covered_clause_indices
+                    for unit in clause_units[i]
+                    if _sentence_covered_by(
+                        unit["sentence"], narrative, ignore_tokens=ignore_tokens)
+                )
+                if duplicated_explained:
+                    covered_clause_text_dup_exemptions.append({
+                        "functional_requirement_id": fre_id,
+                        "reason": "covered_clause_text_duplicated_in_declared_clause",
+                        "declared_block_ids": ids,
+                        "covered_section_ids": [
+                            str(baseline_sections[i].get("section_id") or "")
+                            for i in sorted(covered_clause_indices)
+                        ],
+                    })
+                else:
+                    binding_mismatches.append({
+                        "functional_requirement_id": fre_id,
+                        "reason": "narrative_covers_other_clauses_not_declared",
+                        "declared_block_ids": ids,
+                        "declared_section_ids": [
+                            str(baseline_sections[i].get("section_id") or "")
+                            for i in home_with_units
+                        ],
+                        "narrative_covers_section_ids": [
+                            str(baseline_sections[i].get("section_id") or "")
+                            for i in sorted(covered_clause_indices)
+                        ],
+                    })
         # 下钻子原子递归守恒：并集 == 父条款 block_ids
         subatoms = item.get("drilled_subatoms")
         if isinstance(subatoms, list) and subatoms:
@@ -1918,6 +1983,9 @@ def conservation_report(
             "binding_mismatches": binding_mismatches[:50],
             # conservation v7：reason 1 被引句逐字锚定豁免的条数（不静默）
             "quote_verbatim_local_anchors": quote_verbatim_local_anchors,
+            # conservation v8（2026-09-07 用户裁定）：reason 2 逐字重复豁免的
+            # 行级审计（fre_id + 覆盖条款），豁免不进 binding_mismatches、不影响 ok
+            "covered_clause_text_dup_exemptions": covered_clause_text_dup_exemptions[:50],
         },
         "duplicates": {
             "ok": not duplicate_groups,

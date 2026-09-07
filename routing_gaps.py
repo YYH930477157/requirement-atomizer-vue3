@@ -98,8 +98,9 @@ def gaps_from_functional_product(product: Any, *,
     """守恒失败 → 块级 targeted_reextract 缺口（M5 局部升级的喂料端）。
 
     只有携带可定位块锚的失败（evidence_mismatches.declared_block_ids、
-    duplicates.groups.block_ids）才升级为 ``targeted_reextract``；无块锚的失败
-    （uncovered obligations 只有句索引）与执行状态失败标 ``needs_work``——
+    duplicates.groups.block_ids、preservation.blocking_losses.section_block_ids）
+    才升级为 ``targeted_reextract``；无块锚的失败（uncovered obligations 只有句索引、
+    旧报告的保留丢失只有 section_id）与执行状态失败标 ``needs_work``——
     不做块级猜测（宁漏勿错）。gate 名与 quality_gates 对齐。
     """
     if not isinstance(product, dict):
@@ -140,6 +141,33 @@ def gaps_from_functional_product(product: Any, *,
             recommended_action="targeted_reextract", blocking=True,
             source_hash=product_fingerprint,
             extra={"block_ids": block_ids, "section_id": section_id}))
+    # 任务 D 专家定点闭环（table-preservation-design §3，2026-09-07）：保留丢失的
+    # blocking 失败面按物理块身份分流——v7+ 报告携带 section_block_ids（可唯一定位
+    # → 定点重抽，复用 M5 claim queue）；旧报告/身份不足无块锚 → needs_work 待人工
+    # （继续显示待核，不自动降级或放行）。
+    for loss in checks.get("preservation", {}).get("blocking_losses") or []:
+        block_ids = [str(b) for b in loss.get("section_block_ids") or [] if b]
+        token = str(loss.get("token") or "")[:40]
+        kind = str(loss.get("kind") or "")
+        if block_ids:
+            gaps.append(build_gap(
+                unit_id="", gate="obligation_conservation",
+                reason=f"保留丢失（{kind} token={token}）@ "
+                       f"{loss.get('section_id') or ''}——块锚可定位，可定点重抽",
+                recommended_action="targeted_reextract", blocking=True,
+                source_hash=product_fingerprint,
+                extra={"block_ids": block_ids,
+                       "section_id": loss.get("section_id"),
+                       "kind": kind, "token": token}))
+        else:
+            gaps.append(build_gap(
+                unit_id="", gate="obligation_conservation",
+                reason=f"保留丢失（{kind} token={token}）@ "
+                       f"{loss.get('section_id') or ''}——无块锚（身份不足），待人工",
+                recommended_action="needs_work", blocking=True,
+                source_hash=product_fingerprint,
+                extra={"section_id": loss.get("section_id"),
+                       "kind": kind, "token": token}))
     for obligation in checks.get("obligation_coverage", {}).get("uncovered_obligations") or []:
         sentence = str(obligation.get("sentence") or obligation)[:100]
         gaps.append(build_gap(

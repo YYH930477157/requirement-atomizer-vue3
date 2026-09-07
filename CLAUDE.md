@@ -1,5 +1,56 @@
 # CLAUDE.md — Requirement Atomizer 项目上下文
 
+## 裁定+闭环（2026-09-07b）——#3 裁「豁免逐字重复」落地：conservation v8 reason 2 重复文本豁免；#4 WS0 已授权待 key
+
+> 用户裁定（AskUserQuestion）：b 类重复文本语义取**豁免**——被覆盖义务句逐字出现在
+> 声明条款基线文本内时，「覆盖他款」与「覆盖本款」不可区分，判疑似检查误报。
+> 同批授权 WS0 付费重跑（key 未提供，见尾）。
+
+- **conservation v7→v8**（`functional-conservation-obligation-evidence-v8`，registry
+  同步）：绑定检查 reason 2（`narrative_covers_other_clauses_not_declared`）新增
+  豁免分支——`covered_clause_indices` 内**每个**被叙述覆盖的义务句都逐字落在声明
+  条款基线文本内（`_unit_sentence_duplicated_in_home_clauses`，内容级 squash：
+  小写+剥标点，句末/句中标点不敏感——重复句常作为更长句片段在场）→ 豁免进
+  `evidence_presence.covered_clause_text_dup_exemptions` 行级审计（fre_id+覆盖
+  条款，非静默、不影响 ok、不进 binding_mismatches）；任一被覆盖句不在声明条款
+  内 → 照旧 blocking（真借位）。口径源自 `tools/binding_attribution.py` 的
+  `covered_other_text_in_home` b 类信号（用户裁定项，非工具自行放宽）。
+- **钉测**：豁免形态（reason 1 引句锚放行→reason 2 评估→豁免+审计行）+ 真借位
+  反例（无重复文本照旧 blocking）+ 模型版本 v8。
+- **验证**：后端全量 **4324/0/0/0**；UI 294/294。门禁预期：ABNT binding 失败面
+  2→1（剩余 FRE-92633e048020 为任务 D 表格病理）。守恒其余四检查、pending 标记、
+  partial export 语义零改动。
+- **#4 WS0 重跑**：用户已授权付费；本机环境无 `RATOMIZER_LLM_API_KEY`（无 .env/
+  shell 配置/应用存储），等 key 提供后按「探针→A 腿→B 腿」分段执行并随时报花费。
+
+## 修复+闭环（2026-09-07）——距离清单执行：红门修复 + 任务 D 闭环三件 + b 类裁定呈报（main 工作树，未提交）
+
+> 对照「距离成品清单」（#1 修红门/#2 任务 D/#3 语义裁定/#4-6 付费实测）。#1/#2 工程面
+> 全部落地；#3 已呈报待用户裁定（红线维持从严）；#4-6 前置在 #3 与付费授权，未动。
+
+- **红门修复（#1）**：`dc34f25` 推红的 3 模块 8 测试全部适配新契约——
+  `test_cli_contract` happy path 钉默认功能轨（track/manifest/functional_extract/无原子
+  无审查）+ 导出测试改钉功能导出器（新列头 + `requirements_export.csv` 字节级别名）并
+  **新增 legacy_a 导出器 13 列旧契约钉**；review/non-repo-cwd 用例显式 `--track
+  legacy_a`；`test_cli_review_forwarding`/`test_cli_kb_defaults` 的手工 Namespace 补
+  `track`/`truth_set`。顺带把 `cli.export_functional_requirements` 的 exports 返回
+  统一为**裸文件名**（与 legacy export_requirements 的 envelope 约定一致，原实现返回
+  绝对路径不一致）。smoke 钉 1818→1819。
+- **任务 D 闭环（#2，table-preservation-design 三件）**：①物理身份
+  （`section_block_ids`/`section_path`）已在 521263c 落地；②提示 v5 已落 + 新增守恒级
+  回归钉「数字保在 `data_constraints` 不算保留丢失、整体丢失才 blocking」
+  （`test_number_kept_in_data_constraints_is_not_a_preservation_loss`）；③
+  `routing_gaps.gaps_from_functional_product` 新增 preservation 分流——blocking_losses
+  带 `section_block_ids` → `targeted_reextract`（M5 claim 队列可执行），无块锚（旧
+  报告/身份不足）→ `needs_work` 待人工，不块级猜测（钉测
+  `test_preservation_loss_escalates_by_block_anchor`）。
+- **b 类语义裁定（#3）**：`FRE-9c12d6aee468` 逐字重复文本案例已按两选项（豁免 vs
+  维持从严）+后果呈报用户，**未获裁定**——按 AGENTS「不放宽守恒」红线维持现状，
+  设计文档「明确不做」清单口径不变。
+- **验证**：后端全量并行门 **4322/0/0/0**（远端推红以来首次全绿，含 golden）；UI
+  vitest 294/294。**未提交**——#4（WS0 重跑）/#5（新真值集多文档）/#6（预算内全链路）
+  均需付费 LLM 授权与真值集准备，等 #3 裁定与用户放行后执行。
+
 ## 里程碑（2026-09-06）——功能需求证据与日常界面收口（2026-09-07 提交于 main，基于轨道分离 c4062ba 整合）
 
 本轮围绕“功能需求是日常产品、原子化只作兼容诊断”继续收口，未改变守恒闸、默认执行策略或 Claim 发布条件。

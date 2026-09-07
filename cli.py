@@ -331,12 +331,13 @@ def export_functional_requirements(out_dir: Path, formats: list[str]) -> list[st
                 writer.writerow({key: "; ".join(str(v) for v in row.get(key, []))
                                  if isinstance(row.get(key), list) else row.get(key, "")
                                  for key in columns})
-        written.append(str(target))
+        # 裸文件名——与 legacy export_requirements 的 envelope「exports」约定一致
+        written.append(target.name)
         # Historical filename kept as a compatibility alias; the payload remains
         # explicitly functional and is reported under functional_requirements.csv.
         legacy_alias = out_dir / "requirements_export.csv"
         legacy_alias.write_bytes(target.read_bytes())
-        written.append(str(legacy_alias))
+        written.append(legacy_alias.name)
     if "md" in formats:
         target = out_dir / "functional_requirements.md"
         lines = ["# Functional Requirements", ""]
@@ -350,7 +351,7 @@ def export_functional_requirements(out_dir: Path, formats: list[str]) -> list[st
                 "",
             ])
         target.write_text("\n".join(lines), encoding="utf-8")
-        written.append(str(target))
+        written.append(target.name)
     return written
 
 

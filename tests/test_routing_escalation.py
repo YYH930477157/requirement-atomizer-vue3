@@ -138,6 +138,38 @@ class GapBuilderTests(unittest.TestCase):
         self.assertEqual(gaps_from_functional_product({"execution_status": "ok"}), [])
         self.assertEqual(gaps_from_functional_product(None), [])
 
+    def test_preservation_loss_escalates_by_block_anchor(self) -> None:
+        """任务 D 专家定点闭环（2026-09-07）：保留丢失按物理块身份分流——
+        v7+ 报告带 section_block_ids → targeted_reextract（M5 队列可执行）；
+        旧报告无块锚 → needs_work 待人工，绝不块级猜测。"""
+        product = {
+            "execution_status": "ok",
+            "conservation": {"ok": False, "checks": {
+                "preservation": {"ok": False, "blocking_losses": [
+                    # v7+：物理块身份在场（同名 Security 条款可区分）
+                    {"section_id": "Security", "section_block_ids": ["BLK-000771"],
+                     "kind": "number", "token": "30", "severity": "blocking"},
+                    # 旧报告：只有 section_id，身份不足
+                    {"section_id": "CH-000004", "kind": "number", "token": "94",
+                     "severity": "blocking"},
+                ]},
+            }},
+        }
+        gaps = gaps_from_functional_product(product, product_fingerprint="sha256:xyz")
+        by_action = {}
+        for gap in gaps:
+            by_action.setdefault(gap["recommended_action"], []).append(gap)
+        anchored = by_action["targeted_reextract"]
+        self.assertEqual(len(anchored), 1, "块锚保留丢失 → 定点重抽")
+        self.assertEqual(anchored[0]["block_ids"], ["BLK-000771"])
+        self.assertTrue(anchored[0]["blocking"])
+        self.assertEqual(anchored[0]["source_hash"], "sha256:xyz")
+        self.assertIn("30", anchored[0]["reason"])
+        manual = by_action["needs_work"]
+        self.assertEqual(len(manual), 1, "无块锚保留丢失 → 待人工")
+        self.assertEqual(manual[0].get("token"), "94")
+        self.assertIn("身份不足", manual[0]["reason"])
+
 
 class EscalationUnitTests(unittest.TestCase):
     def test_actionable_filter_and_block_resolution(self) -> None:
