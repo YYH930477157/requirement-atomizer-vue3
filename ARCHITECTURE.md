@@ -7,36 +7,33 @@
 把客户技术标准（DOCX/XLSX/PDF）转成研发可落地的需求交付物：**确定性骨架 + 护栏化 LLM**——
 数字/编码/结构永远走确定性通道，LLM 只做判断与叙述，且每步可溯源、可回归。
 
-## 双轨
+## 主流程与兼容流程
 
-| | A 轨（DLMS profile 类文档） | B 轨（散文类标准） |
+| | 默认功能需求流程 | Legacy A 兼容流程 |
 |---|---|---|
-| 适用 | 对象表密集（如 ABNT NBR 16968） | 行为散文（如 EN 16314 / AFD） |
-| 链条 | atomize 规则候选 → LLM 审查 → assemble P1-P5 | ai_extract → 批注裁决 → analyze → 成文 |
-| 主交付物 | `dlms_cosem_spec.*`（实现规格） | **`软件需求列表-成文.xlsx`**（公司 V2.3.x 格式） |
-| 知识注入 | 蓝皮书 RAG（接口类条款） | 模板知识 + 裁决样本库 + 澄清答复 |
+| 适用 | 所有需要转成研发需求的技术文档 | 历史 DLMS profile 结果或专项诊断 |
+| 链条 | `parse → functional-extract → requirements-analysis → clarification/export` | `atomize → llm-review → assemble/compose` |
+| 主交付物 | `functional_requirements.json`、澄清清单和需求导出 | `atomic_requirements.jsonl`、实现规格等历史产物 |
+| 知识注入 | 条款上下文、领域知识、澄清答复 | 蓝皮书和旧 A 轨规则 |
 
-## B 轨数据流（当前主战场）
+## 默认功能需求数据流
 
 ```
-parse(parsers/) → blocks.jsonl
-  → ai_extract（extract_units 切分/引用/术语 + LLM + extract_guards 质量信号 + 自检环）
-      → ai_requirements.jsonl（行契约：requirement_record）+ ai_extract_quality.json
-  → 批注（DocumentReview.vue / doc_annotation_export.py，契约测试锁两侧等价）
-      → ai_review_states.jsonl（专家裁决）→ adjudication_bank（few-shot 资产，env 指路）
-  → requirements_analysis（规则归属 + LLM 富化：模板知识/范例/澄清答复注入，assumptions 契约）
-      → engineering_analysis.json / software_requirements.xlsx
-  → template_writer（确定性成文进公司模板）→ 软件需求列表-成文.xlsx
-  → clarification_report（必答/参考分级 + 就绪判定）→ clarification_questions.xlsx
+parse(parsers/) → blocks.jsonl / chunks.jsonl / doc_map.json
+  → functional-extract（按自然条款保留完整上下文，直接生成完整功能需求）
+      → functional_requirements.json（行为、约束、例外和来源证据）
+  → 功能需求评审（FunctionalReview.vue / API）
+      → requirements-analysis（规则归属、可选 LLM 富化和澄清答复注入）
+      → engineering_analysis.json / clarification_questions.xlsx / 需求导出
       ↺ 评审会答复 → import-clarification-answers → 下轮 analyze 作权威输入
 ```
 
 编排：`desktop_tasks chain --out DIR --stages ...`（单命令全链，GUI 只发命令渲染进度）。
 状态：每个输出目录 `run_manifest.json`（manifest v2：阶段状态、producer 版本、route、配置与上游文件 SHA-256 输入指纹）。缺少账本或任一输入指纹变化时不得复用；stub 请求可以保留已验证的 OpenAI 产物，但不能在新目录伪装完成 AI 抽取。
 
-AI 抽取后增加 `functional-synthesis` 阶段：读取 `ai_requirements.jsonl` 与 `ai_review_states.jsonl`，过滤 rejected、投影专家 module/ownership 覆盖，并写 `functional_requirements.json`。`requirements-analysis` 优先消费该文件；不存在时兼容旧的逐原子输入。实现建议与规范要求分栏：`developer_guidance` 只放有来源约束，`design_options` 放非规范实现候选。 合成层按文档级功能目录输出 `objective/behaviors/lifecycle_behaviors/preconditions/data_constraints/variants/exceptions/related_dlms_objects/source_modules`，每个来源原子必须且只能分配一次，并保留合并方法、置信度、理由、冲突标记和完整 evidence。确定性目录只在显式功能身份、兼容事件主体、协议 profile 或周期家族上进行跨章节/跨模块保守合并；互斥限定、不同事件主体和未限定参数冲突保持拆分。可选 LLM 目录只允许映射 atom ID，不允许改写内容，校验失败时按模块回退确定性结果，再执行同一安全归并门禁。
+`functional-extract` 直接按自然条款生成完整功能需求；同一条款中的多个动作进入 `behaviors`、约束或例外字段，不通过“拆散再拼回”形成需求。`requirements-analysis` 优先消费 `functional_requirements.json`；仅在读取历史结果时兼容旧的逐原子输入。
 
-**条款直抽旁路（WS2，`RATOMIZER_FUNCTIONAL_EXTRACT=1` 启用，默认关）**：chain 内
+**条款直抽主流程（WS2，默认开启）**：chain 内
 `ai-extract`+`functional-synthesis` 两阶段被整体替换为 `functional-extract`——条款单元
 单次 LLM 直出功能需求级条目写同名 `functional_requirements.json`，不产原子、不再重并
 （无"拆散再拼回"的粒度拉锯）。守恒核对按条款块（exactly-once），未闭合即阻塞成文导出；
@@ -73,9 +70,9 @@ AI 抽取后增加 `functional-synthesis` 阶段：读取 `ai_requirements.jsonl
 ## 模块索引（顶层 *.py）
 
 - 解析：`parsers/`（docx/xlsx/pdf → blocks/table_items）
-- A 轨：`atomize` `llm_pipeline` `assemble_spec` `cosem_*` `spec_export/excel/enrich`
+- 默认功能需求：`functional_extract` `requirements_analysis*` `template_writer` `clarification_report`
+- Legacy A 兼容：`atomize` `llm_pipeline` `assemble_spec` `cosem_*` `spec_export/excel/enrich`
   `blue_book_ingest/lookup` `engineering_composer`
-- B 轨：`ai_extract`（编排）+ `extract_units`（切分/引用/术语）+ `extract_guards`（质量信号）
   `requirements_analysis*` `template_writer` `clarification_report` `adjudication_bank`
   `merged_consistency` `review_insights` `doc_annotation_export`
 - 基建：`llm_client`（重试/429 预算/trace/JSON 模式/用途 floors）`config` `requirement_record`

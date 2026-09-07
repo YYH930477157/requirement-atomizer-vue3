@@ -787,7 +787,7 @@ async function ensureAtomicLoaded() {
     atomicRequirements.value = Array.isArray(rows) ? rows : []
   } catch (err) {
     if (generation !== loadGeneration) return
-    apiMessage.value = describeError(err, "原子需求读取失败")
+    apiMessage.value = describeError(err, "兼容轨道结果读取失败")
   }
 }
 
@@ -1661,7 +1661,7 @@ function toggleChildren(itemId: string) {
       <p class="field-hint">
         原子级视图（旧评审粒度，只读概览）。完整裁决面在设置里打开「显示原子诊断」。
       </p>
-      <div v-if="!atomicRequirements.length" class="fr-empty">暂无原子需求</div>
+      <div v-if="!atomicRequirements.length" class="fr-empty">暂无兼容轨道结果</div>
       <table v-else class="atomic-table">
         <thead>
           <tr>

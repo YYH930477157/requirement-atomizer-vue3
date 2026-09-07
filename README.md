@@ -21,7 +21,7 @@ Scanned PDFs without text are not supported yet. Save them as `.docx` first or h
 ```powershell
 pip install -r .\requirements.txt
 
-python -m pytest -q
+python -m unittest discover -s tests
 ```
 
 Run the full pipeline:
@@ -74,7 +74,7 @@ requirements before analysis. This compatibility path is not the default product
 flow; ordinary runs use clause-level functional extraction directly:
 
 ```powershell
-python -m desktop_tasks functional-synthesis --out ".\out\run-001"
+python -m desktop_tasks functional-extract --out ".\out\run-001"
 ratomizer analyze --out ".\out\run-001" --llm-route stub
 ```
 
@@ -212,7 +212,7 @@ Keep API keys in environment variables only. The config stores the variable name
 
 ```powershell
 # Python tests
-python -m pytest -q
+python -m unittest discover -s tests
 
 # Frontend tests and build
 cd .\ui

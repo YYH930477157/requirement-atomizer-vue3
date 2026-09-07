@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="description" content="Requirement Atomizer 项目简介：把技术标准原子化为可审查、可追溯、可交付的研发需求。">
+<meta name="description" content="Requirement Atomizer 项目简介：把技术标准转成功能需求，保留上下文、来源和可审查证据。">
 <title>Requirement Atomizer · 项目简介</title>
 <style>
   :root {
@@ -77,7 +77,7 @@
   <header>
     <p class="eyebrow">Local-first · 需求工程流水线</p>
     <h1>Requirement Atomizer</h1>
-    <p class="tagline">把技术标准（DOCX / XLSX / 文字层 PDF）原子化为可审查、可追溯、可交付的研发需求。</p>
+    <p class="tagline">把技术标准（DOCX / XLSX / 文字层 PDF）转成功能需求，保留上下文、来源和可审查证据。</p>
     <p class="approach">确定性解析建立事实骨架，护栏化 LLM 只做判断与叙述，专家裁决作为最终质量关口。全部本地运行，默认不调用任何外部 API。</p>
   </header>
 
@@ -96,7 +96,7 @@
         <tr>
           <td>A 轨 · 对象表</td>
           <td>OBIS / 接口类 / 访问权限密集的 DLMS profile 文档</td>
-          <td>规则原子化 → 可选 LLM 审查 → 规格装配</td>
+          <td>文档解析 → 条款级功能需求抽取 → 需求分析与澄清导出</td>
           <td><code>dlms_cosem_spec.*</code> 实现规格</td>
         </tr>
         <tr>
@@ -137,7 +137,7 @@
       <thead><tr><th>阶段</th><th>代表文件</th><th>给谁用</th></tr></thead>
       <tbody>
         <tr><td>解析底座</td><td><code>blocks.jsonl</code> · <code>table_items.jsonl</code></td><td>流水线、调试</td></tr>
-        <tr><td>原子需求</td><td><code>atomic_requirements.jsonl</code> · <code>ai_requirements.jsonl</code></td><td>审查系统、需求工程师</td></tr>
+        <tr><td>功能需求</td><td><code>functional_requirements.json</code></td><td>需求分析、评审与研发；原子文件仅用于历史兼容</td></tr>
         <tr><td>专家审查</td><td><code>document_annotation.html</code> · <code>ai_review_states.jsonl</code></td><td>领域专家</td></tr>
         <tr><td>功能与分析</td><td><code>functional_requirements.json</code> · <code>engineering_analysis.json</code></td><td>产品 / 系统 / 软件团队</td></tr>
         <tr><td>研发工作簿</td><td><code>software_requirements.xlsx</code> · <code>软件需求列表-成文.xlsx</code></td><td>研发、测试、项目管理</td></tr>
@@ -154,7 +154,7 @@
 ratomizer run ".\standard.docx" --out ".\out\run-001" --export md,csv
 
 <span class="c"># 专家裁决后生成研发需求</span>
-python -m desktop_tasks functional-synthesis --out ".\out\run-001"
+python -m desktop_tasks functional-extract --out ".\out\run-001"
 ratomizer analyze --out ".\out\run-001" --llm-route stub
 
 <span class="c"># 启动桌面端</span>

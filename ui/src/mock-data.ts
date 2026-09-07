@@ -3,7 +3,7 @@
 export const workflowSteps = [
   { id: 1, title: "导入文档", subtitle: "已完成", status: "done" as WorkflowStepStatus },
   { id: 2, title: "抽取需求", subtitle: "已完成", status: "done" as WorkflowStepStatus },
-  { id: 3, title: "原子化", subtitle: "已完成", status: "done" as WorkflowStepStatus },
+  { id: 3, title: "功能需求抽取", subtitle: "已完成", status: "done" as WorkflowStepStatus },
   { id: 4, title: "人工审查", subtitle: "当前", status: "active" as WorkflowStepStatus },
   { id: 5, title: "装配规格", subtitle: "待开始", status: "pending" as WorkflowStepStatus },
   { id: 6, title: "导出", subtitle: "待开始", status: "pending" as WorkflowStepStatus },
