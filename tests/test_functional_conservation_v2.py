@@ -181,6 +181,39 @@ class FiveChecksTests(unittest.TestCase):
         losses = report["checks"]["preservation"]["blocking_losses"]
         self.assertTrue(any(f["kind"] == "number" and f["token"] == "30" for f in losses))
 
+    def test_preservation_loss_carries_physical_clause_identity(self) -> None:
+        sections = [_clause("Security", ["B1"], "The meter shall retain logs for 30 days.")]
+        report = fe.conservation_report(
+            sections, [_item("F1", ["B1"], "The meter shall retain logs")]
+        )
+        losses = report["checks"]["preservation"]["blocking_losses"]
+        loss = next(f for f in losses if f["kind"] == "number" and f["token"] == "30")
+        self.assertEqual(loss["section_block_ids"], ["B1"])
+        self.assertEqual(loss["section_path"], ["Security"])
+        self.assertEqual(loss["section_heading"], "Security")
+        self.assertEqual(loss["section_index"], 0)
+
+    def test_pending_preservation_uses_explicit_block_identity_on_duplicate_ids(self) -> None:
+        report = {
+            "ok": False,
+            "checks": {
+                "preservation": {
+                    "blocking_losses": [{
+                        "section_id": "Security", "section_block_ids": ["B2"],
+                        "kind": "number", "token": "30", "severity": "blocking",
+                    }],
+                },
+            },
+        }
+        sections = [
+            _clause("Security", ["B1"], "The meter shall retain logs for 30 days."),
+            _clause("Security", ["B2"], "The meter shall retain logs for 30 days."),
+        ]
+        items = [_item("F1", ["B1"], "The meter shall retain logs"),
+                 _item("F2", ["B2"], "The meter shall retain logs")]
+        marks = fe.conservation_pending_marks(report, items, sections)
+        self.assertEqual(marks, {"F2": ["preservation"]})
+
     def test_preservation_negation_loss_blocks(self) -> None:
         sections = [_clause("4.1", ["B1"], "The meter shall not log events remotely.")]
         report = fe.conservation_report(sections, [_item("F1", ["B1"], "The meter shall log events remotely")])

@@ -1158,7 +1158,7 @@ class FingerprintScopingTests(unittest.TestCase):
                 self.SECTIONS, route_key="stub", context_strategy="clause_family")
         self.assertNotEqual(first, second)
 
-    def test_routing_key_pins_all_three_versions(self) -> None:
+    def test_routing_key_pins_all_lineage_versions(self) -> None:
         key = fe._unit_routing_key()
         self.assertIn(fe.FUNCTIONAL_UNIT_ROUTING_VERSION, key)
         self.assertIn(EXTRACTION_UNIT_PLANNER_VERSION, key)
@@ -1169,6 +1169,18 @@ class FingerprintScopingTests(unittest.TestCase):
         self.assertIn(TENDER_REGION_FILTER_VERSION, key)
         # P1：血统版本单源供 stage producer 与缓存键共用，两侧不漂移
         self.assertEqual("|".join(fe.routing_lineage_versions().values()), key)
+
+    def test_routing_key_tracks_document_outline_version(self) -> None:
+        from document_outline import DOCUMENT_OUTLINE_VERSION
+
+        self.assertEqual(
+            fe.routing_lineage_versions()["document_outline"],
+            DOCUMENT_OUTLINE_VERSION,
+        )
+        first = fe._unit_routing_key()
+        with mock.patch("document_outline.DOCUMENT_OUTLINE_VERSION", "document-outline-v2"):
+            second = fe._unit_routing_key()
+        self.assertNotEqual(first, second)
 
 
 class ReextractParityTests(unittest.TestCase):

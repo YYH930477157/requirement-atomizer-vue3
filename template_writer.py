@@ -26,6 +26,12 @@ from typing import Any
 from requirements_analysis_excel import _notes_text, _safe_cell, clarify_display_text
 from requirements_analysis_schema import OWNERSHIP_CO_DESIGN, OWNERSHIP_HARDWARE
 from compliance import is_compliance_requirement
+from template_columns import (
+    REQUIREMENT_SHEET_SIGNATURE,
+    WRITER_COLUMN_CONTRACT,
+    WRITER_HEADER_ALIASES,
+    resolve_writer_sheet_columns,
+)
 
 LOGGER = logging.getLogger("requirement_atomizer")
 
@@ -46,13 +52,7 @@ _COL_HW = 10         # 驱动/硬件相关
 # 需求 sheet 表头签名 + 列契约（读取侧 ab_runner 门禁共享；V2.3.x 实测布局）。
 # 计量需求 sheet 的「需求」列被电表类型列拆分（1P2W_SP/3P4W_DC/... 表头别名定位
 # 失效）——写入与读取共用此固定列位权威，读取的正是写入器写入的位置。
-REQUIREMENT_SHEET_SIGNATURE = ("序号", "子模块")
-WRITER_COLUMN_CONTRACT = {
-    "module": _COL_SUBMODULE,
-    "body": _COL_ANSWER,
-    "notes": _COL_NOTES,
-    "section": _COL_SECTION,
-}
+# Imported from ``template_columns`` as the single writer/gate contract.
 
 # 抽取轨模块名 → 模板 sheet 名（sheet 存在性运行时校验；缺的落 FALLBACK）
 MODULE_TO_SHEET = {
@@ -152,17 +152,7 @@ def build_row_values(item: dict[str, Any], seq: int,
 
 
 # 表头名 → 列语义键（v2 按名解析；需求模版列在场与否不再影响列位）。
-_HEADER_ALIASES: dict[tuple[str, ...], str] = {
-    ("序号",): "seq",
-    ("子模块",): "submodule",
-    ("描述",): "question",
-    ("需求模版", "需求模板"): "template",
-    ("需求",): "answer",
-    ("说明、示例、注意事项", "说明、示例和注意事项"): "notes",
-    ("是否客户需求",): "is_customer",
-    ("客户需求章节",): "section",
-    ("驱动/硬件相关", "驱动／硬件相关"): "hw",
-}
+_HEADER_ALIASES = WRITER_HEADER_ALIASES
 
 
 def resolve_sheet_columns(ws: Any) -> dict[str, int] | None:
@@ -173,18 +163,7 @@ def resolve_sheet_columns(ws: Any) -> dict[str, int] | None:
     空着。关键列 = seq + submodule + answer + notes（缺一即回退）。
     """
     header_row = next(ws.iter_rows(min_row=1, max_row=1, values_only=True), None) or ()
-    resolved: dict[str, int] = {}
-    for index, cell in enumerate(header_row, start=1):
-        text = str(cell or "").strip()
-        if not text:
-            continue
-        for aliases, semantic in _HEADER_ALIASES.items():
-            if text in aliases and semantic not in resolved:
-                resolved[semantic] = index
-                break
-    if all(key in resolved for key in ("seq", "submodule", "answer", "notes")):
-        return resolved
-    return None
+    return resolve_writer_sheet_columns(tuple(header_row))
 
 
 def append_analysis_to_template(template_path: Path, items: list[dict[str, Any]],

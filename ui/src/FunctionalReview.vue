@@ -4,8 +4,8 @@
  *
  * 评审对象从原子级条目切换为**功能需求级条目**（objective / behaviors / preconditions 等
  * functional_catalog 字段 + 三级追溯 source_quote / source_section / source_block_ids），
- * 原子级下钻条目（drilled_subatoms）作为功能需求的子级展示。旧原子视图保留为可切换模式
- * （右上「视图」开关 → 原子级）。完整原子裁决面在设置「显示原子诊断」后出现，不在日常导航。
+ * 原子级下钻条目（drilled_subatoms）仅作为功能需求的证据细节展示。旧原子视图不在
+ * 日常评审面开放，完整原子裁决面仅保留给显式诊断入口。
  *
  * 四项能力（全部走 api_server HTTP + 一条 governed 产物读取 IPC）：
  *  1. 功能需求级呈现 + 追溯链跳转（block_id → emit focus-block → App 切到文档批注）。
@@ -114,6 +114,15 @@ type FunctionalItem = {
   notes?: string
   ownership_override?: string
   translated?: string
+  evidence_quote_replaced?: boolean
+  evidence_integrity?: { ok?: boolean; findings?: Array<{ kind?: string; token?: string; severity?: string }> }
+  domain_mapping?: {
+    status?: "mapped" | "candidate" | "unmapped"
+    obis?: string[]
+    class_ids?: string[]
+    class_names?: string[]
+    unresolved_class_ids?: string[]
+  }
   _origin: "functional" | "manual"
 }
 
@@ -150,7 +159,10 @@ const CONFIRM_ROLES: Array<{ key: "project_manager_confirm" | "test_lead_confirm
   { key: "dev_test_confirm", label: "研发测试" },
 ]
 
-const mode = ref<"functional" | "atomic">("functional")
+// Atomic requirements remain a backend compatibility/diagnostic concern. The
+// daily review surface is functional-only, so there is no user-facing mode
+// switch that can make legacy atoms look like the product again.
+const mode = ref<"functional">("functional")
 const functionalItems = ref<FunctionalItem[]>([])
 const verificationStates = ref<Record<string, VerificationStateRow>>({})
 const lifecycleEvents = ref<LifecycleEvent[]>([])
@@ -160,6 +172,30 @@ const selectedId = ref("")
 const apiMessage = ref("")
 const loading = ref(false)
 const expandedChildren = ref<Set<string>>(new Set())
+
+// Keep the functional review usable for real meter specifications with
+// hundreds of requirements. Filtering is client-side for now (the API still
+// returns the complete governed snapshot), so legacy backends remain valid.
+const requirementQuery = ref("")
+const requirementFilter = ref<"all" | "needs_review" | "conflict" | "no_source">("all")
+const visibleFunctionalItems = computed(() => {
+  const query = requirementQuery.value.trim().toLocaleLowerCase()
+  return functionalItems.value.filter((item) => {
+    const state = verificationStates.value[item.functional_requirement_id]?.lifecycle_state
+    const adjudication = adjudicationRecords.value[item.functional_requirement_id]?.decision
+    const matchesQuery = !query || [
+      item.functional_requirement_id, item.objective, item.title, item.module,
+      item.source_section, item.source_quote,
+    ].some((value) => String(value || "").toLocaleLowerCase().includes(query))
+    if (!matchesQuery) return false
+    if (requirementFilter.value === "conflict") return Boolean(item.conflict_flags?.length)
+    if (requirementFilter.value === "no_source") return hasNoDocSource(item)
+    if (requirementFilter.value === "needs_review") {
+      return state === "draft" || adjudication === "review" || Boolean(item.conflict_flags?.length)
+    }
+    return true
+  })
+})
 
 // 手工建需求表单
 const manualOpen = ref(false)
@@ -552,6 +588,29 @@ function hasNoDocSource(item: FunctionalItem): boolean {
   return isManualItem(item) || !String(item.source_quote || "").trim()
 }
 
+function evidenceFindings(item: FunctionalItem): Array<{ kind?: string; token?: string; severity?: string }> {
+  const value = item.evidence_integrity?.findings
+  return Array.isArray(value) ? value.filter((row): row is { kind?: string; token?: string; severity?: string } => Boolean(row && typeof row === "object")) : []
+}
+
+function evidenceRiskLabel(item: FunctionalItem): string {
+  const findings = evidenceFindings(item)
+  if (findings.some((finding) => finding.severity === "blocking")) return "证据待核"
+  if (findings.length || Boolean(item.evidence_quote_replaced)) return "证据提醒"
+  return ""
+}
+
+function evidenceFindingLabel(kind: string | undefined): string {
+  return ({ condition: "条件", exception: "例外", negation: "否定", number: "数字", unit: "单位" } as Record<string, string>)[kind || ""] || kind || "证据"
+}
+
+function domainMappingLabel(item: FunctionalItem): string {
+  const status = item.domain_mapping?.status
+  if (status === "mapped") return "COSEM 已识别"
+  if (status === "candidate") return "COSEM 待映射"
+  return ""
+}
+
 function lifecycleLabelOf(state: string | undefined): string {
   return (state && LIFECYCLE_LABELS[state as LifecycleState]) || state || ""
 }
@@ -613,6 +672,13 @@ function coerceFunctionalItem(raw: unknown, origin: "functional" | "manual"): Fu
     manual_actor: String(record.manual_actor || "").trim() || undefined,
     notes: String(record.notes || "").trim() || undefined,
     ownership_override: String(record.ownership_override || "").trim() || undefined,
+    evidence_quote_replaced: record.evidence_quote_replaced === true,
+    evidence_integrity: record.evidence_integrity && typeof record.evidence_integrity === "object"
+      ? record.evidence_integrity as FunctionalItem["evidence_integrity"]
+      : undefined,
+    domain_mapping: record.domain_mapping && typeof record.domain_mapping === "object"
+      ? record.domain_mapping as FunctionalItem["domain_mapping"]
+      : undefined,
     _origin: origin,
   }
 }
@@ -827,10 +893,6 @@ watch(() => [props.active, props.outputDir] as const, () => {
 
 watch(() => props.refreshToken, () => {
   if (props.active) void loadAll()
-})
-
-watch(mode, (next) => {
-  if (next === "atomic") void ensureAtomicLoaded()
 })
 
 function focusBlock(blockId: string) {
@@ -1161,22 +1223,7 @@ function toggleChildren(itemId: string) {
         <p class="fr-subtitle">一条卡片一条可确认的功能需求。文档批注只对照原文，碎原子不是评审对象。</p>
       </div>
       <div class="fr-actions">
-        <div class="mode-toggle" role="tablist" aria-label="评审视图模式">
-          <button
-            type="button"
-            role="tab"
-            :class="['mode-btn', { active: mode === 'functional' }]"
-            data-testid="mode-functional"
-            @click="mode = 'functional'"
-          >功能需求</button>
-          <button
-            type="button"
-            role="tab"
-            :class="['mode-btn', { active: mode === 'atomic' }]"
-            data-testid="mode-atomic"
-            @click="mode = 'atomic'"
-          >原子级</button>
-        </div>
+        <span class="mode-label">功能需求</span>
         <button class="fr-button" type="button" :disabled="!client || loading" data-testid="fr-refresh" @click="loadAll">
           <RefreshCw :size="14" aria-hidden="true" />刷新
         </button>
@@ -1311,11 +1358,30 @@ function toggleChildren(itemId: string) {
     <!-- 功能需求级视图 -->
     <div v-if="mode === 'functional'" class="fr-split">
       <div class="fr-list" data-testid="functional-list">
+        <div class="fr-list-tools" data-testid="functional-filters">
+          <input
+            v-model="requirementQuery"
+            class="fr-search"
+            type="search"
+            placeholder="搜索需求、模块或来源…"
+            aria-label="搜索功能需求"
+            data-testid="functional-search"
+          />
+          <select v-model="requirementFilter" class="fr-filter" aria-label="筛选功能需求" data-testid="functional-filter">
+            <option value="all">全部（{{ functionalItems.length }}）</option>
+            <option value="needs_review">待确认/有风险</option>
+            <option value="conflict">存在冲突</option>
+            <option value="no_source">无文档来源</option>
+          </select>
+        </div>
         <div v-if="!functionalItems.length && !loading" class="fr-empty" data-testid="functional-empty">
           当前输出目录暂无功能需求条目。请先在「运行」页执行功能需求抽取，或通过「新建条目」手工录入。
         </div>
+        <div v-else-if="!visibleFunctionalItems.length" class="fr-empty" data-testid="functional-filter-empty">
+          当前筛选下没有功能需求。
+        </div>
         <button
-          v-for="item in functionalItems"
+          v-for="item in visibleFunctionalItems"
           :key="item.functional_requirement_id"
           type="button"
           :class="['fr-card', { selected: item.functional_requirement_id === selectedId }]"
@@ -1336,11 +1402,13 @@ function toggleChildren(itemId: string) {
             >{{ adjudicationLabel(adjudicationRecords[item.functional_requirement_id].decision) }}</span>
             <span v-if="hasNoDocSource(item)" class="origin-badge manual" data-testid="manual-badge">无文档来源</span>
             <span v-if="item.conflict_flags?.length" class="origin-badge conflict">冲突 {{ item.conflict_flags.length }}</span>
+            <span v-if="evidenceRiskLabel(item)" :class="['origin-badge', evidenceRiskLabel(item) === '证据待核' ? 'conflict' : 'evidence-warning']">{{ evidenceRiskLabel(item) }}</span>
           </div>
           <div class="fr-card-objective">{{ item.objective || item.title || "（未填写目标）" }}</div>
           <div class="fr-card-meta">
             <span v-if="item.module" class="meta-chip">{{ item.module }}</span>
             <span v-if="item.priority" class="meta-chip">{{ item.priority }}</span>
+            <span v-if="domainMappingLabel(item)" class="meta-chip domain-chip">{{ domainMappingLabel(item) }}</span>
             <span v-if="item.drilled_subatoms?.length" class="meta-chip">下钻 {{ item.drilled_subatoms.length }}</span>
           </div>
         </button>
@@ -1387,6 +1455,15 @@ function toggleChildren(itemId: string) {
               <span class="field-label">关联 DLMS 对象</span>
               <ul class="field-list"><li v-for="(line, idx) in selectedItem.related_dlms_objects" :key="`r-${idx}`">{{ line }}</li></ul>
             </div>
+            <div v-if="selectedItem.domain_mapping && selectedItem.domain_mapping.status !== 'unmapped'" class="field" data-testid="domain-mapping">
+              <span class="field-label">DLMS/COSEM 识别提示</span>
+              <div class="mapping-summary">
+                <span class="meta-chip">{{ selectedItem.domain_mapping.status === "mapped" ? "已识别" : "待专家映射" }}</span>
+                <span v-for="obis in selectedItem.domain_mapping.obis || []" :key="`obis-${obis}`" class="meta-chip">OBIS {{ obis }}</span>
+                <span v-for="name in selectedItem.domain_mapping.class_names || []" :key="`class-${name}`" class="meta-chip">{{ name }}</span>
+                <span v-for="classId in selectedItem.domain_mapping.unresolved_class_ids || []" :key="`unknown-class-${classId}`" class="meta-chip">class_id {{ classId }} 待核</span>
+              </div>
+            </div>
           </section>
 
           <!-- 三级追溯链 -->
@@ -1417,6 +1494,13 @@ function toggleChildren(itemId: string) {
                   >{{ blockId }}</button>
                 </div>
               </div>
+              <div v-if="evidenceRiskLabel(selectedItem)" class="evidence-status" data-testid="evidence-status">
+                <strong>{{ evidenceRiskLabel(selectedItem) }}</strong>
+                <span v-if="selectedItem.evidence_quote_replaced">引句未落在当前条款，已回退为本地原文。</span>
+                <span v-for="(finding, idx) in evidenceFindings(selectedItem)" :key="`ef-${idx}`">
+                  {{ evidenceFindingLabel(finding.kind) }}：{{ finding.token || "原文标记未在需求叙述中出现" }}
+                </span>
+              </div>
             </template>
           </section>
 
@@ -1446,7 +1530,7 @@ function toggleChildren(itemId: string) {
           <section v-if="selectedItem.drilled_subatoms?.length" class="detail-block">
             <button type="button" class="collapse-toggle" data-testid="toggle-children" @click="toggleChildren(selectedItem.functional_requirement_id)">
               <component :is="expandedChildren.has(selectedItem.functional_requirement_id) ? ChevronDown : ChevronRight" :size="14" aria-hidden="true" />
-              原子级下钻（{{ selectedItem.drilled_subatoms.length }} 条子原子）
+              证据下钻（旧原子拆分，{{ selectedItem.drilled_subatoms.length }} 条，仅供追溯）
               <span v-if="selectedItem.drilldown_signals?.length" class="signal-hint">信号：{{ selectedItem.drilldown_signals.join("、") }}</span>
             </button>
             <ul v-if="expandedChildren.has(selectedItem.functional_requirement_id)" class="subatom-list" data-testid="subatom-list">
@@ -1656,7 +1740,7 @@ function toggleChildren(itemId: string) {
       </aside>
     </div>
 
-    <!-- 原子级视图（旧原子视图保留为可切换模式） -->
+    <!-- 原子级兼容视图（仅保留给旧状态/诊断，不作为日常评审入口） -->
     <div v-else class="fr-atomic" data-testid="atomic-view">
       <p class="field-hint">
         原子级视图（旧评审粒度，只读概览）。完整裁决面在设置里打开「显示原子诊断」。
@@ -1875,6 +1959,10 @@ function toggleChildren(itemId: string) {
 .fr-message { background: #eef2ff; color: #3730a3; border: 1px solid #c7d2fe; padding: 8px 12px; border-radius: 8px; font-size: 13px; }
 .fr-split { display: grid; grid-template-columns: minmax(280px, 360px) 1fr; gap: 14px; min-height: 0; flex: 1; }
 .fr-list { display: flex; flex-direction: column; gap: 8px; overflow-y: auto; padding-right: 4px; }
+.fr-list-tools { display: flex; gap: 8px; position: sticky; top: 0; z-index: 1; padding-bottom: 4px; background: #f8fafc; }
+.fr-search, .fr-filter { min-height: 32px; border: 1px solid #d1d5db; border-radius: 7px; background: #fff; color: #111827; font-size: 12px; padding: 5px 8px; }
+.fr-search { flex: 1; min-width: 0; }
+.fr-filter { width: 132px; }
 .fr-empty { padding: 18px; border: 1px dashed #d1d5db; border-radius: 10px; color: #6b7280; font-size: 13px; }
 .fr-card { text-align: left; border: 1px solid #e5e7eb; background: #fff; border-radius: 10px; padding: 10px 12px; cursor: pointer; display: flex; flex-direction: column; gap: 6px; transition: border-color 0.15s, box-shadow 0.15s; }
 .fr-card:hover { border-color: #1d4ed8; }
@@ -1883,7 +1971,12 @@ function toggleChildren(itemId: string) {
 .fr-card-id { font-size: 12px; color: #6b7280; font-family: ui-monospace, monospace; }
 .fr-card-objective { font-size: 13.5px; line-height: 1.45; }
 .fr-card-meta { display: flex; gap: 6px; flex-wrap: wrap; }
+.evidence-status { display: flex; flex-direction: column; gap: 3px; margin-top: 8px; padding: 8px 10px; border-radius: 7px; background: #fff7ed; color: #9a3412; font-size: 12px; line-height: 1.4; }
+.evidence-status strong { color: #c2410c; }
+.origin-badge.evidence-warning { color: #9a3412; background: #ffedd5; border-color: #fed7aa; }
 .meta-chip { font-size: 11px; padding: 2px 7px; border-radius: 999px; background: #f3f4f6; color: #374151; }
+.domain-chip { background: #ecfeff; color: #0e7490; }
+.mapping-summary { display: flex; flex-wrap: wrap; gap: 6px; }
 .lifecycle-badge { font-size: 11px; padding: 2px 8px; border-radius: 999px; font-weight: 600; }
 .tone-draft { background: #e5e7eb; color: #374151; }
 .tone-confirmed { background: #dbeafe; color: #1d4ed8; }

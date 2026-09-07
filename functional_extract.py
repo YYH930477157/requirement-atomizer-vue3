@@ -59,7 +59,7 @@ from cosem_behavior_spec import extract_codes, extract_ints
 from requirement_record import provenance
 
 FUNCTIONAL_EXTRACT_VERSION = "functional-extract-v1"
-FUNCTIONAL_EXTRACT_PROMPT_VERSION = "functional-extract-prompt-v4"  # v4（2026-08-18 10% 诊断）：硬约束⑥保真落数——Table N/图号/条款号/标准号等引用号与数值必须原样进叙述字段（flash 意译丢 "Table 13/17" 表号 → preservation 假 blocking）。v3 及以前见 CLAUDE.md。
+FUNCTIONAL_EXTRACT_PROMPT_VERSION = "functional-extract-prompt-v5"  # v5（2026-09-06）：明确表格参数行的字段名/值/单位/适用条件进入所属需求 data_constraints；表头、示例与上下文数字只有在条款定义为约束时才进入。v4 及以前见 CLAUDE.md。
 # S1-8：bump v1→v2。``_reject_drifted_codes`` 清洗范围从仅 objective 扩到全部叙述字段
 # （behaviors/data_constraints/variants/exceptions/preconditions/description），缓存产物内容
 # 变化——指纹含 guards 版本，bump 后旧 stub/LLM 缓存（behaviors 里残留幻觉编码）自然失效。
@@ -162,6 +162,9 @@ _SYSTEM_PROMPT_BASE = (
     "④每条产出必须回指来源条款的 section 与 block_ids（取自输入，原样回填）。"
     "⑤叙述字段必须使用与来源条款相同的语言（英文条款→英文叙述，禁止翻译成中文）；"
     "source_quote 必须是条款原文的逐字摘录（禁止改写/翻译/截断）。"
+    "⑥表格参数行处理：将同一功能目标下的字段名、值、单位、档位和适用条件逐字归入"
+    "所属需求的 data_constraints；表头、示例值或仅用于定位的上下文数字，只有条款明确"
+    "把它们定义为约束时才写入，不能为了凑数复制整张表。"
     "输出 JSON：{\"items\":[{objective, behaviors[], preconditions[], data_constraints[], "
     "variants[], exceptions[], related_dlms_objects[], description, source_quote, source_section, "
     "source_block_ids[]}]}。"
@@ -270,9 +273,11 @@ def routing_lineage_versions() -> dict[str, str]:
     路由直接决定**哪些条款进产物**——判据版本必须同时进两级指纹：
     ``extraction_fingerprint`` 的 unit_routing_key（JSONL 缓存层）与
     ``desktop_tasks.stage_producer("functional-extract")``（chain 阶段复用层），
-    任一缺席都会让旧路由下的产物在新判据代码下被静默复用。
+    任一缺席都会让旧路由下的产物在新判据代码下被静默复用。大纲报告版本也纳入
+    血统，因为大纲裁决会改变路由可见的条款边界。
     """
     from extraction_units import EXTRACTION_UNIT_PLANNER_VERSION
+    from document_outline import DOCUMENT_OUTLINE_VERSION
     from tender_regions import TENDER_REGION_FILTER_VERSION
     from unit_router import UNIT_ROUTER_VERSION
 
@@ -280,6 +285,10 @@ def routing_lineage_versions() -> dict[str, str]:
         "functional_unit_routing": FUNCTIONAL_UNIT_ROUTING_VERSION,
         "extraction_unit_planner": EXTRACTION_UNIT_PLANNER_VERSION,
         "unit_router": UNIT_ROUTER_VERSION,
+        # E1：路由前的大纲裁决会改变条款边界与可见单元。即使大纲 authority
+        # 开关关闭，当前路由仍会读取其旁证；版本必须进入同一血统，避免裁决器
+        # 演进后静默复用旧的路由/抽取缓存。
+        "document_outline": DOCUMENT_OUTLINE_VERSION,
         # P2：路由判定大量消费 tender_regions 词表（逐标题/跨度/句子锚点）——
         # 词表版本不进键则改词表只有人工 bump FUNCTIONAL_UNIT_ROUTING_VERSION 才失效。
         "tender_region_filter": TENDER_REGION_FILTER_VERSION,
@@ -365,6 +374,25 @@ def _as_str_list(value: Any) -> list[str]:
     return [text] if text else []
 
 
+def _local_source_quote(candidate: Any, section: dict[str, Any]) -> tuple[str, bool]:
+    """Keep evidence quotes local to the section that owns the requirement.
+
+    A model can return a plausible quote copied from a neighbouring clause. The
+    quote is evidence, not prose: if it is not contained in the owning section
+    after whitespace/case normalization, fall back to the deterministic section
+    text and leave an audit flag for the reviewer.
+    """
+    quote = str(candidate or "").strip()
+    source = str(section.get("text") or "").strip()
+    if not source:
+        source = _source_text(section)
+    normalized_source = " ".join(source.casefold().split())
+    normalized_quote = " ".join(quote.casefold().split())
+    if normalized_quote and normalized_quote in normalized_source:
+        return quote, False
+    return source, bool(quote)
+
+
 def _coerce_item(
     raw: dict[str, Any],
     section: dict[str, Any],
@@ -392,6 +420,10 @@ def _coerce_item(
     # 受保护编码硬拦：叙述字段合集 vs 来源条款原文（数字软标用原始合集）
     narrative = "\n".join([objective, *behaviors, *data_constraints, *related])
     numeric_drifted, numeric_drift = _flag_numeric_drift(narrative, source_text)
+    # Per-item evidence diagnostics complement the section-level conservation
+    # gate. They are intentionally advisory here because several items can
+    # legitimately share one clause; the union gate remains authoritative.
+    evidence_findings = _preservation_findings(section, narrative)
 
     # S1-8：``_reject_drifted_codes`` 的 docstring 承诺"剔除 LLM 产出但来源条款没有的
     # OBIS/hex/class_id/标准号"——清洗范围必须覆盖**全部叙述字段**（objective/behaviors/
@@ -427,6 +459,7 @@ def _coerce_item(
     if not description:
         description = _render_description(objective, behaviors, data_constraints)
 
+    source_quote, quote_replaced = _local_source_quote(raw.get("source_quote"), section)
     return {
         "functional_requirement_id": _stable_requirement_id(section, index),
         "functional_key": f"{_derive_module(section)}:{_normalize_key(objective)}",
@@ -446,15 +479,13 @@ def _coerce_item(
         "labels": [],
         "ownership_override": None,
         "source_section": section_label,
-        "source_quote": str(raw.get("source_quote") or "").strip()
-        or str(section.get("text") or source_text).strip(),
+        "source_quote": source_quote,
         "source_block_ids": block_ids,
         # 三级追溯审计
         "evidence": [
             {
                 "section": section_label,
-                "source_quote": str(raw.get("source_quote") or "").strip()
-                or str(section.get("text") or "").strip(),
+                "source_quote": source_quote,
                 "source_block_ids": block_ids,
                 "protected_tokens": sorted(extract_codes(source_text)),
             }
@@ -463,6 +494,11 @@ def _coerce_item(
         "rejected_codes": rejected_codes,
         "numeric_drift_flag": numeric_drift,
         "numeric_drift_values": numeric_drifted,
+        "evidence_quote_replaced": quote_replaced,
+        "evidence_integrity": {
+            "ok": not any(f.get("severity") == "blocking" for f in evidence_findings),
+            "findings": evidence_findings,
+        },
         "merge_method": "functional_extract",
         "merge_confidence": 1.0,
         "source_kind": "functional_extract",
@@ -701,6 +737,9 @@ _PACKAGE_SYSTEM_PROMPT_BASE = (
     "⑥保真落数：目标条款里的所有数值、单位、档位与引用号（Table N/图号/条款号/标准号）"
     "必须原样进入该条需求的相关叙述字段（objective/behaviors/data_constraints 等）——"
     "意译措辞可以，改写或漏掉编号不可以；研发拿不到编号等于没写。\n"
+    "⑦表格参数行处理：同一功能目标下的字段名、值、单位、档位和适用条件逐字进入"
+    "该需求的 data_constraints；表头、示例值或仅作上下文的数字不自动复制，除非目标条款"
+    "明确将其定义为约束。\n"
     "输出 JSON：{\"items\":[{objective, behaviors[], preconditions[], data_constraints[], "
     "variants[], exceptions[], related_dlms_objects[], description, source_quote, "
     "source_block_ids[]}]}。"
@@ -1826,7 +1865,9 @@ def conservation_report(
             if text_segment:
                 known_section_ids.add(text_segment)
     preservation_losses: list[dict[str, Any]] = []
-    for section, blocks_ids in zip(baseline_sections, section_block_ids):
+    for section_index, (section, blocks_ids) in enumerate(
+        zip(baseline_sections, section_block_ids)
+    ):
         # M1：保留完整性的叙述并集 = 声明了该条款的 items（绑定边只落在声明条款上）
         anchored_narratives = [
             narratives[i] for i, item in enumerate(items)
@@ -1838,6 +1879,18 @@ def conservation_report(
         for finding in _preservation_findings(section, narrative_union, known_section_ids):
             preservation_losses.append({
                 "section_id": str(section.get("section_id") or ""),
+                # Keep physical clause identity beside the human-facing section id.
+                # Section ids are not unique in real standards (for example, repeated
+                # "Security" table sections), so downstream diagnostics must never
+                # infer jurisdiction from the label alone.  These fields are additive
+                # audit data; preservation severity and gate semantics are unchanged.
+                "section_block_ids": list(blocks_ids),
+                "section_path": [
+                    str(part) for part in (section.get("section_path") or [])
+                    if str(part).strip()
+                ],
+                "section_heading": str(section.get("heading") or "")[:120],
+                "section_index": section_index,
                 **finding,
             })
 
@@ -1996,12 +2049,23 @@ def _squash_contains(haystack: str, needle: str) -> bool:
 def _clause_block_candidates(
     sections: Sequence[dict[str, Any]], section_id: str, *,
     sentence: str = "", token: str = "",
+    block_ids: Sequence[Any] | None = None,
 ) -> list[tuple[str, ...]]:
     """finding → 候选条款块集（block_ids 元组）。id 撞名时按内容证据收窄。"""
     candidates = [
         tuple(str(b) for b in (s.get("block_ids") or []) if str(b))
         for s in sections if str(s.get("section_id") or "") == section_id
     ]
+    # New conservation findings carry the physical block jurisdiction.  Prefer it
+    # when it exactly identifies one of the same-id sections; old reports simply
+    # omit the field and continue through the content-evidence fallback below.
+    explicit = tuple(str(b) for b in (block_ids or ()) if str(b))
+    if explicit:
+        explicit_set = set(explicit)
+        exact = [candidate for candidate in candidates
+                 if set(candidate) == explicit_set]
+        if exact:
+            return [tuple(sorted(explicit_set))]
     if len(candidates) > 1:
         if sentence:
             needle = _squashed(sentence)
@@ -2138,6 +2202,7 @@ def conservation_pending_marks(
             for blocks in _clause_block_candidates(
                 sections, str(row.get("section_id") or ""),
                 **({key: evidence_value} if evidence_value else {}),
+                block_ids=row.get("section_block_ids"),
             ):
                 block_union.update(blocks)
         if not block_union:
@@ -2239,6 +2304,7 @@ def conservation_pending_gaps(
         for blocks in _clause_block_candidates(
             sections, str(row.get("section_id") or ""),
             **({"sentence": sentence} if sentence else {}),
+            block_ids=row.get("section_block_ids"),
         ):
             block_union.update(blocks)
         if block_union & declared_blocks:
@@ -3487,6 +3553,10 @@ def _finalize_payload(
     write: bool = False,
 ) -> dict[str, Any]:
     """原子写盘（仅 write=True）并返回 result 摘要。"""
+    # 领域映射只是确定性审计提示，不参与抽取/守恒判定；在这里附加也能
+    # 给旧缓存补齐同一份扩展契约，避免缓存命中时字段形状分叉。
+    from cosem_mapping import attach_functional_mappings
+    attach_functional_mappings(payload)
     from input_completeness import attach_input_completeness
     attach_input_completeness(payload, out_dir)
     if write:

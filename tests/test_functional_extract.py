@@ -85,6 +85,39 @@ class LLMRouteTests(unittest.TestCase):
         self.assertIn("OBIS 1-1:32.7.0", item["related_dlms_objects"])
         self.assertEqual(item["rejected_codes"], [])
 
+    def test_cross_clause_quote_is_replaced_with_local_evidence(self) -> None:
+        sections = [_clause("4.2", ["B2"], "The meter shall collect voltage at 230 V.")]
+
+        def chat(system: str, user: str) -> dict:
+            return {"items": [{
+                "objective": "采集电压",
+                "behaviors": ["采集电压"],
+                # 模拟模型从相邻条款借来的引句
+                "source_quote": "The meter shall log events.",
+            }]}
+
+        items, _ = fe.extract_functional_requirements(
+            sections, chat=chat, route="openai_compatible")
+        self.assertEqual(items[0]["source_quote"], "The meter shall collect voltage at 230 V.")
+        self.assertTrue(items[0]["evidence_quote_replaced"])
+
+    def test_item_exposes_missing_normative_tokens_as_evidence_diagnostic(self) -> None:
+        sections = [_clause("4.2", ["B2"], "The meter shall not record more than 5 kWh.")]
+
+        def chat(system: str, user: str) -> dict:
+            return {"items": [{
+                "objective": "记录电能",
+                "behaviors": ["The meter shall record energy."],
+                "source_quote": "The meter shall not record more than 5 kWh.",
+            }]}
+
+        items, _ = fe.extract_functional_requirements(
+            sections, chat=chat, route="openai_compatible")
+        diagnostic = items[0]["evidence_integrity"]
+        self.assertFalse(diagnostic["ok"])
+        self.assertTrue(any(f["kind"] == "negation" for f in diagnostic["findings"]))
+        self.assertTrue(any(f["kind"] == "number" for f in diagnostic["findings"]))
+
     def test_llm_code_drift_hard_blocked(self) -> None:
         # 来源条款没有 OBIS 0-0:10.0.0，LLM 臆造 → 必须硬拦剔除
         sections = [_clause("4.3", ["B3"], "The meter shall log events.")]

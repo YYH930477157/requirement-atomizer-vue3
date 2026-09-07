@@ -552,17 +552,50 @@ describe("FunctionalReview (WS-F)", () => {
     expect(wrapper.find('[data-testid="library-panel"]').text()).not.toContain("历史掉电记录需求")
   })
 
-  it("switches to the legacy atomic view (switchable mode, not deleted) (Cap1)", async () => {
+  it("keeps the daily review surface functional-only (legacy atoms stay diagnostic)", async () => {
     const client = makeClient()
     const { wrapper } = mountReview({ client })
     await flushPromises()
 
+    expect(wrapper.find('[data-testid="mode-atomic"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="atomic-view"]').exists()).toBe(false)
-    await wrapper.find('[data-testid="mode-atomic"]').trigger("click")
+    expect((client.loadRequirements as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled()
+  })
+
+  it("filters functional requirements by search text", async () => {
+    const client = makeClient()
+    const { wrapper } = mountReview({ client })
     await flushPromises()
-    expect(wrapper.find('[data-testid="atomic-view"]').exists()).toBe(true)
-    expect((client.loadRequirements as ReturnType<typeof vi.fn>)).toHaveBeenCalled()
-    expect(wrapper.find('[data-testid="atomic-view"]').text()).toContain("记录掉电")
+    expect(wrapper.findAll('[data-testid^="functional-card-"]')).toHaveLength(2)
+    await wrapper.find('[data-testid="functional-search"]').setValue("掉电")
+    expect(wrapper.findAll('[data-testid^="functional-card-"]')).toHaveLength(1)
+    expect(wrapper.find('[data-testid="functional-card-FRE-1"]').exists()).toBe(true)
+  })
+
+  it("surfaces evidence risks on the card and in the detail pane", async () => {
+    const client = makeClient({
+      loadFunctionalRequirements: vi.fn().mockResolvedValue({
+        schema: "functional-requirements/v1",
+        items: [{
+          functional_requirement_id: "FRE-RISK",
+          objective: "记录受限电能",
+          source_quote: "The meter shall not record more than 5 kWh.",
+          source_section: "4.2",
+          source_block_ids: ["BLK-1"],
+          evidence_quote_replaced: true,
+          evidence_integrity: {
+            ok: false,
+            findings: [{ kind: "negation", token: "not", severity: "blocking" }],
+          },
+        }],
+        total: 1,
+      }),
+    })
+    const { wrapper } = mountReview({ client })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="functional-card-FRE-RISK"]').text()).toContain("证据待核")
+    expect(wrapper.find('[data-testid="evidence-status"]').text()).toContain("否定：not")
+    expect(wrapper.find('[data-testid="evidence-status"]').text()).toContain("引句未落在当前条款")
   })
 
   it("falls back to Electron IPC when GET endpoints are missing on old backend (404)", async () => {

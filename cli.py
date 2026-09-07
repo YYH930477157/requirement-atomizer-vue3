@@ -64,7 +64,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--version", action="store_true", help="Print the requirement-atomizer version and exit.")
     subparsers = parser.add_subparsers(dest="command")
 
-    run = subparsers.add_parser("run", help="Run complete functional extraction by default.")
+    run = subparsers.add_parser(
+        "run",
+        help="Run document parsing, functional requirements, and optional exports (functional track by default).")
     add_atomize_arguments(run)
     run.add_argument("--track", choices=["functional", "legacy_a"], default="functional",
                      help="functional（默认完整需求）或 legacy_a（旧原子兼容流程）")
@@ -75,7 +77,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     add_review_route_arguments(run)
     add_verbosity_arguments(run)
 
-    atomize = subparsers.add_parser("atomize", help="Run only the atomizer stage.")
+    atomize = subparsers.add_parser("atomize", help="Legacy/A-track: run only the atomizer stage.")
     add_atomize_arguments(atomize)
     add_verbosity_arguments(atomize)
 

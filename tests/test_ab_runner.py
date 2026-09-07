@@ -228,6 +228,22 @@ def _chain_runner_factory(*, b_ok: bool = True, b_status: str = "ok",
 
 
 class EnvIsolationTests(unittest.TestCase):
+    def test_audit_env_snapshot_redacts_credentials(self) -> None:
+        snapshot, presence = ab._audit_env_snapshot({
+            "RATOMIZER_CONTEXT_PACK_STRATEGY": "clause_family",
+            "RATOMIZER_LLM_API_KEY": "secret-value",
+            "RATOMIZER_LLM_API_KEY_ENV": "CUSTOM_KEY",
+            "RATOMIZER_EMPTY_TOKEN": "",
+            "OTHER": "ignored",
+        })
+        self.assertEqual(snapshot["RATOMIZER_CONTEXT_PACK_STRATEGY"], "clause_family")
+        self.assertEqual(snapshot["RATOMIZER_LLM_API_KEY"], "<redacted>")
+        self.assertEqual(snapshot["RATOMIZER_LLM_API_KEY_ENV"], "<redacted>")
+        self.assertEqual(snapshot["RATOMIZER_EMPTY_TOKEN"], "")
+        self.assertEqual(presence["RATOMIZER_LLM_API_KEY"], True)
+        self.assertEqual(presence["RATOMIZER_EMPTY_TOKEN"], False)
+        self.assertNotIn("OTHER", snapshot)
+
     def test_only_switch_differs_between_paths(self) -> None:
         """矩阵 10：A/B 两路唯一环境差异仍然只是 RATOMIZER_FUNCTIONAL_EXTRACT。"""
         seen: list[tuple[str, str, dict[str, str]]] = []

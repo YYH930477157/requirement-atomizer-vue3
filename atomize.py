@@ -1,3 +1,12 @@
+"""Legacy/A-track atomization pipeline.
+
+The daily product uses functional extraction and does not expose atomization as
+the requirement model. This module remains intentionally available for the
+DLMS/COSEM A-track, explicit ``RATOMIZER_FUNCTIONAL_EXTRACT=0`` rollback, and
+reading older result packages. New product features should target
+``functional_extract`` and ``extraction_units`` instead.
+"""
+
 from __future__ import annotations
 
 import argparse

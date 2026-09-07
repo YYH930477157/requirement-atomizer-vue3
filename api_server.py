@@ -89,6 +89,23 @@ REBUILD_DEBOUNCE_ENV = "RATOMIZER_REBUILD_DEBOUNCE_S"
 DEFAULT_REBUILD_DEBOUNCE_S = 1.5
 
 
+def _artifact_read_path(root: Path, filename: str, *, category: str | None = None) -> Path:
+    """Resolve a result artifact without bypassing package_v1 addressing.
+
+    A few older producers still leave a flat-root copy while a result package is
+    being upgraded.  Prefer the governed location and only fall back to that
+    legacy copy when the governed file is absent; this keeps reads compatible
+    without allowing a stale root file to shadow the package artifact.
+    """
+    resolved = governed_artifact_path(root, filename, category=category, for_write=False)
+    if resolved.exists():
+        return resolved
+    legacy = Path(root).expanduser().resolve() / filename
+    if legacy != resolved and legacy.exists():
+        return legacy
+    return resolved
+
+
 def _resolve_rebuild_debounce() -> float:
     import os
     raw = os.environ.get(REBUILD_DEBOUNCE_ENV)
@@ -353,7 +370,7 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
             # 响应是纯列表（无 total 字段），消费者只见返回行，切片语义不变。
             # 撕裂尾/读失败与 /document 同口径：结构化 retryable 503，不掐断连接。
             try:
-                rows = read_jsonl(self.output_dir / "atomic_requirements.jsonl")
+                rows = read_jsonl(_artifact_read_path(self.output_dir, "atomic_requirements.jsonl"))
                 if requirement_type:
                     rows = [row for row in rows if row.get("requirement_type") == requirement_type]
                 self.send_json(enrich_requirements(rows[:limit], self.output_dir))
@@ -366,7 +383,7 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
             # （此前直接掉出 do_GET，连接断、无 JSON 错误包）。ResultPackageError 仍由
             # @_result_package_get_boundary 统一映射，与兄弟 GET 端点一致。
             try:
-                self.send_json(read_jsonl(self.output_dir / "llm_review_results.jsonl")[:limit])
+                self.send_json(read_jsonl(_artifact_read_path(self.output_dir, "llm_review_results.jsonl"))[:limit])
             except (TimeoutError, OSError, ValueError) as exc:
                 self.send_json({"error": str(exc), "retryable": True}, status=503)
             return
@@ -733,7 +750,7 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
 
             with extraction_operation_lock(self.output_dir, operation="review-action"):
                 current_requirements = read_jsonl(
-                    self.output_dir / "atomic_requirements.jsonl"
+                    _artifact_read_path(self.output_dir, "atomic_requirements.jsonl")
                 )
                 current_rows = enrich_requirements(
                     current_requirements,
@@ -1076,7 +1093,7 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
             return
         # 裁决回流交付物：防抖合并重建（0714 批次二 S4）——连续裁决只重建一次,
         # POST 即刻返回;批注视图不读 merged,不受延迟影响。失败不影响裁决本身。
-        if (self.output_dir / "ai_requirements.jsonl").exists():
+        if _artifact_read_path(self.output_dir, "ai_requirements.jsonl").exists():
             _rebuilder().schedule(self.output_dir)
             try:
                 from adjudication_bank import resolve_bank_path, update_bank
@@ -1122,7 +1139,7 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
                     actor=str(payload.get("actor") or "").strip() or None,
                     expected_source_fingerprint=source_fingerprint_value,
                 )
-                requirements_path = self.output_dir / "ai_requirements.jsonl"
+                requirements_path = _artifact_read_path(self.output_dir, "ai_requirements.jsonl")
                 if requirements_path.exists():
                     try:
                         from ai_extract import refresh_ai_extract_quality, refresh_consistency_report
@@ -2174,7 +2191,7 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
         return payload
 
     def send_file_json(self, filename: str) -> None:
-        path = self.output_dir / filename
+        path = _artifact_read_path(self.output_dir, filename)
         if not path.exists():
             self.send_error(404, f"Missing file: {filename}")
             return
@@ -2204,7 +2221,9 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
 
 
 def enrich_requirements(requirements: list[dict], output_dir: Path) -> list[dict]:
-    reviews_by_requirement = index_by_requirement_identity(read_jsonl(output_dir / "llm_review_results.jsonl"))
+    reviews_by_requirement = index_by_requirement_identity(
+        read_jsonl(_artifact_read_path(output_dir, "llm_review_results.jsonl"))
+    )
     from review_state import read_review_authority_snapshot
     from claim_ledger import a_track_effective_authority
 
@@ -2220,7 +2239,7 @@ def enrich_requirements(requirements: list[dict], output_dir: Path) -> list[dict
         for record in projection.get("records") or []
     }
     publication_revision = target_publication_revision(
-        output_dir / "atomic_requirements.jsonl"
+        _artifact_read_path(output_dir, "atomic_requirements.jsonl")
     )
     enriched: list[dict] = []
     for requirement in requirements:
@@ -2325,7 +2344,7 @@ def _build_document_blocks_impl(output_dir: Path) -> dict:
 
     附带块级中文翻译（内容哈希查缓存）：未覆盖段/说明标记的三段式卡片（原因/翻译/引用）
     在应用内视图与导出 HTML 同语义。"""
-    blocks = read_jsonl(output_dir / "blocks.jsonl")
+    blocks = read_jsonl(_artifact_read_path(output_dir, "blocks.jsonl"))
     from merged_consistency import is_coverage_candidate
     from omission_actions import make_omission_id, omission_source_fingerprint
     from merged_consistency import covered_block_ids
@@ -2333,7 +2352,7 @@ def _build_document_blocks_impl(output_dir: Path) -> dict:
     covered_ids = covered_block_ids(requirements, blocks)
     try:
         extract_quality = json.loads(
-            (output_dir / "ai_extract_quality.json").read_text(encoding="utf-8")
+            _artifact_read_path(output_dir, "ai_extract_quality.json").read_text(encoding="utf-8")
         )
     except (OSError, json.JSONDecodeError):
         extract_quality = {}
@@ -2516,7 +2535,7 @@ def _project_functional_review_view(
 
 
 def _functional_membership(output_dir: Path) -> dict[str, dict]:
-    path = output_dir / "functional_requirements.json"
+    path = _artifact_read_path(output_dir, "functional_requirements.json")
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
@@ -2556,7 +2575,7 @@ def _analysis_enrichment(output_dir: Path) -> dict[str, dict]:
 
     当前批注视图不展示 LLM 叙述富化，但保留字段供既有 API 消费方和未来方案库接回。
     缺失/坏 JSON/异源 producer → 空 merge，裁决回流无需重建语义。"""
-    path = output_dir / "engineering_analysis.json"
+    path = _artifact_read_path(output_dir, "engineering_analysis.json")
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
@@ -2614,14 +2633,26 @@ def _build_ai_requirements_impl(output_dir: Path) -> list[dict]:
     优先读 merged_spec_requirements.json（双引擎交付物），回退 ai_requirements_doc.json /
     ai_requirements.jsonl。anchor_block_id = 含 source_quote 的具体段落（段落级精确）。
     """
+    # Functional direct extraction is the current product authority.  A legacy
+    # ai_requirements.jsonl may remain in a reopened result directory; choosing
+    # it first makes the document review disagree with FunctionalReview.  Read
+    # the governed functional payload before considering legacy artifacts.
+    from requirements_analysis_rules import _read_functional_requirements_payload
+    direct_payload = _read_functional_requirements_payload(output_dir)
+    if (isinstance(direct_payload, dict)
+            and str(direct_payload.get("producer") or "").startswith("functional-extract")):
+        if _functional_product_is_stale(output_dir):
+            return []
+        return _functional_direct_annotation_rows(output_dir)
+
     if final_ai_requirements_are_stale(output_dir):
         return []
     source_path = next(
-        (output_dir / name for name in (
+        (_artifact_read_path(output_dir, name) for name in (
             "ai_requirements.jsonl",
             "merged_spec_requirements.json",
             "ai_requirements_doc.json",
-        ) if (output_dir / name).exists()),
+        ) if _artifact_read_path(output_dir, name).exists()),
         None,
     )
     if source_path is not None:
@@ -2632,6 +2663,19 @@ def _build_ai_requirements_impl(output_dir: Path) -> list[dict]:
     # source_ai_requirement_id(FRE-)，quote→block 锚点复用 _enrich_ai_requirement_rows
     # 的机制（match_source_quote_blocks 同族），不重写锚定逻辑。
     return _functional_direct_annotation_rows(output_dir)
+
+
+def _functional_product_is_stale(output_dir: Path) -> bool:
+    """Conservatively reject a direct product older than the current blocks."""
+    root = Path(output_dir).expanduser().resolve()
+    product = _artifact_read_path(root, "functional_requirements.json", category="pipeline")
+    blocks = _artifact_read_path(root, "blocks.jsonl")
+    if not product.is_file() or not blocks.is_file():
+        return False
+    try:
+        return blocks.stat().st_mtime_ns > product.stat().st_mtime_ns
+    except OSError:
+        return True
 
 
 def _functional_direct_annotation_rows(output_dir: Path) -> list[dict]:
@@ -2646,6 +2690,11 @@ def _functional_direct_annotation_rows(output_dir: Path) -> list[dict]:
         return []
     if not str(payload.get("producer") or "").startswith("functional-extract"):
         return []
+    # A failed direct run must not expose a partial legacy-shaped projection as
+    # if it were a usable functional product.  ``partial`` remains visible for
+    # review; ``failed`` has no authoritative rows.
+    if str(payload.get("execution_status") or "").strip().lower() == "failed":
+        return []
     items = payload.get("items")
     if not isinstance(items, list):
         return []
@@ -2655,9 +2704,7 @@ def _functional_direct_annotation_rows(output_dir: Path) -> list[dict]:
             row = dict(item)
             row["level"] = "functional"
             rows.append(row)
-    from result_package import governed_artifact_path
-    fr_path = governed_artifact_path(
-        output_dir, "functional_requirements.json", category="pipeline", for_write=False)
+    fr_path = _artifact_read_path(output_dir, "functional_requirements.json", category="pipeline")
     return _enrich_ai_requirement_rows(
         output_dir, rows,
         freshness_reference=fr_path if fr_path.exists() else None,
@@ -2675,7 +2722,7 @@ def _enrich_ai_requirement_rows(
         if freshness_reference is None:
             return True
         try:
-            return (output_dir / name).stat().st_mtime_ns >= freshness_reference.stat().st_mtime_ns
+            return _artifact_read_path(output_dir, name).stat().st_mtime_ns >= freshness_reference.stat().st_mtime_ns
         except OSError:
             return False
 
@@ -2693,11 +2740,11 @@ def _enrich_ai_requirement_rows(
         ): record
         for record in authority_projection.get("records") or []
     }
-    publication_path = freshness_reference or (output_dir / "ai_requirements.jsonl")
+    publication_path = freshness_reference or _artifact_read_path(output_dir, "ai_requirements.jsonl")
     publication_revision = target_publication_revision(publication_path)
     membership = _functional_membership(output_dir) if artifact_is_current("functional_requirements.json") else {}
     analysis_map = _analysis_enrichment(output_dir) if artifact_is_current("engineering_analysis.json") else {}
-    block_rows = read_jsonl(output_dir / "blocks.jsonl")
+    block_rows = read_jsonl(_artifact_read_path(output_dir, "blocks.jsonl"))
     text_by_block = {str(b.get("block_id")): (b.get("text") or "") for b in block_rows}
     # 噪声块 id 随行进锚点/原句匹配——页码/水印夹缝不再掐死窗口（test7 实证）
     noise_block_ids = {str(b.get("block_id")) for b in block_rows if b.get("noise")}
@@ -2776,7 +2823,7 @@ def _enrich_ai_requirement_rows(
 
 def _read_ai_extraction_quality(output_dir: Path) -> dict | None:
     """Read the two legacy coverage metrics exposed by the status endpoint."""
-    path = Path(output_dir) / "ai_extract_quality.json"
+    path = _artifact_read_path(Path(output_dir), "ai_extract_quality.json")
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
@@ -2841,7 +2888,7 @@ def _build_ai_extraction_status_impl(output_dir: Path) -> dict:
 
     root = Path(output_dir).expanduser().resolve()
     quality = _read_ai_extraction_quality(root)
-    partial_path = root / AI_REQUIREMENTS_PARTIAL
+    partial_path = _artifact_read_path(root, AI_REQUIREMENTS_PARTIAL)
     partial = read_partial_snapshot(partial_path)
     current_input = extraction_input_fingerprint(root)
     if (partial is None
@@ -2890,7 +2937,7 @@ def final_ai_requirements_are_stale(output_dir: Path) -> bool:
 
     root = Path(output_dir).expanduser().resolve()
     current_input = extraction_input_fingerprint(root)
-    meta_path = root / AI_REQUIREMENTS_META
+    meta_path = _artifact_read_path(root, AI_REQUIREMENTS_META)
     if meta_path.exists():
         try:
             metadata = json.loads(meta_path.read_text(encoding="utf-8"))
@@ -2903,7 +2950,7 @@ def final_ai_requirements_are_stale(output_dir: Path) -> bool:
             or str(metadata.get("input_fingerprint") or "") != current_input
         )
 
-    partial_path = root / AI_REQUIREMENTS_PARTIAL
+    partial_path = _artifact_read_path(root, AI_REQUIREMENTS_PARTIAL)
     if partial_path.exists():
         partial = read_partial_snapshot(partial_path)
         return (
@@ -2914,13 +2961,13 @@ def final_ai_requirements_are_stale(output_dir: Path) -> bool:
 
     # Legacy output directories predate generation metadata. The final file was produced
     # after parsing, so a newer blocks file is a conservative, deterministic stale signal.
-    blocks_path = root / "blocks.jsonl"
+    blocks_path = _artifact_read_path(root, "blocks.jsonl")
     final_path = next(
-        (root / name for name in (
+        (_artifact_read_path(root, name) for name in (
             AI_REQUIREMENTS,
             "merged_spec_requirements.json",
             "ai_requirements_doc.json",
-        ) if (root / name).exists()),
+        ) if _artifact_read_path(root, name).exists()),
         None,
     )
     if final_path is None or not blocks_path.exists():

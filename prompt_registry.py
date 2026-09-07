@@ -60,7 +60,10 @@ PROMPT_REGISTRY: list[dict[str, str]] = [
     # Functional-extract direct path
     # v4（2026-08-18 10% 诊断）：硬约束⑥保真落数——引用号（Table N/图号/条款号/标准号）
     # 与数值必须原样进叙述字段（flash 意译丢表号 → preservation 假 blocking）。
-    {"id": "functional-extract", "version": "functional-extract-prompt-v4", "owner_module": "functional_extract",
+    # v5（2026-09-06 证据收口）：表格参数行的字段名/值/单位/适用条件进所属需求
+    # data_constraints；表头/示例/上下文数字仅在条款定义为约束时进入。同一 bump
+    # 顺带覆盖 09-07 轨道分离提交的粒度契约提示词改动（dc34f25 改文本未 bump）。
+    {"id": "functional-extract", "version": "functional-extract-prompt-v5", "owner_module": "functional_extract",
      "purpose": "Functional requirement direct extraction prompt"},
     {"id": "functional-extract-guards", "version": "functional-extract-guards-v6", "owner_module": "functional_extract",
      "purpose": "Functional extract anti-drift guard version"},

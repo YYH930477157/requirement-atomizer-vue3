@@ -25,7 +25,7 @@ import claim_catalog
 import claim_ledger
 import claim_review_actions
 import desktop_tasks
-from result_package import initialize_result_package, resolve_analysis_root
+from result_package import initialize_result_package, package_artifact_path, resolve_analysis_root
 from tests.test_claim_artifacts import _catalog, _publish, _requirement
 from tests.test_claim_review_actions import _publish_a_track
 from tests.test_claim_review_event_v2 import _source_exclusion_evidence
@@ -1445,6 +1445,22 @@ class AiReviewActionsTests(unittest.TestCase):
 
 
 class AiRequirementsEndpointTests(unittest.TestCase):
+    def test_artifact_reads_prefer_governed_package_copy(self) -> None:
+        """package_v1 internal artifacts must win over a stale flat-root copy."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "input.docx"
+            source.write_bytes(b"fixture")
+            initialize_result_package(root, input_path=source, requested_stages=["atomize"])
+            governed = package_artifact_path(root, "blocks", for_write=True)
+            governed.write_text("governed\n", encoding="utf-8")
+            (root / "blocks.jsonl").write_text("legacy\n", encoding="utf-8")
+
+            self.assertEqual(
+                api_server._artifact_read_path(root, "blocks.jsonl"),
+                governed,
+            )
+
     def _seed(self, out: Path) -> None:
         (out / "blocks.jsonl").write_text(
             json.dumps({"block_id": "BLK-2", "order": 2, "text": "B", "section_path": ["4"],
@@ -1710,6 +1726,41 @@ class AiRequirementsEndpointTests(unittest.TestCase):
                     f.write(json.dumps(r, ensure_ascii=False) + "\n")
             rows = api_server.build_ai_requirements(out)
             self.assertEqual(len(rows), 2)  # 读 raw（2 条），而非 merged（1 条）
+
+    def test_functional_product_is_authoritative_over_legacy_rows(self) -> None:
+        """直抽结果存在时，文档批注不能回退到残留的旧 ai_requirements。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            self._seed(out)
+            (out / "functional_requirements.json").write_text(json.dumps({
+                "schema_version": 1,
+                "producer": "functional-extract-v1",
+                "execution_status": "ok",
+                "items": [{
+                    "functional_requirement_id": "FRE-1",
+                    "objective": "直抽功能需求",
+                    "source_quote": "q-functional",
+                    "source_block_ids": ["BLK-2"],
+                }],
+            }, ensure_ascii=False), encoding="utf-8")
+            (out / "ai_requirements.jsonl").write_text(json.dumps({
+                "title": "残留旧需求", "source_quote": "q-legacy",
+                "source_block_ids": ["BLK-1"],
+            }, ensure_ascii=False) + "\n", encoding="utf-8")
+            rows = api_server.build_ai_requirements(out)
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["ai_req_id"], "FRE-1")
+            self.assertEqual(rows[0]["level"], "functional")
+
+    def test_failed_functional_product_does_not_expose_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            self._seed(out)
+            (out / "functional_requirements.json").write_text(json.dumps({
+                "producer": "functional-extract-v1", "execution_status": "failed",
+                "items": [{"functional_requirement_id": "FRE-1"}],
+            }), encoding="utf-8")
+            self.assertEqual(api_server.build_ai_requirements(out), [])
 
     def test_ai_requirements_carry_id_anchor_and_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

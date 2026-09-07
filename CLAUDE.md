@@ -1,5 +1,29 @@
 # CLAUDE.md — Requirement Atomizer 项目上下文
 
+## 里程碑（2026-09-06）——功能需求证据与日常界面收口（2026-09-07 提交于 main，基于轨道分离 c4062ba 整合）
+
+本轮围绕“功能需求是日常产品、原子化只作兼容诊断”继续收口，未改变守恒闸、默认执行策略或 Claim 发布条件。
+整合说明：与新轨道 main（c0de7a7..c4062ba）的 4 处术语冲突按「纯措辞取上游、结构性新增保留本地」解决；
+提交时补登记 functional-extract-prompt-v5（原 WIP 漏登记，该 bump 同时覆盖 dc34f25 提示词改动未 bump 的缓存指纹违规）。
+
+- **功能产物单源**：API 构建功能需求视图时优先读取 governed 的
+  `functional_requirements.json`；`functional-extract` 产物覆盖旧的 `ai_requirements` 投影，
+  `execution_status=failed` 的产物不再被当作可展示产品。部分产物仍可展示，但必须保留其待核状态。
+- **证据完整性**：功能抽取对跨条款借引的 `source_quote` 做归属条款内校验，异常时回退到本条款原文并写入
+  `evidence_quote_replaced`；已有数字/否定词保真检查以 `evidence_integrity.findings` 形式进入条目，供复核界面定位，
+  不把咨询性诊断误升格为新的放行条件。
+- **运行审计**：A/B 门禁报告的 `RATOMIZER_*` 环境快照保留变量是否存在，但对 token/key/secret/password 等敏感值只写
+  `<redacted>`，避免报告成为凭据落点。
+- **日常 UI**：功能需求页移除原子/功能切换入口，增加需求搜索、复核筛选和证据风险提示；原子化运行项保留内部兼容键，
+  面向用户显示为文档解析/高级诊断语义。旧结果和 CLI/A-track 仍可读取，避免历史结果失效。
+- **任务 D 与领域扩展**：新增只读 `tools/task_d_classify.py` 及分类附录，无法由现有
+  section/cell 身份证明的项明确标为 `manual_review`，不伪造 a/b/c 结论；功能产物附加
+  `cosem-domain-mapping/v1` 确定性提示，识别已有 OBIS/class_id，未知 class 保留候选且不参与放行。
+
+**当前门禁与剩余工作**：本轮验证覆盖 API/A-B 报告、functional-extract 及功能复核 UI；真实语料门禁仍未通过，
+ 主要剩余项是基于任务 D 分类结果的表格 preservation/绑定修复裁决，以及新真值集上的多文档复跑。
+ 因而继续保持 `RATOMIZER_EXECUTION_POLICY=legacy_combined`，不以测试绿或已有 xlsx 在场替代守恒/真值门禁。
+
 ## 修复（2026-09-05）——review 四项：GUI 守恒信号 + gap-only 自报 + 清单说明列 + stub 形状 memoize（main 工作树，未提交）
 
 > 对照 origin/main（880cfd2）review 产出。P2：09-01e 把 requirements-analysis/

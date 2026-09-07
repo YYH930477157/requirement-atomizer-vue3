@@ -542,7 +542,7 @@
           <header class="settings-head">
             <div>
               <div class="settings-title">设置</div>
-              <div class="settings-subtitle">本地运行、LLM 富化和 ABNT 预设</div>
+              <div class="settings-subtitle">本地运行、交付模式和 LLM 设置</div>
             </div>
             <button class="icon-button" type="button" data-testid="settings-close" aria-label="关闭设置" title="关闭设置" @click="closeSettingsPanel"><X :size="18" aria-hidden="true" /></button>
           </header>
@@ -576,7 +576,7 @@
                 <input v-model="runStages.annotationHtml" type="checkbox" data-testid="stage-annotation-html" />
                 <span><strong>导出批注 HTML</strong><small>生成 document_annotation.html，用于专家离线阅读、批注和导出裁决 JSON。</small></span>
               </label>
-              <p class="settings-hint">LLM 富化跟随下方「LLM 富化」开关：开→AI 抽取/装配走 openai_compatible，关→纯确定性。日常需求产品是功能需求，不再跑软件需求分析或公司模板成文。</p>
+              <p class="settings-hint">LLM 富化跟随下方「LLM 富化」开关：开→AI 抽取/装配走 openai_compatible，关→纯确定性。日常交付以功能需求为准；工程规格和旧版成文仅在高级阶段启用。</p>
             </section>
             <details class="settings-section settings-advanced" data-testid="settings-advanced">
               <summary>高级：执行阶段（诊断 / 轨道对照用，普通交付无需调整）</summary>
@@ -776,7 +776,7 @@ type PhaseNavItem = { id: PhaseNavId; label: string; icon: Component; group: str
 const phaseNavItems: PhaseNavItem[] = [
   { id: "run", label: "运行", icon: Play, group: "运行", navTestId: "运行" },
   { id: "functional", label: "功能需求", icon: Layers, group: "评审", navTestId: "功能需求" },
-  { id: "review", label: "原子诊断", icon: ClipboardCheck, group: "评审", navTestId: "审查工作台" },
+  { id: "review", label: "原子诊断（旧）", icon: ClipboardCheck, group: "评审", navTestId: "审查工作台" },
   { id: "document", label: "文档批注", icon: FileText, group: "原文与审计", navTestId: "文档批注" },
   { id: "claim", label: "覆盖审计", icon: ListChecks, group: "原文与审计", navTestId: "覆盖审计" },
   { id: "renderer", label: "文档渲染", icon: Image, group: "原文与审计", navTestId: "文档渲染" },
@@ -1058,6 +1058,8 @@ type RunStageStatus = "pending" | "running" | "ok" | "skipped" | "failed" | "dis
 type RunStageState = { status: RunStageStatus; percent: number; detail: string }
 type RelayConnectorStatus = "idle" | "ready" | "handoff" | "complete" | "bypass" | "blocked"
 const RUN_STAGE_DEFS = [
+  // Internal key retained for backward-compatible manifests; the daily
+  // product presents this as document parsing/content planning.
   { key: "atomize", label: "文档解析" },
   { key: "llm-review", label: "LLM审核" },
   { key: "ai-extract", label: "功能需求抽取" },

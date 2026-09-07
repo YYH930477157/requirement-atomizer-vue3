@@ -79,7 +79,41 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from template_columns import (
+    REQUIREMENT_SHEET_SIGNATURE,
+    WRITER_COLUMN_CONTRACT,
+    XLSX_COLUMN_ALIASES,
+    locate_columns,
+    normalize_header,
+    writer_contract_columns,
+)
+
 SWITCH_ENV = "RATOMIZER_FUNCTIONAL_EXTRACT"
+
+# Environment snapshots are part of the A/B audit trail, but secrets must never
+# be copied into a result package. Keep ordinary switches visible and redact
+# credential-like variables while recording whether they were set.
+_SENSITIVE_ENV_RE = re.compile(
+    r"(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|PRIVATE[_-]?KEY)",
+    re.IGNORECASE,
+)
+
+
+def _audit_env_snapshot(environ: dict[str, str] | None = None) -> tuple[dict[str, str], dict[str, bool]]:
+    """Return a review-safe environment snapshot and secret presence map."""
+    source = os.environ if environ is None else environ
+    snapshot: dict[str, str] = {}
+    presence: dict[str, bool] = {}
+    for key, value in sorted(source.items()):
+        if not key.startswith("RATOMIZER_"):
+            continue
+        text = str(value)
+        if _SENSITIVE_ENV_RE.search(key):
+            snapshot[key] = "<redacted>" if text else ""
+            presence[key] = bool(text)
+        else:
+            snapshot[key] = text
+    return snapshot, presence
 
 PARSED_ARTIFACTS = (
     "blocks.jsonl", "chunks.jsonl", "table_items.jsonl", "table_cell_items.jsonl",
@@ -126,32 +160,10 @@ OPTIONAL_THRESHOLD_KEYS = ("max_preservation_blocking_losses",)
 THRESHOLD_KEYS = tuple(REQUIRED_THRESHOLD_KEYS) + OPTIONAL_THRESHOLD_KEYS
 
 # ---------------------------------------------------------------------------
-# §5.3 最终 XLSX 模板列别名表（中英文常见表头；归一化 = 去空白 + casefold）
+# §5.3 最终 XLSX 模板列别名表
 # ---------------------------------------------------------------------------
-XLSX_COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
-    # 需求正文（必需列）：模板 V2.3.x 的「需求」列
-    "body": ("需求", "需求正文", "需求内容", "需求文本", "需求描述", "软件需求",
-             "requirement", "requirement text", "requirement description",
-             "software requirement", "software requirement text"),
-    # 源条款（section 匹配/拆分率用）
-    "section": ("客户需求章节", "需求章节", "源文章节", "源章节", "章节", "条款",
-                "section", "source section", "clause", "chapter"),
-    # 模块/子模块（上下文）
-    "module": ("模块", "子模块", "功能模块", "module", "submodule", "sub-module",
-               "function module"),
-    # 条件类列（保存率上下文）
-    "condition": ("条件", "前置条件", "前提条件", "适用条件", "前提",
-                  "condition", "conditions", "precondition", "pre-condition"),
-    # 验收标准列（保存率上下文）
-    "acceptance": ("验收标准", "验收准则", "验证标准", "验收",
-                   "acceptance", "acceptance criteria", "acceptance criterion",
-                   "verification criteria", "verify criteria"),
-    # 说明列（保存率上下文）：模板 V2.3.x 的「说明、示例、注意事项」
-    "notes": ("说明、示例、注意事项", "说明", "说明示例注意事项", "说明与示例",
-              "示例、注意事项", "备注", "notes", "note", "remarks", "remark"),
-    # 描述列（保存率上下文）
-    "description": ("描述", "问题描述", "description", "problem description"),
-}
+# Imported from template_columns so writer, gate and truth tooling share one
+# alias authority.  The re-export name is retained for compatibility.
 REQUIRED_XLSX_COLUMNS = ("body",)
 # 参与「保存率上下文」拼接的逻辑列（正文 + 条件/验收/说明/描述）
 CONTEXT_COLUMNS = ("body", "condition", "acceptance", "notes", "description")
@@ -311,23 +323,12 @@ def _select_truth_rows(truth_rows: list[dict[str, Any]] | None,
 # ---------------------------------------------------------------------------
 
 def _norm_header(value: Any) -> str:
-    return re.sub(r"\s+", "", str(value or "").strip().casefold())
+    return normalize_header(value)
 
 
 def _locate_columns(header_row: tuple[Any, ...]) -> dict[str, int]:
     """表头行 → 逻辑列 → 1-based 列号（先命中先得，确定性）。"""
-    mapping: dict[str, int] = {}
-    for column_index, raw in enumerate(header_row, 1):
-        header = _norm_header(raw)
-        if not header:
-            continue
-        for logical, aliases in XLSX_COLUMN_ALIASES.items():
-            if logical in mapping:
-                continue
-            if header in {_norm_header(alias) for alias in aliases}:
-                mapping[logical] = column_index
-                break
-    return mapping
+    return locate_columns(header_row, XLSX_COLUMN_ALIASES)
 
 
 def _cell_text(value: Any) -> str:
@@ -351,14 +352,11 @@ def _writer_contract_columns(header_row: tuple[Any, ...]) -> dict[str, int] | No
     需求 sheet 按固定列位追加——读取侧直接采用写入器同一列位权威，读的正是写入
     器写的位置。非签名 sheet 或表头列数不足正文列位 → None（视为缺列，宁判坏）。
     """
-    from template_writer import REQUIREMENT_SHEET_SIGNATURE, WRITER_COLUMN_CONTRACT
-
-    headers = {_norm_header(cell) for cell in header_row}
-    if not all(_norm_header(cell) in headers for cell in REQUIREMENT_SHEET_SIGNATURE):
-        return None
-    if len(header_row) < WRITER_COLUMN_CONTRACT["body"]:
-        return None
-    return dict(WRITER_COLUMN_CONTRACT)
+    return writer_contract_columns(
+        header_row,
+        signature=REQUIREMENT_SHEET_SIGNATURE,
+        contract=WRITER_COLUMN_CONTRACT,
+    )
 
 
 def _load_template_extents(template_path: Path | None) -> dict[str, int] | None:
@@ -1219,13 +1217,14 @@ def run_ab_for_document(
     else:
         verdict = "PASS"
 
+    env_snapshot, env_presence = _audit_env_snapshot()
     report = {
         "schema": REPORT_SCHEMA,
         "parsed_dir": str(parsed_dir),
         "document_keys": {k: doc_keys.get(k, "") for k in ("name", "sha256", "path")},
         "route": route,
-        "env_snapshot": {k: v for k, v in sorted(os.environ.items())
-                         if k.startswith("RATOMIZER_")},
+        "env_snapshot": env_snapshot,
+        "env_presence": env_presence,
         "switch_env": SWITCH_ENV,
         "results": {
             "A_atoms": a_result.__dict__,
