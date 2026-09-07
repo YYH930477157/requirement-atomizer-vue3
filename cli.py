@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import logging
 import sys
@@ -17,6 +18,7 @@ from llm_client import LLMConnectionError
 from llm_pipeline import run_review_pipeline
 from requirement_kb.cli import default_kb_paths
 from requirements_analysis import run_requirements_analysis
+from functional_extract import run_functional_extract
 from version import __version__
 
 
@@ -62,10 +64,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--version", action="store_true", help="Print the requirement-atomizer version and exit.")
     subparsers = parser.add_subparsers(dest="command")
 
-    run = subparsers.add_parser("run", help="Run atomize, review, and optional exports.")
+    run = subparsers.add_parser("run", help="Run complete functional extraction by default.")
     add_atomize_arguments(run)
+    run.add_argument("--track", choices=["functional", "legacy_a"], default="functional",
+                     help="functional（默认完整需求）或 legacy_a（旧原子兼容流程）")
     run.add_argument("--skip-review", action="store_true")
     run.add_argument("--export", default="", help="Comma-separated export formats: md,csv")
+    run.add_argument("--truth-set", type=Path, default=None,
+                     help="Optional truth.jsonl used to evaluate the functional quality gate")
     add_review_route_arguments(run)
     add_verbosity_arguments(run)
 
@@ -257,11 +263,24 @@ def command_run(args: argparse.Namespace, started: float, timing_ms: dict[str, i
         chunk_chars=args.chunk_chars,
         kb_paths=args.kb or default_kb_paths(),
         domain_pack_dir=args.domain_pack,
+        include_atomic_candidates=args.track == "legacy_a",
     )
     timing_ms["atomize"] = elapsed_ms(atomize_started)
 
     review_summary = None
-    if not args.skip_review:
+    functional_summary = None
+    exports: list[str] = []
+    if args.track == "functional":
+        extract_started = time.perf_counter()
+        functional_summary = run_functional_extract(
+            args.out,
+            route=args.llm_route or "stub",
+            truth_set=args.truth_set,
+        )
+        timing_ms["functional_extract"] = elapsed_ms(extract_started)
+        if export_formats:
+            exports = export_functional_requirements(args.out, export_formats)
+    elif not args.skip_review:
         review_started = time.perf_counter()
         # 审计 R2-H3：--kb/--domain-pack 贯通到审查阶段（此前只喂 atomize，审查恒落
         # 默认 KB/默认包）；未传时不给 kwargs，保留 run_review_pipeline 的默认包。
@@ -273,14 +292,13 @@ def command_run(args: argparse.Namespace, started: float, timing_ms: dict[str, i
         review_summary = run_review_pipeline(args.out, **review_kwargs)
         timing_ms["review"] = elapsed_ms(review_started)
 
-    exports: list[str] = []
-    if export_formats:
+    if export_formats and args.track == "legacy_a":
         export_started = time.perf_counter()
         exports = export_requirements(args.out, formats=export_formats)
         timing_ms["export"] = elapsed_ms(export_started)
 
     timing_ms["total"] = elapsed_ms(started)
-    return success_envelope(
+    envelope = success_envelope(
         "run",
         args.out,
         manifest=manifest,
@@ -288,6 +306,50 @@ def command_run(args: argparse.Namespace, started: float, timing_ms: dict[str, i
         exports=exports,
         timing_ms=timing_ms,
     )
+    envelope["track"] = args.track
+    envelope["functional_extract"] = functional_summary
+    return envelope
+
+
+def export_functional_requirements(out_dir: Path, formats: list[str]) -> list[str]:
+    """Export the complete functional product without routing through atomic exporters."""
+    payload_path = out_dir / "functional_requirements.json"
+    payload = json.loads(payload_path.read_text(encoding="utf-8"))
+    rows = payload.get("items") if isinstance(payload, dict) else []
+    rows = rows if isinstance(rows, list) else []
+    written: list[str] = []
+    if "csv" in formats:
+        target = out_dir / "functional_requirements.csv"
+        columns = ["functional_requirement_id", "title", "objective", "behaviors",
+                   "data_constraints", "source_section", "source_quote"]
+        with target.open("w", encoding="utf-8-sig", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=columns)
+            writer.writeheader()
+            for row in rows:
+                writer.writerow({key: "; ".join(str(v) for v in row.get(key, []))
+                                 if isinstance(row.get(key), list) else row.get(key, "")
+                                 for key in columns})
+        written.append(str(target))
+        # Historical filename kept as a compatibility alias; the payload remains
+        # explicitly functional and is reported under functional_requirements.csv.
+        legacy_alias = out_dir / "requirements_export.csv"
+        legacy_alias.write_bytes(target.read_bytes())
+        written.append(str(legacy_alias))
+    if "md" in formats:
+        target = out_dir / "functional_requirements.md"
+        lines = ["# Functional Requirements", ""]
+        for row in rows:
+            lines.extend([
+                f"## {row.get('title') or row.get('functional_requirement_id')}",
+                "",
+                str(row.get("objective") or ""),
+                "",
+                f"Source: {row.get('source_section') or ''}",
+                "",
+            ])
+        target.write_text("\n".join(lines), encoding="utf-8")
+        written.append(str(target))
+    return written
 
 
 def command_atomize(args: argparse.Namespace, started: float, timing_ms: dict[str, int]) -> dict[str, Any]:

@@ -34,6 +34,10 @@ ratomizer run `
   --export md,csv
 ```
 
+`ratomizer run` uses complete functional extraction by default. Use
+`--track legacy_a` only for the historical atomic/DLMS compatibility path;
+`ratomizer atomize` remains the explicit parser-plus-atomic command.
+
 The main output files are written under the selected `out` directory:
 
 ```text

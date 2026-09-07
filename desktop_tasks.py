@@ -2921,6 +2921,10 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
     finally:
         _CHAIN_ACTIVE = False
         _detach_budget_ledger(chain_budget)  # S1-1：落盘 cost-report 数据源 + 卸载钩子
+    # Resolve the track from the final artifact. A fresh run can start without a
+    # manifest, so reading it only at chain start would incorrectly leave track
+    # as ``unknown`` after functional extraction succeeds.
+    payload["track"] = result_track(out_dir)
     payload["summary"] = build_output_summary(out_dir)
     return payload
 

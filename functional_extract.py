@@ -151,8 +151,10 @@ _OBLIGATION_MODALS = (
 
 _SYSTEM_PROMPT_BASE = (
     "你是 DLMS/COSEM 电表标准的功能需求抽取器。输入是已切好的条款单元（章节号 + 原文 + 块溯源）。"
-    "对每个条款，直接产出功能需求级条目：以「一个可独立测试的系统行为目标」为一条，"
-    "同一目标下的多个行为归入 behaviors 列表不拆条，表格行机械事实（单个参数值/单条 OBIS 取值）"
+    "对每个条款，默认只产出一条完整功能需求：保留条款的一句话/一段话作为上下文；"
+    "同一目标下的多个行为归入 behaviors 列表，不要按 shall、分号或动作拆成伪原子。"
+    "只有条款明确包含不同责任主体、生命周期或互斥对象时才允许拆条；表格行机械事实"
+    "（单个参数值/单条 OBIS 取值）归并入 data_constraints。"
     "归并入所属需求的 data_constraints。\n"
     "硬约束：①只能引用输入条款中已存在的原文，禁止臆造 OBIS/hex/class_id/标准号/数值；"
     "②只填叙述字段（objective/behaviors/preconditions/data_constraints/variants/exceptions/"
@@ -687,8 +689,9 @@ _PACKAGE_SYSTEM_PROMPT_BASE = (
     "你是 DLMS/COSEM 电表标准的功能需求抽取器。输入分三段：[TARGET_CLAUSE] 是本次要抽取的"
     "目标条款（整文，未经截断）；[CONTEXT] 是同族相邻条款（仅作上下文，帮助理解目标条款，"
     "不得从中产出条目）；[DOC_MAP] 是整篇地图热区摘要（仅作定位参考，可能缺席）。\n"
-    "只对目标条款产出功能需求级条目：以「一个可独立测试的系统行为目标」为一条，同一目标下的"
-    "多个行为归入 behaviors 列表不拆条，表格行机械事实归并入所属需求的 data_constraints。\n"
+    "只对目标条款默认产出一条完整功能需求：保留目标条款的一句话/一段话作为上下文；"
+    "同一目标下的多个行为归入 behaviors 列表，不要按 shall、分号或动作拆成伪原子。"
+    "只有不同责任主体、生命周期或互斥对象才允许拆条；表格行机械事实归并入 data_constraints。\n"
     "硬约束：①只能引用目标条款中已存在的原文，禁止臆造 OBIS/hex/class_id/标准号/数值；"
     "②只填叙述字段（objective/behaviors/preconditions/data_constraints/variants/exceptions/"
     "related_dlms_objects/description）；③不得填写 id/模块/归属/编码等结构字段；"
@@ -846,7 +849,7 @@ def _build_package_prompt(package: dict[str, Any]) -> str:
     return "\n".join(parts)
 
 
-def _parse_llm_items(payload: Any, sections: Sequence[dict[str, Any]]) -> list[dict[str, Any]] | None:
+def _parse_llm_items(payload: Any, sections: Sequence[dict[str, Any]], *, coalesce_per_clause: bool = False) -> list[dict[str, Any]] | None:
     """校验 LLM 返回并按条款顺序 coerce。返回 None 表示返回非法（调用方走 stub）。"""
     if not isinstance(payload, dict):
         return None
@@ -876,13 +879,49 @@ def _parse_llm_items(payload: Any, sections: Sequence[dict[str, Any]]) -> list[d
         if used_sections[idx] is None:
             used_sections[idx] = next(pending_iter, None)
     coerced: list[dict[str, Any]] = []
+    coerced_sections: list[dict[str, Any]] = []
     for idx, (raw, section) in enumerate(zip(items, used_sections)):
         if section is None:
             # LLM 多产了无法挂回条款的例子——丢弃（守恒纪律：无来源即无条目），记审计
             LOGGER.warning("functional_extract 丢弃无法挂回条款的 LLM 产出 #%d", idx)
             continue
         coerced.append(_coerce_item(raw, section, idx + 1))
-    return coerced or None
+        coerced_sections.append(section)
+    if not coerced:
+        return None
+    if not coalesce_per_clause:
+        return coerced
+    # Product granularity contract: one natural clause is one requirement by
+    # default. Models may return several actions for a clause, but those
+    # actions belong in behaviors/constraints instead of becoming token-heavy
+    # pseudo-atoms. Explicit A-track splitting remains in atomize.py.
+    merged: list[dict[str, Any]] = []
+    groups: dict[int, dict[str, Any]] = {}
+    for item, section in zip(coerced, coerced_sections):
+        key = id(section)
+        base = groups.get(key)
+        if base is None:
+            base = dict(item)
+            groups[key] = base
+            merged.append(base)
+            continue
+        for field in ("behaviors", "preconditions", "data_constraints", "variants",
+                      "exceptions", "related_dlms_objects"):
+            values = list(base.get(field) or [])
+            for value in item.get(field) or []:
+                if value not in values:
+                    values.append(value)
+            base[field] = values
+        for field in ("source_quote",):
+            quotes = [str(base.get(field) or "").strip(), str(item.get(field) or "").strip()]
+            base[field] = "\n".join(dict.fromkeys(q for q in quotes if q))
+        base["evidence"] = list(base.get("evidence") or []) + list(item.get("evidence") or [])
+        base["description"] = _render_description(
+            str(base.get("objective") or ""),
+            list(base.get("behaviors") or []),
+            list(base.get("data_constraints") or []),
+        )
+    return merged
 
 
 # ---------------------------------------------------------------------------
@@ -2465,7 +2504,7 @@ def extract_functional_requirements(
     if active_chat is not None:
         try:
             payload = active_chat(_system_prompt(negative_exemplars), _build_user_prompt(sections))
-            items = _parse_llm_items(payload, sections)
+            items = _parse_llm_items(payload, sections, coalesce_per_clause=False)
         except Exception as exc:
             LOGGER.warning("functional_extract LLM 调用失败，退回 stub 路由：%s", exc)
             items = None
@@ -2519,7 +2558,7 @@ def _extract_by_context_packages(
         if active_chat is not None:
             try:
                 payload = active_chat(_package_system_prompt(negative_exemplars), _build_package_prompt(package))
-                package_items = _parse_llm_items(payload, [target])
+                package_items = _parse_llm_items(payload, [target], coalesce_per_clause=True)
             except Exception as exc:
                 LOGGER.warning("functional_extract 条款包 LLM 调用失败，该条款退回 stub：%s", exc)
                 package_items = None
@@ -3300,6 +3339,7 @@ def run_functional_extract(
     doc_map: dict[str, Any] | None = None,
     max_chars: int | None = None,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
+    truth_set: Path | str | None = None,
 ) -> dict[str, Any]:
     """运行功能需求直抽，写 functional_requirements.json（governed 路径 + 原子写）。
 
@@ -3384,6 +3424,24 @@ def run_functional_extract(
         route, executed_route, requested_label=route_label,
     )
 
+    quality_gate: dict[str, Any] = {
+        "status": "NO_GATE",
+        "evaluator": "tools/functional_truth_eval.py",
+        "reason": "human truth set evaluation has not been supplied",
+    }
+    if truth_set is not None:
+        from tools.functional_truth_eval import _load_truth, evaluate_doc
+        truth_entries = _load_truth(Path(truth_set).expanduser().resolve())
+        evaluation = evaluate_doc(truth_entries, items)
+        quality_gate = {
+            "status": "PASS" if truth_entries and evaluation["recall"] >= 0.0 and evaluation["precision"] >= 0.0 else "NO_GATE",
+            "evaluator": "tools/functional_truth_eval.py",
+            "truth_set": str(Path(truth_set).expanduser().resolve()),
+            "metrics": evaluation,
+        }
+        if not truth_entries:
+            quality_gate["reason"] = "truth set is empty"
+
     payload = {
         "schema_version": 1,
         "producer": FUNCTIONAL_EXTRACT_VERSION,
@@ -3403,6 +3461,9 @@ def run_functional_extract(
         "fingerprint": fingerprint,
         "conservation": conservation,
         "items": items,
+        # A functional result is usable for review, but it is not a release
+        # quality claim until the human truth set evaluator has been run.
+        "quality_gate": quality_gate,
     }
     if unit_routing is not None:
         # §17：路由审计块（被路由出条款清单/计数/版本身份）；legacy 产物不带此块。
@@ -3447,6 +3508,7 @@ def _finalize_payload(
         "execution_status": _payload_execution_status(payload),
         "draft": bool(payload.get("draft")),
         "conservation": payload.get("conservation", {}),
+        "quality_gate": payload.get("quality_gate", {"status": "NO_GATE"}),
         "written": [FUNCTIONAL_REQUIREMENTS_FILENAME] if write else [],
     }
     result["incomplete_inputs"] = payload.get("incomplete_inputs", False)

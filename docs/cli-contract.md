@@ -5,7 +5,7 @@ Requirement Atomizer exposes a stable command line interface for task managers a
 ## Commands
 
 ```powershell
-ratomizer run <input.docx|input.xlsx|input.pdf> --out DIR [--kb FILE]... [--domain-pack DIR] [--chunk-chars N] [--skip-review] [--llm-route stub|openai_compatible] [--review-scope targeted|all] [--export md,csv] [--quiet | --verbose]
+ratomizer run <input.docx|input.xlsx|input.pdf> --out DIR [--track functional|legacy_a] [--kb FILE]... [--domain-pack DIR] [--chunk-chars N] [--skip-review] [--llm-route stub|openai_compatible] [--review-scope targeted|all] [--export md,csv] [--truth-set TRUTH_JSONL] [--quiet | --verbose]
 ratomizer atomize <input.docx|input.xlsx|input.pdf> --out DIR [--kb FILE]... [--domain-pack DIR] [--chunk-chars N] [--quiet | --verbose]
 ratomizer review --out DIR [--review-pipeline FILE] [--domain-pack FILE] [--kb FILE]... [--limit N] [--llm-route stub|openai_compatible] [--review-scope targeted|all] [--quiet | --verbose]
 ratomizer export --out DIR --format md|csv [--status all|accepted|expert_pending|candidate]
@@ -26,6 +26,12 @@ python -m desktop_tasks result-package-complete --out DIR --run-id RUN-ID --comp
 python -m desktop_tasks result-package-fail --out DIR --run-id RUN-ID --error MESSAGE
 python -m desktop_tasks result-package-status --out DIR [--verify]
 ```
+
+`ratomizer run` defaults to `--track functional` and writes the complete
+`functional_requirements.json` product. `--track legacy_a` is an explicit
+compatibility mode that writes atomic candidates and may run atomic review.
+`--truth-set` evaluates the functional product with the repository truth evaluator;
+without it, `quality_gate.status` remains `NO_GATE`.
 
 The four `result-package-*` desktop-bridge commands manage the `result-package.json`
 lifecycle marker (schema `ratomizer-result-package/v1`, layout `result-layout-v1`). They always

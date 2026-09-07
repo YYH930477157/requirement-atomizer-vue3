@@ -32,7 +32,8 @@
   即可生成所需候选，不必开启逐原子审查；测试运行仅按实际执行的阶段选择。
 - `functional` 必须同时跳过逐原子审查（`--skip-review`）；冲突参数在解析前报错。
   未传 track 的旧桌面桥接/脚本保留原来的环境开关与 skip-review 兼容选择。
-  独立 `ratomizer run` CLI 仍是原子化兼容入口；上述参数属于 `desktop_tasks run`。
+  独立 `ratomizer run` CLI 默认走完整需求（functional）轨道；需要旧原子兼容行为时，
+  使用 `--track legacy_a`。`ratomizer atomize` 仍是显式的解析加原子候选入口。
 - `manifest.json.track` 标记解析结果类型，pipeline/chain 响应同样返回 track。
   `GET /pipeline-track` 提供结果包或旧目录的只读契约：功能需求接口为
   `/functional-requirements`，`/requirements` 保持旧原子诊断列表协议。
