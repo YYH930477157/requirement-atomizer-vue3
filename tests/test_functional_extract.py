@@ -312,6 +312,23 @@ class RunAndCacheTests(unittest.TestCase):
             self.assertEqual(payload["producer"], fe.FUNCTIONAL_EXTRACT_VERSION)
             self.assertIn("provenance", payload)
 
+    def test_limit_sections_caps_pool_and_conservation_baseline(self) -> None:
+        """成本受限冒烟（2026-09-07）：limit_sections 截前 N 条款——抽取池与守恒
+        基线同源同截，第 N+1 条款既不抽取也不进基线。"""
+        with TemporaryDirectory() as tmp:
+            sections = [
+                _clause("7.1", ["B1"], "The meter shall log."),
+                _clause("7.2", ["B2"], "The meter shall alarm."),
+                _clause("7.3", ["B3"], "The meter shall keep time."),
+            ]
+            result = fe.run_functional_extract(
+                tmp, sections=sections, route="stub", limit_sections=2)
+            self.assertEqual(result["functional_requirements"], 2, "只抽前 2 条款")
+            self.assertEqual(result["clause_count"], 2)
+            self.assertEqual(result["conservation"]["clause_block_count"], 2,
+                             "守恒基线同截——B3 不在池内")
+            self.assertTrue(result["conservation"]["ok"], "子集自洽应闭合")
+
     def test_cache_hit_does_not_rewrite_and_preserves_route(self) -> None:
         with TemporaryDirectory() as tmp:
             sections = [_clause("7.2", ["B1"], "shall X.")]

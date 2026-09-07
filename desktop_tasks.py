@@ -442,12 +442,14 @@ def functional_synthesis_task(out_dir: Path, *, route: str = "stub") -> dict[str
 
 
 @_leased_pipeline_stage("functional-extract")
-def functional_extract_task(out_dir: Path, *, route: str | None = "openai_compatible") -> dict[str, Any]:
+def functional_extract_task(out_dir: Path, *, route: str | None = "openai_compatible",
+                            limit_sections: int | None = None) -> dict[str, Any]:
     """WS2 条款直抽阶段入口：不产原子，单次 LLM 直出功能需求级条目。
 
     预检纪律（2026-07-08 审计 A4 同款）：显式请求非 stub 路由但 key/端点不可用时
     响亮失败，优于静默 stub 产占位功能需求且 manifest 全 ok。显式 route="stub" 是
-    合法 opt-in（测试/烟测），照常运行。
+    合法 opt-in（测试/烟测），照常运行。``limit_sections`` 截前 N 条款（成本受限
+    冒烟；None=全量，行为不变）。
     """
     from functional_extract import (
         FUNCTIONAL_REQUIREMENTS_FILENAME,
@@ -461,6 +463,7 @@ def functional_extract_task(out_dir: Path, *, route: str | None = "openai_compat
     out_dir = out_dir.expanduser().resolve()
     result = dict(run_functional_extract(
         out_dir, route=route, progress_callback=emit_progress,
+        limit_sections=limit_sections,
     ))
     if result.get("written"):
         result["written"] = [str(out_dir / FUNCTIONAL_REQUIREMENTS_FILENAME)]
@@ -2508,11 +2511,12 @@ def _partial_export_enabled() -> bool:
     }
 
 
-def _functional_extract_stage_config() -> dict[str, Any]:
+def _functional_extract_stage_config(limit_sections: int | None = None) -> dict[str, Any]:
     """functional-extract 阶段指纹配置：策略/负例条数改变产物 → 阶段必须重跑。
 
     与 full-translation 的 {"enabled": ...} 同款纪律——环境开关必须进 config 进指纹，
     否则切换 RATOMIZER_CONTEXT_PACK_STRATEGY 后 chain 续跑会静默跳过直抽阶段。
+    ``limit_sections`` 截前 N 条款时同样进指纹（成本受限冒烟与全量代不可互串）。
     """
     from functional_extract import (
         CONTEXT_PACK_STRATEGY_ENV,
@@ -2528,6 +2532,8 @@ def _functional_extract_stage_config() -> dict[str, Any]:
         # §3.6：运行时求值（修掉 import 时常量在同进程不刷新的缺陷）
         "negative_k": functional_extract_negative_k(),
     }
+    if limit_sections:
+        config["limit_sections"] = int(limit_sections)
     # Phase 2b：大纲权威开关改变条款集 → 阶段必须重跑。flag 关时键缺席
     # （阶段指纹与现状逐字节一致）；flag 开时携带重切版本身份。
     from document_outline import OUTLINE_AUTHORITY_VERSION, outline_authority_enabled
@@ -2612,7 +2618,7 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
         # 直抽模式下 ai-extract 永不运行：AI 依赖阶段的前置检查换成直抽阶段自身
         if route == "stub" and ai_dependent.intersection(ordered) and not stage_is_reusable(
                 out_dir, "functional-extract", route="stub",
-                config=_functional_extract_stage_config()):
+                config=_functional_extract_stage_config(limit_sections)):
             raise ValueError(
                 "当前链包含需求分析等 AI 依赖阶段，但没有可复用的功能直抽产物；"
                 "请使用 openai_compatible 完成功能直抽后再继续。"
@@ -2631,7 +2637,8 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
         "ai-extract": lambda: ai_extract_task(out_dir, route=route,
                                               limit_sections=limit_sections,
                                               sample_ratio=sample_ratio),
-        "functional-extract": lambda: functional_extract_task(out_dir, route=route),
+        "functional-extract": lambda: functional_extract_task(
+            out_dir, route=route, limit_sections=limit_sections),
         "functional-synthesis": lambda: functional_synthesis_task(out_dir, route=route),
         "assemble": lambda: assemble_task(out_dir, enrich_route=route if route != "stub" else None),
         "requirements-analysis": lambda: requirements_analysis_task(
@@ -2691,7 +2698,7 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
             if stage == "ai-extract":
                 stage_config = {"sample_ratio": sample_ratio, "limit_sections": limit_sections}
             elif stage == "functional-extract":
-                stage_config = _functional_extract_stage_config()
+                stage_config = _functional_extract_stage_config(limit_sections)
             elif stage == "export-annotation-html":
                 stage_config = {"layout_mode": annotation_layout_mode}
             elif stage == "full-translation":

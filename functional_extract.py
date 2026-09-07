@@ -3474,6 +3474,7 @@ def run_functional_extract(
     max_chars: int | None = None,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
     truth_set: Path | str | None = None,
+    limit_sections: int | None = None,
 ) -> dict[str, Any]:
     """运行功能需求直抽，写 functional_requirements.json（governed 路径 + 原子写）。
 
@@ -3483,6 +3484,10 @@ def run_functional_extract(
     A2：``strategy`` 缺省读 ``context_pack_strategy()``（直抽开启且未显式指定时
     为 clause_family；显式 legacy 仍可用）。clause_family 下自动只读加载 A1
     整篇地图（``doc_map.load_doc_map``，缺席/不可用则不带摘要，退回无地图包——不伪造）。
+
+    ``limit_sections``（2026-09-07 WS0 成本受限冒烟）：条款池截前 N——抽取输入与
+    守恒基线同源同截（conservation 在本函数内以同一 sections 计算，子集自洽）；
+    批指纹随 clauses 列表自然换键，与全量键空间不串。None = 全量（默认，行为不变）。
     """
     out_dir = Path(out_dir).expanduser().resolve()
     outline_authority_audit: dict[str, Any] | None = None
@@ -3491,6 +3496,8 @@ def run_functional_extract(
         # 报告不可得时如实回退原始边界并记 unavailable（审计随产物落盘）。
         sections, outline_authority_audit = load_clauses_detailed(out_dir)
     sections = list(sections)
+    if limit_sections:
+        sections = sections[:max(0, int(limit_sections))]
     _emit_functional_extract_progress(
         progress_callback, completed=0, total=len(sections),
     )

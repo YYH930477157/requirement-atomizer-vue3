@@ -207,7 +207,7 @@ def _chain_runner_factory(*, b_ok: bool = True, b_status: str = "ok",
                           b_items: list[dict] | None = None,
                           b_xlsx=None, a_xlsx=None):
     """b_xlsx/a_xlsx: ``callable(out_dir)`` 写最终 XLSX（默认旧口径 _fake_final_xlsx）。"""
-    def chain_runner(out_dir: Path, *, stages, route, template_path):
+    def chain_runner(out_dir: Path, *, stages, route, template_path, limit_sections=None):
         if (out_dir.name == "B_direct"):
             if not a_ok:  # 复用开关控制 B 路链异常
                 raise RuntimeError("B chain exploded")
@@ -306,6 +306,27 @@ class FailureMatrixTests(unittest.TestCase):
         report = self._run(b_ok=False)
         self.assertEqual(report["verdict"], "FAIL")
         self.assertTrue(any("B chain exploded" in f for f in report["failures"]))
+
+    def test_limit_sections_passthrough_to_both_legs(self) -> None:
+        """成本受限冒烟（2026-09-07）：--limit-sections 必须透传到 A/B 两条链。"""
+        seen: dict[str, int | None] = {}
+
+        def capture_runner(out_dir: Path, *, stages, route, template_path,
+                           limit_sections=None):
+            seen[out_dir.name] = limit_sections
+            return _chain_runner_factory()(
+                out_dir, stages=stages, route=route, template_path=template_path,
+                limit_sections=limit_sections)
+
+        with tempfile.TemporaryDirectory() as td:
+            work = Path(td)
+            (work / "t.xlsx").touch()
+            ab.run_ab_for_document(
+                _parsed_dir(work / "parsed"), route="openai_compatible",
+                template_path=work / "t.xlsx", work_root=work / "ab",
+                chain_runner=capture_runner, limit_sections=100)
+        self.assertEqual(seen.get("A_atoms"), 100, "A 轨链收到节上限")
+        self.assertEqual(seen.get("B_direct"), 100, "B 轨链收到条款上限")
 
     def test_missing_product_fails(self) -> None:
         report = self._run(b_product=False)

@@ -1003,11 +1003,17 @@ def run_ab_for_document(
     chain_runner: Callable[..., dict[str, Any]] | None = None,
     keep_dirs: bool = False,
     warm_a_cache: Path | None = None,
+    limit_sections: int | None = None,
 ) -> dict[str, Any]:
     """单文档 A/B：唯一差异 = 直抽开关。返回逐文档报告（PASS/FAIL/NO_GATE + 指标明细）。
 
     ``chain_runner`` 注入点是测试钩子（默认 ``desktop_tasks.chain_task``）——生产路径
     必须走真实 chain（完整 B 轨是本 runner 的存在意义）。
+
+    ``limit_sections``（2026-09-07 成本受限冒烟）：截前 N 节/条款（A 轨 ai-extract
+    与 B 轨 functional-extract 同截）。注意：真值集若覆盖全文档，部分语料的
+    recall 类阈值必然塌——该形态的报告是**冒烟证据**，不得作为 Go/No-Go 依据
+    （报告 verdict_fail_reasons 会如实记录）。
 
     判定语义（M3）：链失败/产物缺失/执行不完整/守恒未闭合/stub 降级/最终交付物缺席/
     缺必需列/空正文行/不可读单元格 → FAIL；缺真值集（含真值集无本文档行）、缺阈值文
@@ -1049,8 +1055,12 @@ def run_ab_for_document(
         result = PathResult(label=label, ok=False, env_switch=switch)
         try:
             with _switch_env(switch):
+                # limit_sections 仅在设置时传递——既有 chain_runner 注入契约（含测试
+                # 钩子）不声明该参数也能工作；None = 全量，与历史调用逐字节同形
+                chain_kwargs = {"limit_sections": limit_sections} if limit_sections else {}
                 payload = chain_runner(
                     out_dir, stages=stages, route=route, template_path=template_path,
+                    **chain_kwargs,
                 )
             result.chain_payload = {
                 key: payload.get(key) for key in ("functional_extract", "analysis")
@@ -1272,6 +1282,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--warm-a-cache", type=Path, default=None,
                         help="A 轨缓存暖启动目录（含 ai_extract_cache.jsonl，如上次 --keep-dirs 的 A_atoms）"
                              "——重跑门禁时 A 轨抽取零付费，整链仍真实执行")
+    parser.add_argument("--limit-sections", type=int, default=None,
+                        help="成本受限冒烟：截前 N 节/条款（A 轨 ai-extract 与 B 轨直抽同截）。"
+                             "部分语料上 recall 类阈值必然塌——报告只能作冒烟证据，不是 Go/No-Go 依据")
     parser.add_argument("--keep-dirs", action="store_true",
                         help="保留 A/B 工作目录供人工复核（默认清理）")
     args = parser.parse_args(argv)
@@ -1293,6 +1306,7 @@ def main(argv: list[str] | None = None) -> int:
                 thresholds=thresholds,
                 keep_dirs=args.keep_dirs,
                 warm_a_cache=args.warm_a_cache,
+                limit_sections=args.limit_sections,
             )
         except Exception as exc:  # noqa: BLE001 — 逐份判定：单份异常不掩盖其他份
             report = {
