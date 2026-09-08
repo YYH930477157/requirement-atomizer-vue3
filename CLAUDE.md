@@ -1,5 +1,22 @@
 # CLAUDE.md — Requirement Atomizer 项目上下文
 
+## 真值层（2026-09-08d）——v2 英文真值重建完成（语言断层修复）；粒度/形态断层呈报裁定
+
+> 用户裁定「开工」。产出：`tools/truth_rebuild_en.py` + `golden_sets/ws0_human_v2_en/`
+> （188 行，锚定分析师 xlsx **English Translation 列**——人工英文非机翻；id 与 v1
+> 逐行对齐；确定性 domain 标记 b_track 67/out 121，滑动窗口联合覆盖对冲切分病理；
+> 1 缺英文 + 1 英文列错标中文被守卫跳过计数）。诊断与方案档
+> `docs/ws0-truth-rebuild-2026-09-08.md`。
+
+- **验证暴露两层更深断层**：粒度（段落级真值 vs 一条款一需求产物，eligibility
+  coverage≥0.5+零冲突结构性不可满足）+ 形态/词汇（归一化转述 vs 源文破碎英语，
+  同内容重叠 0.2-0.4）——**行对行 token 匹配在该真值形态上不可行，非参数问题**。
+- **呈报三方案**：A 语义对齐层（推荐，LLM/embedding 判定+token 兜底，判定可缓存
+  可审计）/ B 句子拆分+放宽（已原型否证）/ C 抽样人工验收（14 阈值口径重定义）。
+  **③全量门禁的 P/R 评估前置=本裁定**；守恒/交付物类检查不受影响。
+- 钉：`tests/test_truth_rebuild_v2.py` 5 项（可移植，不依赖机器 xlsx）；schema 增
+  可选 domain（v1 兼容）。
+
 ## 离线注入评估（2026-09-08c）——无 DeepSeek 注入抽取：守恒 v9 全绿、②成立；P1 新发现 WS0 真值集语言断层
 
 > 用户裁定「你直接解析，不用 deepseek」。47 条款包（100 节口径）由助理模型经 chat
