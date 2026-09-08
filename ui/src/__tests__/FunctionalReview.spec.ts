@@ -598,6 +598,39 @@ describe("FunctionalReview (WS-F)", () => {
     expect(wrapper.find('[data-testid="evidence-status"]').text()).toContain("引句未落在当前条款")
   })
 
+  it("keeps evidence warnings in the risk filter even after confirmation and acceptance", async () => {
+    const ids = ["FRE-BLOCKING", "FRE-WARNING", "FRE-QUOTE", "FRE-NUMERIC", "FRE-CLEAN"]
+    const risks = [
+      { evidence_integrity: { ok: false, findings: [{ kind: "number", token: "5", severity: "blocking" }] } },
+      { evidence_integrity: { ok: true, findings: [{ kind: "condition", token: "if", severity: "warning" }] } },
+      { evidence_quote_replaced: true },
+      { numeric_drift_flag: true, numeric_drift_values: ["99"] },
+      {},
+    ]
+    const client = makeClient({
+      loadFunctionalRequirements: vi.fn().mockResolvedValue({ items: ids.map((id, index) => ({
+        functional_requirement_id: id, objective: `记录事件 ${id}`,
+        source_quote: "The meter shall log events.", source_block_ids: ["BLK-1"], ...risks[index],
+      })), total: ids.length }),
+      loadVerificationStates: vi.fn().mockResolvedValue({ states: ids.map((id) => ({
+        requirement_id: id, lifecycle_state: "confirmed", verification: {},
+      })) }),
+      loadAdjudications: vi.fn().mockResolvedValue({ items: ids.map((id) => ({
+        functional_requirement_id: id, decision: "accept",
+      })) }),
+    })
+    const { wrapper } = mountReview({ client })
+    await flushPromises()
+    await wrapper.find('[data-testid="functional-filter"]').setValue("needs_review")
+    expect(wrapper.findAll('[data-testid^="functional-card-"]')).toHaveLength(4)
+    expect(wrapper.find('[data-testid="functional-card-FRE-CLEAN"]').exists()).toBe(false)
+    await wrapper.find('[data-testid="functional-search"]').setValue("FRE-QUOTE")
+    expect(wrapper.findAll('[data-testid^="functional-card-"]')).toHaveLength(1)
+    expect(wrapper.find('[data-testid="functional-card-FRE-QUOTE"]').exists()).toBe(true)
+    await wrapper.find('[data-testid="functional-search"]').setValue("FRE-NUMERIC")
+    expect(wrapper.find('[data-testid="functional-card-FRE-NUMERIC"]').text()).toContain("证据提醒")
+  })
+
   it("falls back to Electron IPC when GET endpoints are missing on old backend (404)", async () => {
     // F2 降级演示：mock 旧后端——三个 GET 端点返回 404（端点不存在），前端经 IPC 兜底仍渲染
     const client = makeClient({

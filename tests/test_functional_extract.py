@@ -60,6 +60,60 @@ class StubRouteTests(unittest.TestCase):
 
 
 class LLMRouteTests(unittest.TestCase):
+    def test_scalar_data_constraint_numeric_drift_is_audited(self) -> None:
+        """标量约束也必须进入完整 provisional narrative 的数字漂移审计。"""
+        section = _clause("4.1", ["B1"], "The meter shall log events at 5 V.")
+        item = fe._coerce_item({
+            "objective": "The meter shall log events",
+            # 模拟模型把本应为数组的字段返回成 scalar。
+            "data_constraints": "99 V",
+        }, section, 1)
+        self.assertTrue(item["numeric_drift_flag"])
+        self.assertIn("99", item["numeric_drift_values"])
+
+    def test_description_of_only_drifted_code_is_not_restored(self) -> None:
+        """描述被护栏清空后应自动渲染，不能恢复幻觉编码原文。"""
+        section = _clause("4.1", ["B1"], "The meter shall log events.")
+        item = fe._coerce_item({
+            "objective": "The meter shall log events",
+            # 仅包含受保护编码本体；清洗后应为空并触发自动渲染。
+            "description": "0-0:10.0.0",
+        }, section, 1)
+        self.assertNotIn("0-0:10.0.0", item["description"])
+        self.assertTrue(item["description"].startswith("目标："))
+        self.assertIn("0-0:10.0.0", item["rejected_codes"])
+
+    def test_evidence_diagnostic_includes_conditions_and_exceptions(self) -> None:
+        section = _clause("4.2", ["B2"],
+                          "If voltage is 5 V, the meter shall log events unless offline; "
+                          "it shall not transmit alarms.")
+        item = fe._coerce_item({
+            "objective": "The meter shall log events.",
+            "behaviors": ["The meter shall log events."],
+            "preconditions": ["If voltage is 5 V"],
+            "exceptions": ["unless offline", "it shall not transmit alarms"],
+        }, section, 1)
+        self.assertEqual(item["evidence_integrity"], {"ok": True, "findings": []})
+
+    def test_coalesced_requirement_recomputes_evidence_and_keeps_guard_audit(self) -> None:
+        section = _clause("4.2", ["B2"],
+                          "The meter shall log events at 5 V and send alarms within 2 s.")
+        payload = {"items": [
+            {"source_block_ids": ["B2"], "objective": "The meter shall log events.",
+             "behaviors": ["The meter shall log events at 5 V."],
+             "source_quote": "log events at 5 V"},
+            {"source_block_ids": ["B2"], "objective": "Send alarms.",
+             "behaviors": ["Send alarms within 2 s for 99 devices using OBIS 0-0:10.0.0."],
+             "source_quote": "unrelated neighbouring clause"},
+        ]}
+        items = fe._parse_llm_items(payload, [section], coalesce_per_clause=True)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["evidence_integrity"], {"ok": True, "findings": []})
+        self.assertTrue(items[0]["evidence_quote_replaced"])
+        self.assertTrue(items[0]["numeric_drift_flag"])
+        self.assertIn("99", items[0]["numeric_drift_values"])
+        self.assertTrue(items[0]["rejected_codes"])
+
     def test_injected_chat_items_coerced_structure_frozen(self) -> None:
         sections = [
             _clause("4.2", ["B2"], "The meter shall collect voltage at 230 V. OBIS 1-1:32.7.0."),
@@ -328,6 +382,38 @@ class RunAndCacheTests(unittest.TestCase):
             self.assertEqual(result["conservation"]["clause_block_count"], 2,
                              "守恒基线同截——B3 不在池内")
             self.assertTrue(result["conservation"]["ok"], "子集自洽应闭合")
+            self.assertEqual(result["input_scope"], {
+                "mode": "limited_smoke",
+                "limit_sections": 2,
+                "selected_section_count": 2,
+                "source_section_count": 3,
+            })
+
+    def test_invalid_limit_sections_is_rejected(self) -> None:
+        sections = [_clause("7.1", ["B1"], "The meter shall log.")]
+        for limit in (0, -1, 1.0, "2"):
+            with self.subTest(limit=limit), TemporaryDirectory() as tmp:
+                with self.assertRaisesRegex(ValueError, "positive integer"):
+                    fe.run_functional_extract(
+                        tmp, sections=sections, route="stub", limit_sections=limit)
+
+    def test_limited_truth_evaluation_cannot_publish_pass(self) -> None:
+        with TemporaryDirectory() as tmp:
+            truth_path = os.path.join(tmp, "truth.jsonl")
+            with open(truth_path, "w", encoding="utf-8") as handle:
+                handle.write(json.dumps({
+                    "entry_id": "T-1",
+                    "source_anchor": {"section": "7.1", "coordinates": ["B1"]},
+                }) + "\n")
+            result = fe.run_functional_extract(
+                tmp,
+                sections=[_clause("7.1", ["B1"], "The meter shall log.")],
+                route="stub",
+                truth_set=truth_path,
+                limit_sections=1,
+            )
+            self.assertEqual(result["quality_gate"]["status"], "NO_GATE")
+            self.assertIn("limited", result["quality_gate"]["reason"])
 
     def test_cache_hit_does_not_rewrite_and_preserves_route(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -343,6 +429,13 @@ class RunAndCacheTests(unittest.TestCase):
         s1 = [_clause("7.3", ["B1"], "alpha")]
         s2 = [_clause("7.3", ["B1"], "beta")]
         self.assertNotEqual(fe.extraction_fingerprint(s1), fe.extraction_fingerprint(s2))
+
+    def test_fingerprint_separates_limited_scope_from_full_scope(self) -> None:
+        sections = [_clause("7.1", ["B1"], "The meter shall log events.")]
+        self.assertNotEqual(
+            fe.extraction_fingerprint(sections, route_key="stub"),
+            fe.extraction_fingerprint(sections, route_key="stub", limit_sections=1),
+        )
 
 
 class RouteFingerprintTests(unittest.TestCase):

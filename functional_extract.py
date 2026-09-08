@@ -70,7 +70,8 @@ FUNCTIONAL_EXTRACT_PROMPT_VERSION = "functional-extract-prompt-v5"  # v5（2026-
 # 三轮复审 P1-2（2026-08-16）：cross_script_review 记录新增 source_text_hash/句子
 # 摘录（跨语种确认身份绑定义务文本）——守恒载荷内容变化，bump v4 → v5 使存量
 # 缓存失效，否则旧缓存恢复的 cross_script_review 无哈希，绕过确认失效机制。
-FUNCTIONAL_EXTRACT_GUARDS_VERSION = "functional-extract-guards-v6"
+# v6 → v7：证据诊断覆盖完整叙述字段，并在同条款合并后重新计算。
+FUNCTIONAL_EXTRACT_GUARDS_VERSION = "functional-extract-guards-v7"
 # §3.1 新守恒模型版本戳（进 conservation 报告与抽取指纹；模型演进时 bump）。
 # M1（2026-08-16 修复方案 §3.4）：obligation 覆盖从全局叙述并集改为声明局部绑定
 # （eligible-only 边；source_quote 只作锚）——产物语义变化，v1 → v2。
@@ -84,13 +85,14 @@ FUNCTIONAL_EXTRACT_GUARDS_VERSION = "functional-extract-guards-v6"
 # （行渲染文本对不上条款扁平 text 时不再静默失败）；部分委托整块保留。
 # v4 → v5（2026-08-27 审查修复）：同文本多表格块按委托块数剔除出现位置——
 # replace-all 会把字节级相同的非委托块一并剥出基线（无 cell 守恒兜底的静默丢账）。
-FUNCTIONAL_CONSERVATION_MODEL_VERSION = "functional-conservation-obligation-evidence-v8"
 # v7 → v8（2026-09-07，用户裁定：豁免逐字重复）：绑定检查 reason 2
 # （narrative_covers_other_clauses_not_declared）——被覆盖义务句逐字出现在声明条款
 # 基线文本内时，条款间共享文本使「覆盖他款」与「覆盖本款」不可区分，判疑似检查
 # 误报豁免（审计列表 covered_clause_text_dup_exemptions，不静默、不影响 ok）；
 # 任一被覆盖句不在声明条款内 → 照旧 blocking（真借位）。豁免口径与
 # tools/binding_attribution.py 的 covered_clause_text_in_home 信号（b 类）同源。
+# v8 → v9：重复文本归一保留数值小数点、正负号、运算符和词界，避免数值语义碰撞。
+FUNCTIONAL_CONSERVATION_MODEL_VERSION = "functional-conservation-obligation-evidence-v9"
 # v6 → v7（2026-08-31，绑定检查 reason 1 本地锚）：声明条款含义务单元却建不成
 # lexical/cross_script/source_quote 边时，若引句（剥表格标记后）逐字落在该声明条款
 # 基线文本内，不再判「占位声明」——SBD 清单/表格行无模态动词、永远成不了义务单元，
@@ -232,6 +234,7 @@ def extraction_fingerprint(
     route_key: str = "",
     context_strategy: str = "",
     doc_map_key: str = "",
+    limit_sections: int | None = None,
 ) -> str:
     """整批条款的指纹，叠加版本/prompt/护栏/route 维度进缓存键。
 
@@ -255,6 +258,12 @@ def extraction_fingerprint(
         "negative_k": functional_extract_negative_k(),
         "clauses": [clause_fingerprint(section) for section in sections],
     }
+    # A caller that supplies the first N clauses explicitly must not share a
+    # cache entry with a full-document run over the same short list.  The
+    # execution scope is part of the product identity, even though the clause
+    # content is already represented above.
+    if limit_sections is not None:
+        canonical["limit_sections"] = int(limit_sections)
     # Phase 2b：大纲权威重切改变条款集（clauses 已承载），此处钉住接线身份——
     # flag 开时键存在（legacy/clause_family 两键空间都进），flag 关时键缺席
     # （指纹逐字节不变）。重切是策略无关的装配层行为，不挂在策略门控的
@@ -399,6 +408,15 @@ def _local_source_quote(candidate: Any, section: dict[str, Any]) -> tuple[str, b
     return source, bool(quote)
 
 
+def _refresh_item_evidence_integrity(item: dict[str, Any], section: dict[str, Any]) -> None:
+    """Diagnose the final narrative; evidence quotes never fill narrative gaps."""
+    findings = _preservation_findings(section, item_narrative(item))
+    item["evidence_integrity"] = {
+        "ok": not any(f.get("severity") == "blocking" for f in findings),
+        "findings": findings,
+    }
+
+
 def _coerce_item(
     raw: dict[str, Any],
     section: dict[str, Any],
@@ -423,13 +441,21 @@ def _coerce_item(
     exceptions = _as_str_list(raw.get("exceptions"))
     related = _as_str_list(raw.get("related_dlms_objects"))
 
-    # 受保护编码硬拦：叙述字段合集 vs 来源条款原文（数字软标用原始合集）
-    narrative = "\n".join([objective, *behaviors, *data_constraints, *related])
+    # 受保护编码硬拦：叙述字段合集 vs 来源条款原文（数字软标用原始合集）。
+    # ``_as_str_list`` 接受模型偶尔返回的 scalar；因此先把每个叙述字段放回
+    # provisional item，再做数字扫描，不能只覆盖 objective/behaviors，否则
+    # scalar data_constraints/preconditions 等会从 item_narrative 中漏掉。
+    narrative = item_narrative({
+        "objective": objective,
+        "description": str(raw.get("description") or "").strip(),
+        "behaviors": behaviors,
+        "preconditions": preconditions,
+        "data_constraints": data_constraints,
+        "variants": variants,
+        "exceptions": exceptions,
+        "related_dlms_objects": related,
+    })
     numeric_drifted, numeric_drift = _flag_numeric_drift(narrative, source_text)
-    # Per-item evidence diagnostics complement the section-level conservation
-    # gate. They are intentionally advisory here because several items can
-    # legitimately share one clause; the union gate remains authoritative.
-    evidence_findings = _preservation_findings(section, narrative)
 
     # S1-8：``_reject_drifted_codes`` 的 docstring 承诺"剔除 LLM 产出但来源条款没有的
     # OBIS/hex/class_id/标准号"——清洗范围必须覆盖**全部叙述字段**（objective/behaviors/
@@ -444,13 +470,17 @@ def _coerce_item(
         rejected.update(drifted)
         return cleaned
 
-    objective = _clean_field(objective) or objective
-    behaviors = [_clean_field(b) or b for b in behaviors]
-    data_constraints = [_clean_field(c) or c for c in data_constraints]
-    variants = [_clean_field(v) or v for v in variants]
-    exceptions = [_clean_field(e) or e for e in exceptions]
-    preconditions = [_clean_field(p) or p for p in preconditions]
-    rejected_codes = sorted(rejected)
+    objective = _clean_field(objective)
+    if not objective:
+        # Never restore a field made entirely of hallucinated protected codes.
+        objective = f"实现{_derive_module(section)}相关功能。"
+    behaviors = [cleaned for value in behaviors if (cleaned := _clean_field(value))]
+    if not behaviors:
+        behaviors = [objective]
+    data_constraints = [cleaned for value in data_constraints if (cleaned := _clean_field(value))]
+    variants = [cleaned for value in variants if (cleaned := _clean_field(value))]
+    exceptions = [cleaned for value in exceptions if (cleaned := _clean_field(value))]
+    preconditions = [cleaned for value in preconditions if (cleaned := _clean_field(value))]
 
     related_filtered = [
         value for value in related
@@ -461,12 +491,14 @@ def _coerce_item(
     description = str(raw.get("description") or "").strip()
     if description:
         # S1-8：description 同属 LLM 叙述字段，幻觉编码一并清洗（与 objective/behaviors 同口径）
-        description = _clean_field(description) or description
+        # 清洗后为空时必须走确定性渲染；不能用原 description 回填，否则
+        # 只含幻觉编码的描述会被悄悄恢复到最终需求正文。
+        description = _clean_field(description).strip()
     if not description:
         description = _render_description(objective, behaviors, data_constraints)
 
     source_quote, quote_replaced = _local_source_quote(raw.get("source_quote"), section)
-    return {
+    item = {
         "functional_requirement_id": _stable_requirement_id(section, index),
         "functional_key": f"{_derive_module(section)}:{_normalize_key(objective)}",
         "title": str(section.get("heading") or objective).strip() or objective,
@@ -497,18 +529,18 @@ def _coerce_item(
             }
         ],
         # 护栏留痕
-        "rejected_codes": rejected_codes,
+        "rejected_codes": sorted(rejected),
         "numeric_drift_flag": numeric_drift,
         "numeric_drift_values": numeric_drifted,
         "evidence_quote_replaced": quote_replaced,
-        "evidence_integrity": {
-            "ok": not any(f.get("severity") == "blocking" for f in evidence_findings),
-            "findings": evidence_findings,
-        },
         "merge_method": "functional_extract",
         "merge_confidence": 1.0,
         "source_kind": "functional_extract",
     }
+    # Advisory per-item diagnostics use the same complete narrative as the
+    # section-level gate, after guards have finished cleaning every field.
+    _refresh_item_evidence_integrity(item, section)
+    return item
 
 
 def _normalize_key(value: str) -> str:
@@ -961,11 +993,16 @@ def _parse_llm_items(payload: Any, sections: Sequence[dict[str, Any]], *, coales
             quotes = [str(base.get(field) or "").strip(), str(item.get(field) or "").strip()]
             base[field] = "\n".join(dict.fromkeys(q for q in quotes if q))
         base["evidence"] = list(base.get("evidence") or []) + list(item.get("evidence") or [])
+        for field in ("rejected_codes", "numeric_drift_values"):
+            base[field] = sorted(set(base.get(field) or []) | set(item.get(field) or []))
+        for field in ("evidence_quote_replaced", "numeric_drift_flag"):
+            base[field] = bool(base.get(field) or item.get(field))
         base["description"] = _render_description(
             str(base.get("objective") or ""),
             list(base.get("behaviors") or []),
             list(base.get("data_constraints") or []),
         )
+        _refresh_item_evidence_integrity(base, section)
     return merged
 
 
@@ -1114,8 +1151,9 @@ def _unit_sentence_duplicated_in_home_clauses(
     baseline_sections: Sequence[dict[str, Any]],
     home_indices: Sequence[int],
 ) -> bool:
-    """义务句逐字落在任一声明条款的基线文本内（内容级 squash：小写 + 剥全部
-    标点/空白，保留字母数字与 CJK）。
+    """义务句逐字落在声明条款内，忽略大小写、空白和普通句读标点。
+
+    v9 保留词界、数值小数点/符号与运算符，避免将 1.5 V 与 15 V 等同。
 
     conservation v8（2026-09-07 用户裁定：豁免逐字重复）用于绑定检查 reason 2
     （narrative_covers_other_clauses_not_declared）的疑似误报豁免：条款间共享
@@ -1131,16 +1169,22 @@ def _unit_sentence_duplicated_in_home_clauses(
             continue
         text_sq = _dup_content_squash(
             str(baseline_sections[index].get("text") or ""))
-        if sentence_sq in text_sq:
+        if f" {sentence_sq} " in f" {text_sq} ":
             return True
     return False
 
 
 def _dup_content_squash(text: str) -> str:
-    """重复文本比对用的内容级归一（v8 豁免专用）：小写 + 只留字母数字与 CJK。"""
-    return "".join(
-        ch for ch in str(text or "").lower()
-        if ch.isalnum() or "\u4e00" <= ch <= "\u9fff"
+    """重复豁免专用：忽略普通句读，保留数字、符号与词边界。"""
+    tokens = re.findall(
+        r"<=|>=|!=|==|<>|≤|≥|≈|"
+        r"[+\-−]?\s*\d+(?:[.,]\d+)*(?:[eE][+\-−]?\d+)?|"
+        r"[\u4e00-\u9fff]|[^\W\d_\u4e00-\u9fff]+|[^\s]",
+        str(text or "").lower(),
+    )
+    return " ".join(
+        "".join(token.split()) for token in tokens
+        if token not in ".,;:!?。，；：！？"
     )
 
 
@@ -3490,14 +3534,19 @@ def run_functional_extract(
     批指纹随 clauses 列表自然换键，与全量键空间不串。None = 全量（默认，行为不变）。
     """
     out_dir = Path(out_dir).expanduser().resolve()
+    if limit_sections is not None and (
+        type(limit_sections) is not int or limit_sections <= 0
+    ):
+        raise ValueError("limit_sections must be a positive integer")
     outline_authority_audit: dict[str, Any] | None = None
     if sections is None:
         # Phase 2b：flag 开时 load_clauses_detailed 产出重切条款 + 审计；
         # 报告不可得时如实回退原始边界并记 unavailable（审计随产物落盘）。
         sections, outline_authority_audit = load_clauses_detailed(out_dir)
     sections = list(sections)
-    if limit_sections:
-        sections = sections[:max(0, int(limit_sections))]
+    source_section_count = len(sections)
+    if limit_sections is not None:
+        sections = sections[:limit_sections]
     _emit_functional_extract_progress(
         progress_callback, completed=0, total=len(sections),
     )
@@ -3527,6 +3576,7 @@ def run_functional_extract(
         route_key=route_label,
         context_strategy=resolved_strategy,
         doc_map_key=str(doc_map.get("fingerprint") or "") if isinstance(doc_map, dict) else "",
+        limit_sections=limit_sections,
     )
 
     # 缓存命中放行（指纹含版本/prompt/护栏/route；clause_family 另含策略与地图键）
@@ -3582,6 +3632,11 @@ def run_functional_extract(
         }
         if not truth_entries:
             quality_gate["reason"] = "truth set is empty"
+        elif limit_sections is not None:
+            quality_gate["status"] = "NO_GATE"
+            quality_gate["reason"] = (
+                "limited section smoke cannot establish full-document quality"
+            )
 
     payload = {
         "schema_version": 1,
@@ -3598,6 +3653,12 @@ def run_functional_extract(
         "draft": executed_route == "stub",
         "context_pack_strategy": resolved_strategy,
         "clause_count": len(sections),
+        "input_scope": {
+            "mode": "limited_smoke" if limit_sections is not None else "full_document",
+            "limit_sections": limit_sections,
+            "selected_section_count": len(sections),
+            "source_section_count": source_section_count,
+        },
         "functional_requirements": len(items),
         "fingerprint": fingerprint,
         "conservation": conservation,
@@ -3658,6 +3719,11 @@ def _finalize_payload(
     }
     result["incomplete_inputs"] = payload.get("incomplete_inputs", False)
     result["input_completeness"] = payload.get("input_completeness", {})
+    result["input_scope"] = payload.get("input_scope", {
+        "mode": "full_document",
+        "limit_sections": None,
+        "selected_section_count": payload.get("clause_count", 0),
+    })
     routing = payload.get("unit_routing")
     if isinstance(routing, dict):
         # §17：结果摘要镜像路由事实（CLI/manifest/链路日志可见，不进产物考古）

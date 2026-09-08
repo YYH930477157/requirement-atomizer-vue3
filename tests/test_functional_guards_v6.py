@@ -70,7 +70,7 @@ class PreservationBaselineTests(unittest.TestCase):
 class GuardsVersionTests(unittest.TestCase):
     def test_version_bumped(self) -> None:
         self.assertEqual(fe.FUNCTIONAL_EXTRACT_GUARDS_VERSION,
-                         "functional-extract-guards-v6")
+                         "functional-extract-guards-v7")
 
 
 if __name__ == "__main__":

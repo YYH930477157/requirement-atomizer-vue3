@@ -16,6 +16,26 @@
   targeted reextract（块锚在场，M5 可执行，费用极小）消 mixed；②任务 D 闭环处理
   preservation；③然后全量 343 节正式门禁。
 
+## 本机质量修复（2026-09-08）——限量运行不再冒充正式门禁；功能产物风险与新鲜度统一
+
+本轮只收敛无需客户语料、公司模板或 LLM key 的确定性缺陷；真实 WS0 三步门禁继续按上节
+交接，未用单元测试或限量冒烟替代。
+
+- **限量运行诚实标识**：`functional_extract` 产物与 A/B 报告新增 `input_scope`；
+  `--limit-sections` 只允许正整数并进入缓存/阶段指纹。限量结果即使阈值全部达标也最多
+  `NO_GATE`，不能产生全文档 `PASS`。
+- **证据与防幻觉闭环**：数字漂移扫描覆盖 objective/description/behaviors/conditions/
+  constraints/variants/exceptions/related objects 的最终规范形态；受保护编码清洗不再用原字段
+  回填，合并同条款条目时保留 rejected/numeric/quote 审计并按最终叙述重算 evidence。
+  功能复核页的风险筛选与详情同步显示上述信号。
+- **重复文本豁免收窄**：conservation v8→v9；重复文本归一保留小数点、正负号、比较运算符
+  与词界，`1.5/15`、`-5/5`、`!=/=` 不再碰撞；逐字重复豁免本身仍保留。
+- **读取面一致性**：`/functional-requirements` 与文档批注共用 direct product 可用性门；
+  `execution_status=failed` 或上游 blocks/chunks/doc_map/table sidecar、producer lineage 过期时
+  返回空且标 unavailable，不再把失败产物投影成普通 draft。functional-extract 阶段指纹补入
+  三个只读表格解析 sidecar；本阶段可惰性生成的 routing/outline 文件不列为输入，避免首跑
+  自我失效。
+
 ## 裁定+闭环（2026-09-07b）——#3 裁「豁免逐字重复」落地：conservation v8 reason 2 重复文本豁免；#4 WS0 已授权待 key
 
 > 用户裁定（AskUserQuestion）：b 类重复文本语义取**豁免**——被覆盖义务句逐字出现在

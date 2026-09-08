@@ -987,7 +987,16 @@ STAGE_INPUTS: dict[str, list[str]] = {
                  "ai_supplements.jsonl"],
     "functional-synthesis": ["ai_requirements.jsonl", "ai_requirements.meta.json", "blocks.jsonl",
                              "ai_review_states.jsonl", "ai_supplements.jsonl"],
-    "functional-extract": ["blocks.jsonl", "chunks.jsonl", "doc_map.json"],
+    # functional-extract consumes table parse sidecars as part of its
+    # clause-family input and conservation baseline.  Track only inputs owned
+    # by an earlier parser stage: extraction_units, routing decisions, and the
+    # outline report can be materialized lazily by this stage itself, so adding
+    # them here would make the stage's own pre/post input check self-invalidate.
+    "functional-extract": [
+        "blocks.jsonl", "chunks.jsonl", "doc_map.json",
+        "table_items.jsonl", "table_cell_items.jsonl",
+        "table_cell_dispositions.jsonl",
+    ],
     "requirements-analysis": [FUNCTIONAL_REQUIREMENTS, "ai_requirements.jsonl", "ai_review_states.jsonl",
                               "clarification_answers.jsonl", "blocks.jsonl", "term_map.json",
                               "ai_requirements.meta.json", "ai_supplements.jsonl"],
@@ -2518,6 +2527,10 @@ def _functional_extract_stage_config(limit_sections: int | None = None) -> dict[
     否则切换 RATOMIZER_CONTEXT_PACK_STRATEGY 后 chain 续跑会静默跳过直抽阶段。
     ``limit_sections`` 截前 N 条款时同样进指纹（成本受限冒烟与全量代不可互串）。
     """
+    if limit_sections is not None and (
+        type(limit_sections) is not int or limit_sections <= 0
+    ):
+        raise ValueError("limit_sections must be a positive integer")
     from functional_extract import (
         CONTEXT_PACK_STRATEGY_ENV,
         context_pack_strategy,
@@ -2564,6 +2577,10 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
     逐阶段发进度事件并记 run_manifest；任一阶段失败 → 记账后整链响亮失败。
     """
     out_dir = out_dir.expanduser().resolve()
+    if limit_sections is not None and (
+        type(limit_sections) is not int or limit_sections <= 0
+    ):
+        raise ValueError("limit_sections must be a positive integer")
     from pipeline_track import LEGACY_STAGES, require_legacy_track, result_track
 
     unknown = [s for s in stages if s not in CHAIN_ORDER]

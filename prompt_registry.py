@@ -65,7 +65,8 @@ PROMPT_REGISTRY: list[dict[str, str]] = [
     # 顺带覆盖 09-07 轨道分离提交的粒度契约提示词改动（dc34f25 改文本未 bump）。
     {"id": "functional-extract", "version": "functional-extract-prompt-v5", "owner_module": "functional_extract",
      "purpose": "Functional requirement direct extraction prompt"},
-    {"id": "functional-extract-guards", "version": "functional-extract-guards-v6", "owner_module": "functional_extract",
+    # v7：证据诊断覆盖完整叙述并在同条款合并后重算；护栏审计合并保留。
+    {"id": "functional-extract-guards", "version": "functional-extract-guards-v7", "owner_module": "functional_extract",
      "purpose": "Functional extract anti-drift guard version"},
     # 四轮复审 P2：守恒模型版本显式登记——守恒载荷语义演进（如 cross_script_review
     # 携带文本身份）随 registry/指纹/producer stamp/claim lineage 四处同步失效。
@@ -78,7 +79,8 @@ PROMPT_REGISTRY: list[dict[str, str]] = [
     # v8（2026-09-07 用户裁定）：reason 2 豁免逐字重复——被覆盖义务句逐字出现在
     # 声明条款基线文本内判疑似误报豁免（covered_clause_text_dup_exemptions 审计，
     # 不影响 ok）；任一被覆盖句不在声明条款内照旧 blocking。
-    {"id": "functional-extract-conservation", "version": "functional-conservation-obligation-evidence-v8",
+    # v9：重复豁免保留数值小数点、正负号、运算符和词界。
+    {"id": "functional-extract-conservation", "version": "functional-conservation-obligation-evidence-v9",
      "owner_module": "functional_extract",
      "purpose": "Functional extract obligation/evidence conservation model version"},
 

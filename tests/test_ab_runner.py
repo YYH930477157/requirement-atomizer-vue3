@@ -1057,7 +1057,7 @@ class HungarianAlgorithmTests(unittest.TestCase):
 class ThresholdGateTests(unittest.TestCase):
     """§5.4 强制阈值（14 项全必需）+ 按文档独立配置；矩阵 7。"""
 
-    def _healthy_run(self, *, truth=None, thresholds=None, parsed_name=None) -> dict:
+    def _healthy_run(self, *, truth=None, thresholds=None, parsed_name=None, limit_sections=None) -> dict:
         truth = ab._load_truth(FIXTURE_TRUTH_PATH) if truth is None else truth
         with tempfile.TemporaryDirectory() as td:
             work = Path(td)
@@ -1066,6 +1066,7 @@ class ThresholdGateTests(unittest.TestCase):
                 _parsed_dir(work / (parsed_name or FIXTURE_DOC_ID)),
                 route="openai_compatible", template_path=work / "t.xlsx",
                 work_root=work / "ab", truth_rows=truth, thresholds=thresholds,
+                limit_sections=limit_sections,
                 chain_runner=_chain_runner_factory(
                     b_items=[{"functional_requirement_id": f"FRE-{i}",
                               "objective": row["expected_text"],
@@ -1078,6 +1079,22 @@ class ThresholdGateTests(unittest.TestCase):
         report = self._healthy_run(thresholds=dict(FULL_THRESHOLDS))
         self.assertEqual(report["verdict"], "PASS", report)
         self.assertEqual(report["threshold_violations"], [])
+
+    def test_limited_smoke_cannot_pass_even_when_all_thresholds_pass(self) -> None:
+        report = self._healthy_run(thresholds=dict(FULL_THRESHOLDS), limit_sections=100)
+        self.assertEqual(report["threshold_violations"], [])
+        self.assertEqual(report["verdict"], "NO_GATE", report)
+        self.assertEqual(report["input_scope"], {
+            "mode": "limited_smoke", "limit_sections": 100,
+        })
+        self.assertTrue(report["gate_limitations"])
+
+    def test_invalid_limit_is_rejected_before_running_chain(self) -> None:
+        for limit in (0, -1):
+            with self.subTest(limit=limit), mock.patch("desktop_tasks.chain_task") as runner:
+                with self.assertRaisesRegex(ValueError, "positive integer"):
+                    self._healthy_run(thresholds=dict(FULL_THRESHOLDS), limit_sections=limit)
+                runner.assert_not_called()
 
     def test_matrix7_missing_precision_threshold_is_no_gate(self) -> None:
         """矩阵 7：缺任一必需阈值（min_truth_precision）→ NO_GATE，不 PASS。"""

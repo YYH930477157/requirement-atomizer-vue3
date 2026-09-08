@@ -14,7 +14,9 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -74,6 +76,81 @@ class FunctionalReviewEndpointTests(unittest.TestCase):
             self.assertTrue(row["review_subject_fingerprint"])
             self.assertEqual(row["target_fingerprint"], "fp-direct-v1")
             self.assertTrue(row["target_authority_write_revision"])
+
+    def test_get_hides_failed_product_from_review_projection(self) -> None:
+        """A failed direct run must not be projected as a normal draft row."""
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            _write_blocks(out)
+            product = _write_direct_product(out)
+            product["execution_status"] = "failed"
+            (out / "functional_requirements.json").write_text(
+                json.dumps(product, ensure_ascii=False), encoding="utf-8")
+            with _claim_api(out) as base:
+                status, view = _http_json(base, "/functional-requirements")
+            self.assertEqual(status, 200)
+            self.assertEqual(view["schema"], "functional-requirements/v1")
+            self.assertEqual(view["items"], [])
+            self.assertEqual(view["total"], 0)
+            self.assertFalse(view["available"])
+            self.assertEqual(view["reason"], "functional_extract_failed")
+            # The document annotation projection uses the same gate.
+            self.assertEqual(api_server.build_ai_requirements(out), [])
+
+    def test_get_hides_malformed_product_from_review_projection(self) -> None:
+        """An existing unreadable product is unavailable, not an empty success."""
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            _write_blocks(out)
+            (out / "functional_requirements.json").write_text(
+                "{not-json", encoding="utf-8",
+            )
+            with _claim_api(out) as base:
+                status, view = _http_json(base, "/functional-requirements")
+            self.assertEqual(status, 200)
+            self.assertEqual(view["items"], [])
+            self.assertEqual(view["total"], 0)
+            self.assertFalse(view["available"])
+            self.assertEqual(view["reason"], "functional_requirements_invalid")
+            self.assertEqual(api_server.build_ai_requirements(out), [])
+
+    def test_get_hides_product_when_input_sidecar_is_newer(self) -> None:
+        """A changed parser sidecar invalidates the direct product."""
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            _write_blocks(out)
+            product = _write_direct_product(out)
+            product_path = out / "functional_requirements.json"
+            product_path.write_text(json.dumps(product, ensure_ascii=False), encoding="utf-8")
+            # A newer clause sidecar is an input change even when blocks.jsonl
+            # itself was not rewritten.
+            chunks = out / "chunks.jsonl"
+            chunks.write_text('{"section_path":["4.1"],"text":"changed"}\n', encoding="utf-8")
+            future = time.time() + 5
+            os.utime(chunks, (future, future))
+            with _claim_api(out) as base:
+                status, view = _http_json(base, "/functional-requirements")
+            self.assertEqual(status, 200)
+            self.assertEqual(view["items"], [])
+            self.assertFalse(view["available"])
+            self.assertEqual(view["reason"], "functional_requirements_stale")
+            self.assertEqual(api_server.build_ai_requirements(out), [])
+
+    def test_get_hides_product_with_old_lineage(self) -> None:
+        """A producer/prompt version mismatch invalidates the direct product."""
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            _write_blocks(out)
+            product = _write_direct_product(out)
+            product["prompt_version"] = "functional-extract-prompt-stale"
+            (out / "functional_requirements.json").write_text(
+                json.dumps(product, ensure_ascii=False), encoding="utf-8")
+            with _claim_api(out) as base:
+                status, view = _http_json(base, "/functional-requirements")
+            self.assertEqual(status, 200)
+            self.assertEqual(view["items"], [])
+            self.assertFalse(view["available"])
+            self.assertEqual(view["reason"], "functional_requirements_stale")
 
     def test_post_accept_writes_level_functional_row(self) -> None:
         with tempfile.TemporaryDirectory() as td:

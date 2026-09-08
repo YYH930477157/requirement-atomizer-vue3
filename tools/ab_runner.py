@@ -1013,7 +1013,7 @@ def run_ab_for_document(
     ``limit_sections``（2026-09-07 成本受限冒烟）：截前 N 节/条款（A 轨 ai-extract
     与 B 轨 functional-extract 同截）。注意：真值集若覆盖全文档，部分语料的
     recall 类阈值必然塌——该形态的报告是**冒烟证据**，不得作为 Go/No-Go 依据
-    （报告 verdict_fail_reasons 会如实记录）。
+    （报告 input_scope/gate_limitations 如实记录；成功冒烟最多 NO_GATE）。
 
     判定语义（M3）：链失败/产物缺失/执行不完整/守恒未闭合/stub 降级/最终交付物缺席/
     缺必需列/空正文行/不可读单元格 → FAIL；缺真值集（含真值集无本文档行）、缺阈值文
@@ -1023,6 +1023,18 @@ def run_ab_for_document(
     ``_load_template_extents`` 剥离样例行/annex 清单 sheet）；functional JSON 指标
     仅诊断。
     """
+    if limit_sections is not None and (
+        type(limit_sections) is not int or limit_sections <= 0
+    ):
+        raise ValueError("limit_sections must be a positive integer")
+    input_scope = {
+        "mode": "limited_smoke" if limit_sections is not None else "full_document",
+        "limit_sections": limit_sections,
+    }
+    gate_limitations = (
+        ["limited_sections_smoke_only: limited input cannot establish a full-document gate"]
+        if limit_sections is not None else []
+    )
     if route == "stub":
         raise ValueError(
             "ab_runner 拒绝 stub route——直抽 stub 产物按 §3.5 是不可发布占位，"
@@ -1224,6 +1236,8 @@ def run_ab_for_document(
         verdict = "NO_GATE"
     elif threshold_violations:
         verdict = "FAIL"
+    elif gate_limitations:
+        verdict = "NO_GATE"
     else:
         verdict = "PASS"
 
@@ -1231,6 +1245,8 @@ def run_ab_for_document(
     report = {
         "schema": REPORT_SCHEMA,
         "parsed_dir": str(parsed_dir),
+        "input_scope": input_scope,
+        "gate_limitations": gate_limitations,
         "document_keys": {k: doc_keys.get(k, "") for k in ("name", "sha256", "path")},
         "route": route,
         "env_snapshot": env_snapshot,
@@ -1288,6 +1304,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--keep-dirs", action="store_true",
                         help="保留 A/B 工作目录供人工复核（默认清理）")
     args = parser.parse_args(argv)
+    if args.limit_sections is not None and args.limit_sections <= 0:
+        parser.error("--limit-sections must be a positive integer")
 
     try:
         truth_rows = _load_truth(args.truth)
@@ -1320,7 +1338,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[ab_runner] {parsed_dir}: {report.get('verdict')} "
               f"failures={report.get('failures')} "
               f"missing_gates={report.get('missing_gates')} "
-              f"threshold_violations={report.get('threshold_violations')}",
+              f"threshold_violations={report.get('threshold_violations')} "
+              f"gate_limitations={report.get('gate_limitations')}",
               file=sys.stderr)
 
     verdict_priority = {"FAIL": 2, "NO_GATE": 1, "PASS": 0}

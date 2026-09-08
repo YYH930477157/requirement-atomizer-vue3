@@ -288,6 +288,21 @@ class FingerprintDisciplineTests(unittest.TestCase):
                     out, "functional-extract")
             self.assertNotEqual(unset, clause_family)
 
+    def test_functional_extract_stage_tracks_routing_and_table_sidecars(self) -> None:
+        """A sidecar change must prevent chain reuse of an older direct product."""
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            _write_min_corpus(out)
+            before = desktop_tasks.stage_input_fingerprint(out, "functional-extract")
+            (out / "table_items.jsonl").write_text(
+                '{"table_id":"T1","text":"changed"}\n', encoding="utf-8")
+            after = desktop_tasks.stage_input_fingerprint(out, "functional-extract")
+            self.assertNotEqual(before, after)
+            self.assertTrue({
+                "table_items.jsonl", "table_cell_items.jsonl",
+                "table_cell_dispositions.jsonl",
+            }.issubset(desktop_tasks.STAGE_INPUTS["functional-extract"]))
+
     def test_entry_switch_env_changes_stage_fingerprint(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             out = Path(td)

@@ -138,6 +138,27 @@ class CrossClauseReferenceTests(unittest.TestCase):
 
 
 class FiveChecksTests(unittest.TestCase):
+    def test_duplicate_exemption_preserves_numeric_and_operator_identity(self) -> None:
+        for sentence, home in (
+            ("Set 1.5 V", "Set 15 V"),
+            ("Set 5 V", "Set -5 V"),
+            ("Set 5 V", "Set - 5 V"),
+            ("x <= 5", "x >= 5"),
+            ("x != 5", "x = 5"),
+            ("x < 5", "x = 5"),
+            ("Log 1,500 events", "Log 1500 events"),
+            ("Log 5 events", "Log 15 events"),
+            ("Can not send", "Cannot send"),
+        ):
+            with self.subTest(sentence=sentence, home=home):
+                self.assertFalse(fe._unit_sentence_duplicated_in_home_clauses(
+                    sentence, [{"text": home}], [0]))
+        self.assertTrue(fe._unit_sentence_duplicated_in_home_clauses(
+            "The meter shall set 1.5 V.",
+            [{"text": "Note: THE meter shall set 1.5 V, using the active profile."}], [0]))
+        self.assertTrue(fe._unit_sentence_duplicated_in_home_clauses(
+            "系统应记录事件。", [{"text": "说明：系统应记录事件，并产生告警。"}], [0]))
+
     def test_clause_coverage_positive_and_negative(self) -> None:
         sections = [
             _clause("4.1", ["B1"], "The meter shall log events."),
@@ -797,10 +818,10 @@ class ConservationV7QuoteLocalAnchorTests(unittest.TestCase):
             1,
         )
 
-    def test_conservation_model_version_is_v8(self) -> None:
+    def test_conservation_model_version_is_v9(self) -> None:
         self.assertEqual(
             fe.FUNCTIONAL_CONSERVATION_MODEL_VERSION,
-            "functional-conservation-obligation-evidence-v8",
+            "functional-conservation-obligation-evidence-v9",
         )
         import prompt_registry
         registered = {

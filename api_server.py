@@ -1678,18 +1678,35 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
         """
         from requirements_analysis_rules import (
             _read_functional_requirements_payload,
-            read_functional_requirements,
         )
+        # The functional product carries execution/freshness state in the same
+        # payload consumed by the document annotation projection.  Check that
+        # state before reading rows so a failed or stale run cannot be made to
+        # look like a normal ``draft`` review queue entry.
         try:
-            items = read_functional_requirements(self.output_dir)
+            payload = _read_functional_requirements_payload(self.output_dir) or {}
         except (TimeoutError, OSError) as exc:
             self.send_json({"error": "functional_requirements_unavailable", "detail": str(exc),
                             "retryable": True}, status=503)
             return
-        try:
-            payload = _read_functional_requirements_payload(self.output_dir) or {}
-        except (TimeoutError, OSError):
-            payload = {}
+        unavailable_reason = _functional_product_unavailable_reason(
+            self.output_dir, payload,
+        )
+        if unavailable_reason:
+            self.send_json({
+                "schema": "functional-requirements/v1",
+                "items": [],
+                "total": 0,
+                "available": False,
+                "reason": unavailable_reason,
+                "execution_status": str(payload.get("execution_status") or "") or None,
+            })
+            return
+        # Use the already-read payload for the rows as well as the gate.  This
+        # keeps execution status, freshness evidence, and projected items on a
+        # single snapshot if a producer replaces the file between reads.
+        raw_items = payload.get("items") if isinstance(payload, dict) else None
+        items = [item for item in (raw_items or []) if isinstance(item, dict)]
         served = _project_functional_review_view(self.output_dir, items, payload)
         self.send_json({"schema": "functional-requirements/v1", "items": served,
                         "total": len(served)})
@@ -2641,9 +2658,9 @@ def _build_ai_requirements_impl(output_dir: Path) -> list[dict]:
     direct_payload = _read_functional_requirements_payload(output_dir)
     if (isinstance(direct_payload, dict)
             and str(direct_payload.get("producer") or "").startswith("functional-extract")):
-        if _functional_product_is_stale(output_dir):
+        if _functional_product_unavailable_reason(output_dir, direct_payload):
             return []
-        return _functional_direct_annotation_rows(output_dir)
+        return _functional_direct_annotation_rows(output_dir, payload=direct_payload)
 
     if final_ai_requirements_are_stale(output_dir):
         return []
@@ -2665,35 +2682,155 @@ def _build_ai_requirements_impl(output_dir: Path) -> list[dict]:
     return _functional_direct_annotation_rows(output_dir)
 
 
-def _functional_product_is_stale(output_dir: Path) -> bool:
-    """Conservatively reject a direct product older than the current blocks."""
+_FUNCTIONAL_FRESHNESS_INPUTS = (
+    # Clause content and the deterministic routing/context sidecars all shape
+    # the functional extraction fingerprint.  Keep this list read-only and
+    # conservative: a newer source sidecar invalidates the product until the
+    # extraction stage is rerun.
+    "blocks.jsonl",
+    "chunks.jsonl",
+    "doc_map.json",
+    "table_items.jsonl",
+    "table_cell_items.jsonl",
+    "table_cell_dispositions.jsonl",
+)
+
+
+def _functional_product_unavailable_reason(
+    output_dir: Path,
+    payload: dict | None = None,
+) -> str | None:
+    """Return the shared availability gate reason for a functional payload.
+
+    ``functional_requirements.json`` is consumed by both FunctionalReview and
+    the document annotation projection.  Keep the execution and freshness
+    checks in one place so the two surfaces cannot disagree (for example,
+    showing a failed run as a harmless ``draft`` row).  Legacy
+    ``functional-synthesis`` payloads retain their historical projection; the
+    extra freshness checks apply to the direct ``functional-extract`` producer.
+    """
+    if payload is None:
+        try:
+            from requirements_analysis_rules import _read_functional_requirements_payload
+
+            payload = _read_functional_requirements_payload(output_dir)
+        except (TimeoutError, OSError):
+            return "functional_requirements_unavailable"
+    if not isinstance(payload, dict):
+        return "functional_requirements_invalid"
+    if not payload:
+        product = _artifact_read_path(
+            Path(output_dir).expanduser().resolve(),
+            "functional_requirements.json",
+            category="pipeline",
+        )
+        # The payload reader intentionally maps malformed JSON to ``{}`` for
+        # old callers.  Distinguish that from a genuinely absent product here:
+        # an existing but unreadable/empty artifact must fail closed.
+        if product.is_file():
+            return "functional_requirements_invalid"
+        return None
+    status = str(payload.get("execution_status") or "").strip().lower()
+    if status == "failed":
+        return "functional_extract_failed"
+    producer = str(payload.get("producer") or "")
+    if not producer.startswith("functional-extract"):
+        return None
+    try:
+        stale = _functional_product_is_stale(output_dir, payload=payload)
+    except (OSError, ResultPackageError, ValueError, TypeError):
+        # A corrupt result-package layout is not evidence of a current product.
+        # Keep the read endpoint fail-closed instead of surfacing a 500.
+        stale = True
+    if stale:
+        return "functional_requirements_stale"
+    return None
+
+
+def _functional_product_is_stale(
+    output_dir: Path,
+    *,
+    payload: dict | None = None,
+) -> bool:
+    """Reject a direct product older than source inputs or code lineage.
+
+    The product's extraction fingerprint already binds clause content, route,
+    prompt/guard/conservation versions, and (for clause-family mode) routing
+    lineage.  The API cannot safely reconstruct an LLM route from a persisted
+    result, so it validates the persisted lineage fields when present and uses
+    a conservative source-sidecar mtime gate for the input portion.  Missing
+    legacy lineage fields remain readable for backwards compatibility.
+    """
     root = Path(output_dir).expanduser().resolve()
     product = _artifact_read_path(root, "functional_requirements.json", category="pipeline")
-    blocks = _artifact_read_path(root, "blocks.jsonl")
-    if not product.is_file() or not blocks.is_file():
+    if not product.is_file():
         return False
     try:
-        return blocks.stat().st_mtime_ns > product.stat().st_mtime_ns
+        product_mtime = product.stat().st_mtime_ns
     except OSError:
         return True
 
+    if payload is None:
+        try:
+            from requirements_analysis_rules import _read_functional_requirements_payload
 
-def _functional_direct_annotation_rows(output_dir: Path) -> list[dict]:
+            payload = _read_functional_requirements_payload(root)
+        except (TimeoutError, OSError):
+            return True
+    if isinstance(payload, dict) and str(payload.get("producer") or "").startswith(
+        "functional-extract"
+    ):
+        # Version fields are optional on early direct products.  When a field
+        # is present, a mismatch means the stored extraction fingerprint was
+        # produced by a different implementation and must be regenerated.
+        try:
+            from functional_extract import current_producer_lineage, context_pack_strategy
+
+            for key, current in current_producer_lineage().items():
+                stored = payload.get(key)
+                if stored not in (None, "") and str(stored) != str(current):
+                    return True
+            stored_strategy = str(payload.get("context_pack_strategy") or "").strip()
+            if stored_strategy and stored_strategy != context_pack_strategy():
+                return True
+        except (ImportError, OSError, RuntimeError, ValueError):
+            # A lineage probe must never turn a read-only endpoint into a 500;
+            # the source mtime gate below remains available as a fallback.
+            pass
+
+    for name in _FUNCTIONAL_FRESHNESS_INPUTS:
+        source = _artifact_read_path(root, name, category="pipeline")
+        if not source.is_file():
+            continue
+        try:
+            if source.stat().st_mtime_ns > product_mtime:
+                return True
+        except OSError:
+            return True
+    return False
+
+
+def _functional_direct_annotation_rows(
+    output_dir: Path,
+    *,
+    payload: dict | None = None,
+) -> list[dict]:
     """直抽模式：FRE 条目 → 批注卡片行（level=functional 如实标注，非原子卡伪装）。"""
-    from requirements_analysis_rules import _read_functional_requirements_payload
+    if payload is None:
+        from requirements_analysis_rules import _read_functional_requirements_payload
 
-    try:
-        payload = _read_functional_requirements_payload(output_dir)
-    except (TimeoutError, OSError):
-        return []
+        try:
+            payload = _read_functional_requirements_payload(output_dir)
+        except (TimeoutError, OSError):
+            return []
     if not isinstance(payload, dict):
         return []
     if not str(payload.get("producer") or "").startswith("functional-extract"):
         return []
-    # A failed direct run must not expose a partial legacy-shaped projection as
-    # if it were a usable functional product.  ``partial`` remains visible for
-    # review; ``failed`` has no authoritative rows.
-    if str(payload.get("execution_status") or "").strip().lower() == "failed":
+    # Keep document annotations on the same execution/freshness gate as the
+    # FunctionalReview endpoint.  ``partial`` remains visible for review;
+    # ``failed`` and stale products have no authoritative rows.
+    if _functional_product_unavailable_reason(output_dir, payload):
         return []
     items = payload.get("items")
     if not isinstance(items, list):

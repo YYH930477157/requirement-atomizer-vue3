@@ -115,6 +115,9 @@ type FunctionalItem = {
   ownership_override?: string
   translated?: string
   evidence_quote_replaced?: boolean
+  rejected_codes?: string[]
+  numeric_drift_flag?: boolean
+  numeric_drift_values?: Array<string | number>
   evidence_integrity?: { ok?: boolean; findings?: Array<{ kind?: string; token?: string; severity?: string }> }
   domain_mapping?: {
     status?: "mapped" | "candidate" | "unmapped"
@@ -192,6 +195,7 @@ const visibleFunctionalItems = computed(() => {
     if (requirementFilter.value === "no_source") return hasNoDocSource(item)
     if (requirementFilter.value === "needs_review") {
       return state === "draft" || adjudication === "review" || Boolean(item.conflict_flags?.length)
+        || Boolean(evidenceRiskLabel(item))
     }
     return true
   })
@@ -595,8 +599,8 @@ function evidenceFindings(item: FunctionalItem): Array<{ kind?: string; token?: 
 
 function evidenceRiskLabel(item: FunctionalItem): string {
   const findings = evidenceFindings(item)
-  if (findings.some((finding) => finding.severity === "blocking")) return "证据待核"
-  if (findings.length || Boolean(item.evidence_quote_replaced)) return "证据提醒"
+  if (findings.some((finding) => finding.severity === "blocking") || Boolean(item.rejected_codes?.length)) return "证据待核"
+  if (findings.length || Boolean(item.evidence_quote_replaced) || Boolean(item.numeric_drift_flag)) return "证据提醒"
   return ""
 }
 
@@ -673,6 +677,11 @@ function coerceFunctionalItem(raw: unknown, origin: "functional" | "manual"): Fu
     notes: String(record.notes || "").trim() || undefined,
     ownership_override: String(record.ownership_override || "").trim() || undefined,
     evidence_quote_replaced: record.evidence_quote_replaced === true,
+    rejected_codes: asStringList(record.rejected_codes),
+    numeric_drift_flag: record.numeric_drift_flag === true,
+    numeric_drift_values: Array.isArray(record.numeric_drift_values)
+      ? record.numeric_drift_values.filter((value) => value !== null && value !== undefined) as Array<string | number>
+      : undefined,
     evidence_integrity: record.evidence_integrity && typeof record.evidence_integrity === "object"
       ? record.evidence_integrity as FunctionalItem["evidence_integrity"]
       : undefined,
@@ -1494,14 +1503,18 @@ function toggleChildren(itemId: string) {
                   >{{ blockId }}</button>
                 </div>
               </div>
-              <div v-if="evidenceRiskLabel(selectedItem)" class="evidence-status" data-testid="evidence-status">
-                <strong>{{ evidenceRiskLabel(selectedItem) }}</strong>
-                <span v-if="selectedItem.evidence_quote_replaced">引句未落在当前条款，已回退为本地原文。</span>
-                <span v-for="(finding, idx) in evidenceFindings(selectedItem)" :key="`ef-${idx}`">
-                  {{ evidenceFindingLabel(finding.kind) }}：{{ finding.token || "原文标记未在需求叙述中出现" }}
-                </span>
-              </div>
             </template>
+            <div v-if="evidenceRiskLabel(selectedItem)" class="evidence-status" data-testid="evidence-status">
+              <strong>{{ evidenceRiskLabel(selectedItem) }}</strong>
+              <span v-if="selectedItem.evidence_quote_replaced">引句未落在当前条款，已回退为本地原文。</span>
+              <span v-if="selectedItem.rejected_codes?.length">已拒绝规则：{{ selectedItem.rejected_codes.join("、") }}</span>
+              <span v-if="selectedItem.numeric_drift_flag">
+                数字漂移{{ selectedItem.numeric_drift_values?.length ? `：${selectedItem.numeric_drift_values.join("、")}` : "" }}
+              </span>
+              <span v-for="(finding, idx) in evidenceFindings(selectedItem)" :key="`ef-${idx}`">
+                {{ evidenceFindingLabel(finding.kind) }}：{{ finding.token || "原文标记未在需求叙述中出现" }}
+              </span>
+            </div>
           </section>
 
           <!-- WS-C4：中英对照翻译 -->
