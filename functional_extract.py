@@ -3777,6 +3777,14 @@ def load_clauses_detailed(
     from result_package import governed_artifact_path
 
     out_dir = Path(out_dir).expanduser().resolve()
+    semantic_sections = _load_semantic_sections(out_dir)
+    if semantic_sections:
+        if outline_authority is not False:
+            from document_outline import apply_outline_authority
+
+            return apply_outline_authority(
+                _load_blocks(out_dir), semantic_sections, enabled=outline_authority)
+        return semantic_sections, None
     chunks_path = governed_artifact_path(out_dir, "chunks.jsonl", category="pipeline", for_write=False)
     if chunks_path.is_file():
         rows = read_jsonl(chunks_path)
@@ -3814,6 +3822,54 @@ def load_clauses_detailed(
         return assemble_sections_detailed(
             read_jsonl(blocks_path), outline_authority=outline_authority)
     return [], None
+
+
+def _load_semantic_sections(out_dir: Path) -> list[dict[str, Any]]:
+    """Load the validated semantic partition produced by the parse stage.
+
+    The sidecar is an input contract for functional extraction, so malformed or
+    stale reports must fall back to the existing chunks path rather than
+    silently dropping source blocks.
+    """
+    from io_utils import read_jsonl
+    from result_package import governed_artifact_path
+
+    report_path = governed_artifact_path(
+        out_dir, "semantic_segmentation.json", category="pipeline", for_write=False,
+    )
+    blocks_path = governed_artifact_path(out_dir, "blocks.jsonl", category="pipeline", for_write=False)
+    if not report_path.is_file() or not blocks_path.is_file():
+        return []
+    try:
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        if (report.get("configuration") or {}).get("mode") == "off":
+            return []
+        units = report.get("units")
+        blocks = [row for row in read_jsonl(blocks_path) if isinstance(row, dict)]
+        block_ids = {str(row.get("block_id")) for row in blocks if row.get("block_id") is not None}
+        sections: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for unit in units if isinstance(units, list) else []:
+            if not isinstance(unit, dict):
+                return []
+            source_ids = [str(value) for value in (unit.get("source_block_ids") or [])]
+            unit_id = str(unit.get("semantic_unit_id") or "")
+            if not unit_id or not source_ids or unit_id in seen or any(value not in block_ids for value in source_ids):
+                return []
+            seen.update(source_ids)
+            path = [str(value) for value in (unit.get("section_path") or [])]
+            sections.append({
+                "section_id": unit_id,
+                "section_path": path,
+                "heading": path[-1] if path else "",
+                "text": str(unit.get("text") or ""),
+                "block_ids": source_ids,
+            })
+        if not sections or seen != block_ids:
+            return []
+        return sections
+    except (OSError, ValueError, TypeError, KeyError):
+        return []
 
 
 def _load_blocks(out_dir: Path) -> list[dict[str, Any]]:

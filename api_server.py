@@ -2690,6 +2690,7 @@ _FUNCTIONAL_FRESHNESS_INPUTS = (
     "blocks.jsonl",
     "chunks.jsonl",
     "doc_map.json",
+    "semantic_segmentation.json",
     "table_items.jsonl",
     "table_cell_items.jsonl",
     "table_cell_dispositions.jsonl",

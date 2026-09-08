@@ -128,6 +128,9 @@ _ARTIFACTS = {
     item.artifact_id: item
     for item in (
         _artifact("blocks", "pipeline/blocks.jsonl", legacy_path="blocks.jsonl"),
+        _artifact("paragraph_segmentation", "pipeline/paragraph_segmentation.json", legacy_path="paragraph_segmentation.json"),
+        _artifact("paragraph_review", "pipeline/paragraph_review.html", legacy_path="paragraph_review.html"),
+        _artifact("semantic_segmentation", "pipeline/semantic_segmentation.json", legacy_path="semantic_segmentation.json"),
         _artifact("chunks", "pipeline/chunks.jsonl", legacy_path="chunks.jsonl"),
         _artifact("table_items", "pipeline/table_items.jsonl", legacy_path="table_items.jsonl"),
         _artifact("table_cell_items", "pipeline/table_cell_items.jsonl", legacy_path="table_cell_items.jsonl"),

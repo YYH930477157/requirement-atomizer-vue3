@@ -1333,9 +1333,11 @@ def extract_docx(
     last_caption: str | None = None
     table_count = 0
     order = 0
+    paragraph_index = 0
 
     for item in iter_body_items(document):
         if isinstance(item, Paragraph):
+            paragraph_index += 1
             raw_text = str(item.text or "")
             text = clean_text(raw_text)
             if not text:
@@ -1364,6 +1366,7 @@ def extract_docx(
                 "style": style_name,
                 "text": text,
                 "raw_text": raw_text,
+                "source_paragraph_index": paragraph_index,
                 **source_alignment_fields(raw_text, text),
                 "is_list_item": is_list_item,
                 "list_level": list_level,
@@ -2843,7 +2846,16 @@ def run_atomizer_pipeline(
     kb_paths: list[Path] | None = None,
     domain_pack_dir: Path | None = None,
     include_atomic_candidates: bool = True,
+    segmentation=None,
 ) -> dict[str, Any]:
+    from paragraph_segmentation import (
+        SegmentationOptions, build_segmentation_report, render_segmentation_review, segmentation_mode,
+    )
+    from paragraph_vision import add_visual_suggestions
+    from semantic_segmentation import build_semantic_report
+
+    segmentation = segmentation or SegmentationOptions()
+    effective_mode = segmentation.initial_mode()  # Validate before producing any files.
     input_path = input_path.expanduser().resolve()
     out_dir = out_dir.expanduser().resolve()
     if not input_path.exists():
@@ -2886,7 +2898,34 @@ def run_atomizer_pipeline(
     else:
         from parsers.pdf_parser import extract_pdf
 
-        blocks, table_items, table_cell_items = extract_pdf(input_path, knowledge_bases=knowledge_bases, document_profile=document_profile)
+        with segmentation_mode(effective_mode):
+            blocks, table_items, table_cell_items = extract_pdf(input_path, knowledge_bases=knowledge_bases, document_profile=document_profile)
+    paragraph_report = build_segmentation_report(blocks, input_path, segmentation)
+    semantic_report = build_semantic_report(
+        blocks, input_path, mode=segmentation.semantic_mode, route=segmentation.semantic_route,
+    )
+    add_visual_suggestions(paragraph_report, input_path, segmentation)
+    visual_state = paragraph_report["vision"]["status"]
+    if visual_state in ("unavailable", "partial"):
+        if segmentation.fallback == "fail_closed":
+            raise AtomizerInputError("段落视觉辅助未完成：" + str(paragraph_report["vision"].get("reason")))
+        if segmentation.fallback == "text_fallback" and effective_mode != "text_only":
+            if input_format == ".pdf":
+                with segmentation_mode("text_only"):
+                    blocks, table_items, table_cell_items = extract_pdf(
+                        input_path, knowledge_bases=knowledge_bases, document_profile=document_profile)
+            # Old suggestions refer to the old segmentation and must not be attached to new units.
+            vision = paragraph_report["vision"]
+            vision["suggestions"] = []
+            vision["suggestions_discarded"] = True
+            paragraph_report = build_segmentation_report(blocks, input_path, segmentation)
+            paragraph_report["vision"] = vision
+            paragraph_report["effective_mode"] = "text_only"
+            # The text fallback reparses the document and therefore changes the
+            # block partition used by semantic extraction as well.
+            semantic_report = build_semantic_report(
+                blocks, input_path, mode=segmentation.semantic_mode, route=segmentation.semantic_route,
+            )
     LOGGER.info("extracted %s blocks, %s table rows, %s table cells", len(blocks), len(table_items), len(table_cell_items))
     # S1-4：双轨签发的表格结构假设落盘（OFF / 无假设 → 不写任何文件，产物与 main 一致）。
     hypothesis_count = _flush_table_structure_hypotheses(out_dir, document_id=input_path.stem)
@@ -2924,6 +2963,10 @@ def run_atomizer_pipeline(
     quality_report = build_quality_report(blocks, table_items, atomic_candidates, llm_tasks, pattern_shadow=pattern_shadow, out_dir=out_dir)
 
     LOGGER.info("writing outputs")
+    write_json(governed_artifact_path(out_dir, "paragraph_segmentation.json"), paragraph_report)
+    write_json(governed_artifact_path(out_dir, "semantic_segmentation.json"), semantic_report)
+    governed_artifact_path(out_dir, "paragraph_review.html").write_text(
+        render_segmentation_review(paragraph_report), encoding="utf-8")
     block_count = write_jsonl(out_dir / "blocks.jsonl", blocks)
     chunk_count = write_jsonl(out_dir / "chunks.jsonl", chunks)
     table_count = write_jsonl(out_dir / "table_items.jsonl", table_items)
@@ -2975,6 +3018,8 @@ def run_atomizer_pipeline(
         "output_dir": str(out_dir),
         "track": "legacy_a" if include_atomic_candidates else "functional",
         "atomic_candidates": "enabled" if include_atomic_candidates else "disabled",
+            "paragraph_segmentation": {key: value for key, value in paragraph_report.items() if key != "units"},
+            "semantic_segmentation": {key: value for key, value in semantic_report.items() if key != "units"},
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "knowledge_bases": [
             {
@@ -2997,6 +3042,9 @@ def run_atomizer_pipeline(
             "llm_tasks": task_count,
         },
         "files": {
+            "paragraph_segmentation": "paragraph_segmentation.json",
+            "paragraph_review": "paragraph_review.html",
+            "semantic_segmentation": "semantic_segmentation.json",
             "blocks": "blocks.jsonl",
             "chunks": "chunks.jsonl",
             "table_items": "table_items.jsonl",

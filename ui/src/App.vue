@@ -552,6 +552,23 @@
               <div class="settings-section-title">交付物（业务目标）</div>
               <div class="settings-form-grid">
                 <label class="settings-field">
+                  <span>语义段落判断</span>
+                  <select v-model="semanticMode" data-testid="semantic-mode">
+                    <option value="off">关闭（每个结构段落独立）</option>
+                    <option value="deterministic">确定性规则</option>
+                    <option value="llm">LLM 理解（推荐用于复核）</option>
+                  </select>
+                </label>
+                <label v-if="semanticMode === 'llm'" class="settings-field">
+                  <span>语义判断模型路由</span>
+                  <select v-model="semanticRoute" data-testid="semantic-route">
+                    <option value="openai_compatible">当前模型 API</option>
+                    <option value="stub">Stub（测试回退）</option>
+                  </select>
+                </label>
+              </div>
+              <div class="settings-form-grid">
+                <label class="settings-field">
                   <span>翻译交付模式</span>
                   <select v-model="translationMode" data-testid="settings-translation-mode">
                     <option value="full">全文双语交付（默认）</option>
@@ -600,6 +617,36 @@
             </details>
             <section class="settings-section">
               <div class="settings-section-title">运行模式与模型 API</div>
+              <div class="settings-form-grid">
+                <label class="settings-field">
+                  <span>段落解析模式</span>
+                  <select v-model="paragraphMode" data-testid="paragraph-mode">
+                    <option value="text_only">文字模式</option>
+                    <option value="layout">版面模式（推荐）</option>
+                    <option value="vision_assisted">视觉辅助</option>
+                  </select>
+                </label>
+                <label v-if="paragraphMode === 'vision_assisted'" class="settings-field">
+                  <span>视觉不可用或预算不足时</span>
+                  <select v-model="paragraphFallback" data-testid="paragraph-fallback">
+                    <option value="keep_for_review">保留待核</option>
+                    <option value="text_fallback">退回文字模式</option>
+                    <option value="fail_closed">停止解析</option>
+                  </select>
+                </label>
+              </div>
+              <p class="settings-status">文字和版面模式均不发送图片。视觉辅助仅检查文字层 PDF 的待核区域，沿用下方已保存的模型配置；建议供人工复核，不自动修改原文边界。</p>
+              <template v-if="paragraphMode === 'vision_assisted'">
+                <label class="settings-toggle">
+                  <input v-model="llmSettings.visionCapable" type="checkbox" data-testid="paragraph-vision-capable" />
+                  <span><strong>我确认当前模型支持图片输入</strong><small>能力由使用者确认，模型名称不作为判断依据。请保存模型配置后运行。</small></span>
+                </label>
+                <div class="settings-form-grid">
+                  <label class="settings-field"><span>最多检查区域数</span><input v-model.number="paragraphVisionMaxRegions" data-testid="paragraph-max-regions" type="number" min="1" step="1" /></label>
+                  <label class="settings-field"><span>最多请求次数（含重试）</span><input v-model.number="paragraphVisionMaxCalls" data-testid="paragraph-max-calls" type="number" min="1" step="1" /></label>
+                  <label class="settings-field"><span>Token 预算</span><input v-model.number="paragraphVisionMaxTokens" data-testid="paragraph-max-tokens" type="number" min="1" step="1000" /></label>
+                </div>
+              </template>
               <label class="settings-toggle">
                 <input v-model="llmMode" type="checkbox" data-testid="settings-llm-mode" />
                 <span>
@@ -913,6 +960,25 @@ async function openDeliverable(name: string) {
 const activeNavLabel = computed(
   () => phaseNavItems.find((i) => i.id === activeNav.value)?.label || "审查")
 const llmMode = ref(false)
+type ParagraphMode = "text_only" | "layout" | "vision_assisted"
+type ParagraphFallback = "keep_for_review" | "text_fallback" | "fail_closed"
+function storedChoice<T extends string>(key: string, choices: readonly T[], fallback: T): T {
+  try { const value = localStorage.getItem(key); return choices.includes(value as T) ? value as T : fallback }
+  catch { return fallback }
+}
+const paragraphMode = ref<ParagraphMode>(storedChoice("ratomizer.paragraphMode.v1", ["text_only", "layout", "vision_assisted"], "layout"))
+const paragraphFallback = ref<ParagraphFallback>(storedChoice("ratomizer.paragraphFallback.v1", ["keep_for_review", "text_fallback", "fail_closed"], "keep_for_review"))
+const paragraphVisionMaxRegions = ref(5)
+const paragraphVisionMaxCalls = ref(5)
+const paragraphVisionMaxTokens = ref(100000)
+type SemanticMode = "off" | "deterministic" | "llm"
+type SemanticRoute = "stub" | "openai_compatible"
+const semanticMode = ref<SemanticMode>(storedChoice("ratomizer.semanticMode.v1", ["off", "deterministic", "llm"], "deterministic"))
+const semanticRoute = ref<SemanticRoute>(storedChoice("ratomizer.semanticRoute.v1", ["stub", "openai_compatible"], "openai_compatible"))
+watch(semanticMode, value => { try { localStorage.setItem("ratomizer.semanticMode.v1", value) } catch { /* storage unavailable */ } })
+watch(semanticRoute, value => { try { localStorage.setItem("ratomizer.semanticRoute.v1", value) } catch { /* storage unavailable */ } })
+watch(paragraphMode, value => { try { localStorage.setItem("ratomizer.paragraphMode.v1", value) } catch { /* storage unavailable */ } })
+watch(paragraphFallback, value => { try { localStorage.setItem("ratomizer.paragraphFallback.v1", value) } catch { /* storage unavailable */ } })
 const apiClient = ref<RequirementApiClient | null>(null)
 const reviewSessionKey = ref("")
 const recentSessions = ref<RequirementAtomizerRecentSession[]>([])
@@ -2145,6 +2211,14 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
       reviewScope: useLlmReview ? "targeted" : undefined,
       ...(options.llmReviewLimit && reviewEnabled ? { llmReviewLimit: options.llmReviewLimit } : {}),
       ...abntPreset,
+      paragraphMode: paragraphMode.value,
+      paragraphFallback: paragraphFallback.value,
+      paragraphVisionCapable: llmSettings.value.visionCapable,
+      paragraphVisionMaxRegions: paragraphVisionMaxRegions.value,
+      paragraphVisionMaxCalls: paragraphVisionMaxCalls.value,
+      paragraphVisionMaxTokens: paragraphVisionMaxTokens.value,
+      semanticMode: semanticMode.value,
+      semanticRoute: semanticRoute.value,
     })
     runProgress.value = 82
     runStage.value = "加载解析结果"

@@ -1184,10 +1184,11 @@ class ChainAndManifestTests(unittest.TestCase):
         # unchanged so adding the Phase 0 anchor cannot invalidate existing cached outputs.
         from table_dispositions import TABLE_DISPOSITION_RULE_VERSION
         from table_structure import TABLE_STRUCTURE_VERSION
+        from paragraph_segmentation import SEGMENTATION_VERSION
 
         expected = {
             "atomize": (
-                f"atomize+{PDF_TEXT_REPAIR_VERSION}"
+                f"atomize+{SEGMENTATION_VERSION}+{PDF_TEXT_REPAIR_VERSION}"
                 f"+repair-vocab-{text_repair_vocabulary_fingerprint()}"
                 # W8：D1/D2/D3 开关状态进戳（ON/OFF 不共用缓存）
                 f"+{pdf_layout_switch_fingerprint()}"
@@ -2470,6 +2471,8 @@ class ChainAndManifestTests(unittest.TestCase):
                 "table_items.jsonl",
                 "table_cell_items.jsonl",
                 "table_cell_dispositions.jsonl",
+                "paragraph_segmentation.json",
+                "paragraph_review.html",
                 "atomic_requirements.jsonl",
                 "llm_tasks.jsonl",
                 "quality_report.json",
@@ -2483,6 +2486,16 @@ class ChainAndManifestTests(unittest.TestCase):
                 "kb_paths": [str(path) for path in desktop_tasks.resolve_kb_paths(None)],
                 "domain_pack_dir": "",
                 "mode": "legacy_a_track",
+                "paragraph_segmentation": {
+                    "version": "paragraph-segmentation-v1",
+                    "mode": "layout",
+                    "fallback": "keep_for_review",
+                    "vision_capable": False,
+                    "vision_model": "",
+                    "vision_max_regions": 5,
+                    "vision_max_calls": 5,
+                    "vision_max_tokens": 100000,
+                },
             }
             desktop_tasks.update_run_manifest(
                 out, "atomize", "ok", input_path=input_path, config=atomize_config)

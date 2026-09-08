@@ -73,6 +73,23 @@ describe("Electron main helpers", () => {
     }
   })
 
+  it("passes paragraph segmentation choices without inferring model vision", () => {
+    expect(buildRunPipelineArgs({
+      inputPath: "a.pdf", outDir: "out", paragraphMode: "vision_assisted",
+      paragraphFallback: "keep_for_review", paragraphVisionCapable: true,
+      paragraphVisionModel: "vision-model", paragraphVisionMaxRegions: 3,
+      paragraphVisionMaxCalls: 2, paragraphVisionMaxTokens: 20000,
+      semanticMode: "llm", semanticRoute: "openai_compatible",
+    })).toEqual([
+      "run", "--input", "a.pdf", "--out", "out",
+      "--paragraph-mode", "vision_assisted", "--paragraph-fallback", "keep_for_review",
+      "--paragraph-vision-capable", "--paragraph-vision-model", "vision-model",
+      "--paragraph-vision-max-regions", "3", "--paragraph-vision-max-calls", "2",
+      "--paragraph-vision-max-tokens", "20000",
+      "--semantic-mode", "llm", "--semantic-route", "openai_compatible",
+    ])
+  })
+
   it("builds run pipeline args with ABNT preset inputs", () => {
     expect(buildRunPipelineArgs({
       inputPath: "C:\\input\\Appendix 9.docx",

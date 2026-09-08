@@ -17,6 +17,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     run_parser = subparsers.add_parser("run")
+    from paragraph_segmentation import add_segmentation_arguments
+    add_segmentation_arguments(run_parser)
     run_parser.add_argument("--input", type=Path, required=True)
     run_parser.add_argument("--out", type=Path, required=True)
     run_parser.add_argument("--skip-review", action="store_true")

@@ -84,6 +84,9 @@ def _layout_switch_on(name: str, default: str) -> bool:
 
 
 def pdf_subscript_fix_enabled() -> bool:
+    from paragraph_segmentation import text_only_mode
+    if text_only_mode():
+        return False
     return _layout_switch_on(PDF_SUBSCRIPT_FIX_SWITCH, "1")
 
 
@@ -92,6 +95,9 @@ def pdf_hyphen_fix_enabled() -> bool:
 
 
 def pdf_twocol_def_enabled() -> bool:
+    from paragraph_segmentation import text_only_mode
+    if text_only_mode():
+        return False
     return _layout_switch_on(PDF_TWOCOL_DEF_SWITCH, "0")
 
 
@@ -1344,7 +1350,8 @@ def extract_pdf(
     ``parser_provenance`` on every emitted artifact for audit. See the block
     comment above for the full provenance contract.
     """
-    if not _pdf_modern_switch_on():
+    from paragraph_segmentation import text_only_mode
+    if text_only_mode() or not _pdf_modern_switch_on():
         return _extract_pdf_handwritten(input_path, knowledge_bases, document_profile)
 
     from pdf_modern_adapter import parse_pdf_modern

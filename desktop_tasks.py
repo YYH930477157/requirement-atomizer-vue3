@@ -246,7 +246,11 @@ def run_pipeline_task(
     chunk_chars: int = 3500,
     kb_paths: list[Path] | None = None,
     domain_pack_dir: Path | None = None,
+    segmentation=None,
 ) -> dict[str, Any]:
+    from paragraph_segmentation import SegmentationOptions
+    segmentation = segmentation or SegmentationOptions()
+    segmentation.initial_mode()
     input_path = input_path.expanduser().resolve()
     out_dir = out_dir.expanduser().resolve()
     from pipeline_track import resolve_run_track
@@ -262,6 +266,7 @@ def run_pipeline_task(
         parser_only = resolved_track == "functional"
         atomize_outputs = PARSER_STAGE_OUTPUTS if parser_only else STAGE_REQUIRED_OUTPUTS["atomize"]
         atomize_config = {
+            "paragraph_segmentation": segmentation.lineage(),
             "chunk_chars": chunk_chars,
             "kb_paths": [str(path) for path in resolve_kb_paths(kb_paths)],
             "domain_pack_dir": str(resolve_bundled_path(domain_pack_dir) or ""),
@@ -290,6 +295,7 @@ def run_pipeline_task(
                         kb_paths=resolve_kb_paths(kb_paths),
                         domain_pack_dir=resolve_bundled_path(domain_pack_dir),
                         include_atomic_candidates=not parser_only,
+                        segmentation=segmentation,
                     )
             except Exception as exc:
                 update_run_manifest(out_dir, "atomize", "failed", error=str(exc))
@@ -987,13 +993,14 @@ STAGE_INPUTS: dict[str, list[str]] = {
                  "ai_supplements.jsonl"],
     "functional-synthesis": ["ai_requirements.jsonl", "ai_requirements.meta.json", "blocks.jsonl",
                              "ai_review_states.jsonl", "ai_supplements.jsonl"],
-    # functional-extract consumes table parse sidecars as part of its
-    # clause-family input and conservation baseline.  Track only inputs owned
+    # functional-extract consumes semantic and table parse sidecars as part of
+    # its clause-family input and conservation baseline.  Track only inputs owned
     # by an earlier parser stage: extraction_units, routing decisions, and the
     # outline report can be materialized lazily by this stage itself, so adding
     # them here would make the stage's own pre/post input check self-invalidate.
     "functional-extract": [
         "blocks.jsonl", "chunks.jsonl", "doc_map.json",
+        "semantic_segmentation.json",
         "table_items.jsonl", "table_cell_items.jsonl",
         "table_cell_dispositions.jsonl",
     ],
@@ -1030,6 +1037,9 @@ STAGE_INPUTS: dict[str, list[str]] = {
 
 STAGE_REQUIRED_OUTPUTS: dict[str, list[str]] = {
     "atomize": [
+        "paragraph_segmentation.json",
+        "paragraph_review.html",
+        "semantic_segmentation.json",
         "manifest.json",
         "blocks.jsonl",
         "chunks.jsonl",
@@ -1071,6 +1081,9 @@ STAGE_REQUIRED_OUTPUTS: dict[str, list[str]] = {
 # contract for explicit A-track/legacy runs, but do not require or publish the
 # legacy candidate files on the default functional path.
 PARSER_STAGE_OUTPUTS = [
+    "paragraph_segmentation.json",
+    "paragraph_review.html",
+    "semantic_segmentation.json",
     "manifest.json",
     "blocks.jsonl",
     "chunks.jsonl",
@@ -1212,6 +1225,8 @@ def stage_producer(stage: str, *, out_dir: Path | None = None,
                 *outline_authority_lineage().values(),
             ))
         elif stage == "atomize":
+            from paragraph_segmentation import SEGMENTATION_VERSION
+            producer = f"{producer}+{SEGMENTATION_VERSION}"
             # PDF text repair changes blocks consumed by every downstream stage. Include both
             # the algorithm version and the bundled vocabulary content in the producer so a
             # repaired parser cannot silently reuse an old atomize run. Source alignment is a
@@ -3430,7 +3445,9 @@ def main(argv: list[str] | None = None) -> int:
     logging.getLogger("requirement_atomizer").info("desktop task 开始：%s", args.command)
     try:
         if args.command == "run":
+            from paragraph_segmentation import options_from_args
             run_kwargs = {
+                "segmentation": options_from_args(args),
                 "skip_review": args.skip_review,
                 "llm_route": args.llm_route,
                 "review_scope": args.review_scope,

@@ -38,6 +38,22 @@ ratomizer run `
 `--track legacy_a` only for the historical atomic/DLMS compatibility path;
 `ratomizer atomize` remains the explicit parser-plus-atomic command.
 
+Inspect paragraph boundaries before extraction:
+
+```powershell
+ratomizer parse ".\samples\your-standard.pdf" --out ".\out\paragraph-review" --paragraph-mode layout
+```
+
+This writes a source-preserving paragraph report and an offline review page. Use
+`--paragraph-mode text_only` for text-only processing, or select
+`vision_assisted` only after confirming that the configured model accepts images.
+Visual suggestions are limited to flagged regions and never rewrite source units.
+
+Semantic grouping is configured separately with `--semantic-mode deterministic` (default),
+`--semantic-mode off`, or `--semantic-mode llm`. The LLM mode judges whether adjacent
+source blocks express one semantic unit; it returns only block groups and falls back to
+deterministic grouping when the route is unavailable or the response violates the partition contract.
+
 The main output files are written under the selected `out` directory:
 
 ```text

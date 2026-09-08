@@ -81,6 +81,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     add_atomize_arguments(atomize)
     add_verbosity_arguments(atomize)
 
+    parse = subparsers.add_parser("parse", help="Parse and inspect paragraphs without requirement extraction.")
+    add_atomize_arguments(parse)
+    add_verbosity_arguments(parse)
+
     review = subparsers.add_parser("review", help="Run only the review stage.")
     review.add_argument("--out", type=Path, required=True)
     review.add_argument("--review-pipeline", type=Path, default=None, help="Review pipeline YAML")
@@ -170,6 +174,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def add_atomize_arguments(parser: argparse.ArgumentParser) -> None:
+    from paragraph_segmentation import add_segmentation_arguments
+    add_segmentation_arguments(parser)
     parser.add_argument("input", type=Path)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--kb", type=Path, action="append", default=[])
@@ -221,7 +227,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "run":
             envelope = command_run(args, started, timing_ms)
-        elif args.command == "atomize":
+        elif args.command in ("atomize", "parse"):
             envelope = command_atomize(args, started, timing_ms)
         elif args.command == "review":
             envelope = command_review(args, started, timing_ms)
@@ -256,6 +262,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def command_run(args: argparse.Namespace, started: float, timing_ms: dict[str, int]) -> dict[str, Any]:
+    from paragraph_segmentation import options_from_args
     export_formats = parse_export_formats(args.export)
 
     atomize_started = time.perf_counter()
@@ -266,6 +273,7 @@ def command_run(args: argparse.Namespace, started: float, timing_ms: dict[str, i
         kb_paths=args.kb or default_kb_paths(),
         domain_pack_dir=args.domain_pack,
         include_atomic_candidates=args.track == "legacy_a",
+        segmentation=options_from_args(args),
     )
     timing_ms["atomize"] = elapsed_ms(atomize_started)
 
@@ -356,16 +364,19 @@ def export_functional_requirements(out_dir: Path, formats: list[str]) -> list[st
 
 
 def command_atomize(args: argparse.Namespace, started: float, timing_ms: dict[str, int]) -> dict[str, Any]:
+    from paragraph_segmentation import options_from_args
     manifest = run_atomizer_pipeline(
         args.input,
         args.out,
         chunk_chars=args.chunk_chars,
         kb_paths=args.kb or default_kb_paths(),
         domain_pack_dir=args.domain_pack,
+        include_atomic_candidates=args.command != "parse",
+        segmentation=options_from_args(args),
     )
     timing_ms["atomize"] = elapsed_ms(started)
     timing_ms["total"] = timing_ms["atomize"]
-    return success_envelope("atomize", args.out, manifest=manifest, timing_ms=timing_ms)
+    return success_envelope(args.command, args.out, manifest=manifest, timing_ms=timing_ms)
 
 
 def command_review(args: argparse.Namespace, started: float, timing_ms: dict[str, int]) -> dict[str, Any]:

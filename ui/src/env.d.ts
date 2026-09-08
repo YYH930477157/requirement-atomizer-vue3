@@ -148,6 +148,15 @@ declare global {
         reviewScope?: string
         llmReviewLimit?: number
         chunkChars?: number
+        paragraphMode?: "text_only" | "layout" | "vision_assisted"
+        paragraphFallback?: "keep_for_review" | "text_fallback" | "fail_closed"
+        paragraphVisionCapable?: boolean
+        paragraphVisionModel?: string
+        paragraphVisionMaxRegions?: number
+        paragraphVisionMaxCalls?: number
+        paragraphVisionMaxTokens?: number
+        semanticMode?: "off" | "deterministic" | "llm"
+        semanticRoute?: "stub" | "openai_compatible"
         kbPaths?: string[]
         domainPackDir?: string
       }) => Promise<RequirementAtomizerTaskPayload>
