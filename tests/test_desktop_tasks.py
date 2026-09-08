@@ -467,9 +467,12 @@ class DesktopTaskTests(unittest.TestCase):
                     ])
 
         self.assertEqual(exit_code, 0)
+        from paragraph_segmentation import SegmentationOptions
+
         run_pipeline.assert_called_once_with(
             input_path,
             out_dir,
+            segmentation=SegmentationOptions(),
             skip_review=False,
             llm_route=None,
             review_scope=None,
@@ -2473,6 +2476,7 @@ class ChainAndManifestTests(unittest.TestCase):
                 "table_cell_dispositions.jsonl",
                 "paragraph_segmentation.json",
                 "paragraph_review.html",
+                "semantic_segmentation.json",
                 "atomic_requirements.jsonl",
                 "llm_tasks.jsonl",
                 "quality_report.json",
@@ -2481,21 +2485,17 @@ class ChainAndManifestTests(unittest.TestCase):
                 "review_states.jsonl",
             ]:
                 (out / name).write_text("{}\n", encoding="utf-8")
+            from paragraph_segmentation import SegmentationOptions
+
             atomize_config = {
                 "chunk_chars": 3500,
                 "kb_paths": [str(path) for path in desktop_tasks.resolve_kb_paths(None)],
                 "domain_pack_dir": "",
                 "mode": "legacy_a_track",
-                "paragraph_segmentation": {
-                    "version": "paragraph-segmentation-v1",
-                    "mode": "layout",
-                    "fallback": "keep_for_review",
-                    "vision_capable": False,
-                    "vision_model": "",
-                    "vision_max_regions": 5,
-                    "vision_max_calls": 5,
-                    "vision_max_tokens": 100000,
-                },
+                # 与 run_pipeline_task 的 segmentation.lineage() 全字段同形
+                # （semantic_mode/semantic_route 也在血统里——手写字典漏键会使
+                # 复用指纹失配、假失败）
+                "paragraph_segmentation": SegmentationOptions().lineage(),
             }
             desktop_tasks.update_run_manifest(
                 out, "atomize", "ok", input_path=input_path, config=atomize_config)
@@ -2686,6 +2686,9 @@ class FingerprintReuseAndLockHardeningTests(unittest.TestCase):
                 "table_items.jsonl",
                 "table_cell_items.jsonl",
                 "table_cell_dispositions.jsonl",
+                "paragraph_segmentation.json",
+                "paragraph_review.html",
+                "semantic_segmentation.json",
                 "atomic_requirements.jsonl",
                 "llm_tasks.jsonl",
                 "quality_report.json",
@@ -2694,11 +2697,14 @@ class FingerprintReuseAndLockHardeningTests(unittest.TestCase):
                 "review_states.jsonl",
             ]:
                 (out / name).write_text("{}\n", encoding="utf-8")
+            from paragraph_segmentation import SegmentationOptions
+
             atomize_config = {
                 "chunk_chars": 3500,
                 "kb_paths": [str(path) for path in desktop_tasks.resolve_kb_paths(None)],
                 "domain_pack_dir": "",
                 "mode": "legacy_a_track",
+                "paragraph_segmentation": SegmentationOptions().lineage(),
             }
             desktop_tasks.update_run_manifest(
                 out, "atomize", "ok", input_path=input_path, config=atomize_config)
@@ -2745,6 +2751,9 @@ class FingerprintReuseAndLockHardeningTests(unittest.TestCase):
                 "table_items.jsonl",
                 "table_cell_items.jsonl",
                 "table_cell_dispositions.jsonl",
+                "paragraph_segmentation.json",
+                "paragraph_review.html",
+                "semantic_segmentation.json",
                 "atomic_requirements.jsonl",
                 "llm_tasks.jsonl",
                 "quality_report.json",
@@ -2753,11 +2762,14 @@ class FingerprintReuseAndLockHardeningTests(unittest.TestCase):
                 "review_states.jsonl",
             ]:
                 (out / name).write_text("{}\n", encoding="utf-8")
+            from paragraph_segmentation import SegmentationOptions
+
             atomize_config = {
                 "chunk_chars": 3500,
                 "kb_paths": [str(path) for path in desktop_tasks.resolve_kb_paths(None)],
                 "domain_pack_dir": "",
                 "mode": "legacy_a_track",
+                "paragraph_segmentation": SegmentationOptions().lineage(),
             }
             desktop_tasks.update_run_manifest(
                 out, "atomize", "ok", input_path=input_path, config=atomize_config)
