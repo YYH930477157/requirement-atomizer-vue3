@@ -33,39 +33,70 @@
     },
     "conditions": {
       "type": "array",
-      "items": {"type": "string", "minLength": 1},
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
       "description": "Expected condition clauses. A condition counts as preserved when its content tokens are covered >= 0.6 by the matched final-XLSX row text."
     },
     "exceptions": {
       "type": "array",
-      "items": {"type": "string", "minLength": 1},
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
       "description": "Expected exception clauses; same preservation rule as conditions."
     },
     "negations": {
       "type": "array",
-      "items": {"type": "string", "minLength": 1},
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
       "description": "Expected negated behaviours; same preservation rule as conditions."
     },
     "numbers": {
       "type": "array",
-      "items": {"type": "string", "minLength": 1},
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
       "description": "Expected numeric literals (e.g. '15', '0.5'). Preserved on exact numeric equality with a number extracted from the matched row; a different extracted number is a conflict."
     },
     "units": {
       "type": "array",
-      "items": {"type": "string", "minLength": 1},
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
       "description": "Expected unit tokens (e.g. 'kWh', 'min'). Preserved on letter-boundary-aware case-insensitive presence; presence of another recognized unit instead is a conflict."
     },
     "codes": {
       "type": "array",
-      "items": {"type": "string", "minLength": 1},
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
       "description": "Expected coded identifiers (e.g. OBIS '0.0.1.0.0.255'). Preserved on case-insensitive squashed-text presence; presence of another dotted code instead is a conflict."
     },
     "annotation_status": {
-      "enum": ["real", "fixture"],
+      "enum": [
+        "real",
+        "fixture"
+      ],
       "description": "real = genuine expert annotation; fixture = synthetic self-proof entry that never masquerades as a real annotation. Informational for ab_runner (reported, not filtered)."
     },
-    "notes": {"type": "string"}
+    "notes": {
+      "type": "string"
+    },
+    "domain": {
+      "type": "string",
+      "enum": [
+        "b_track",
+        "out_of_scope"
+      ],
+      "description": "Extraction-domain tag (truth_rebuild_en 2026-09-08): b_track = expected text overlaps the routing-kept, front-matter-excluded clause baseline (scoped-recall denominator); out_of_scope = front matter/definition/non-functional rows that the B-track deliberately does not produce (structural FN — reported, excluded from scoped recall)."
+    }
   },
   "additionalProperties": false
 }

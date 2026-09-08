@@ -1,5 +1,3 @@
-# CLAUDE.md — Requirement Atomizer 项目上下文
-
 ## 段落基础层（2026-09-08）——解析先于需求，视觉能力由用户选择
 
 - 新增 `ratomizer parse`：只做文档解析并生成 `paragraph_segmentation.json` 与
@@ -12,6 +10,54 @@
 - 语义段落层随后增加 `off`/`deterministic`/`llm` 三态：LLM 只返回相邻 block 的分组，
   验证器强制保持原文顺序、恰好覆盖一次且不得跨标题/列表/表格边界；调用失败退回确定性分组并留痕。
 
+## 真值层（2026-09-08d）——v2 英文真值重建完成（语言断层修复）；粒度/形态断层呈报裁定
+
+> 用户裁定「开工」。产出：`tools/truth_rebuild_en.py` + `golden_sets/ws0_human_v2_en/`
+> （188 行，锚定分析师 xlsx **English Translation 列**——人工英文非机翻；id 与 v1
+> 逐行对齐；确定性 domain 标记 b_track 67/out 121，滑动窗口联合覆盖对冲切分病理；
+> 1 缺英文 + 1 英文列错标中文被守卫跳过计数）。诊断与方案档
+> `docs/ws0-truth-rebuild-2026-09-08.md`。
+
+- **验证暴露两层更深断层**：粒度（段落级真值 vs 一条款一需求产物，eligibility
+  coverage≥0.5+零冲突结构性不可满足）+ 形态/词汇（归一化转述 vs 源文破碎英语，
+  同内容重叠 0.2-0.4）——**行对行 token 匹配在该真值形态上不可行，非参数问题**。
+- **呈报三方案**：A 语义对齐层（推荐，LLM/embedding 判定+token 兜底，判定可缓存
+  可审计）/ B 句子拆分+放宽（已原型否证）/ C 抽样人工验收（14 阈值口径重定义）。
+  **③全量门禁的 P/R 评估前置=本裁定**；守恒/交付物类检查不受影响。
+- 钉：`tests/test_truth_rebuild_v2.py` 5 项（可移植，不依赖机器 xlsx）；schema 增
+  可选 domain（v1 兼容）。
+
+## 离线注入评估（2026-09-08c）——无 DeepSeek 注入抽取：守恒 v9 全绿、②成立；P1 新发现 WS0 真值集语言断层
+
+> 用户裁定「你直接解析，不用 deepseek」。47 条款包（100 节口径）由助理模型经 chat
+> 注入通道产出回放（route=mixed injected，血统诚实；非门禁判定非 Go/No-Go）。档
+> `docs/offline-inject-eval-2026-09-08.md`，工件 `out/inject*`（git-ignored）。
+
+- **守恒 v9 全绿**（47 FRE 五检查 0 失败、gap 0）；早间失败面（2 否定词 + 单条款
+  stub）全消。**②成立：preservation 丢失是抽取质量问题**，两轮修正即清零；
+  Control of 病理族可完整抽取。抽取质量迭代实录：字面 no/without/引用号[18]/
+  未压缩事件码 10/11/13——门禁作为质量仪器的实证。
+- 下游链绿：分析/成文 47 行（其他需求(新增) 已知映射）、守恒待核 19 行
+  extract_degraded、澄清 NEEDS WORK 2 问；读取器 OK（剥 2046 模板行）。
+- **P1 新发现：WS0 真值集语言断层**——真值 expected_text 中文 vs 产物契约英文
+  （提示词⑤），token 匹配恒 0；真值节域（3.x 定义域）与 B 轨基线（Security/
+  Control of）零交集；08-17 从未到达该层故未暴露。**真值重建（英文+节域对齐）
+  是任何 P/R 评估的前置**。重复率 0.19/0.21>0.05（标记 stub+表格引导句族形态
+  同构，随真值重建一并裁定阈值）。
+
+## WS0 冒烟二轮（2026-09-08b）——v9 基线重跑被 402 中止：A 轨完成（77 节已付缓存抢救），B 轨全拒付退 stub；唯一阻塞=充值
+
+> 拉 Mac 加固 `1ae08d1`（守恒 v9：豁免比对保留词界/小数点/符号；护栏 v7：诊断覆盖
+> 完整叙述+合并后重算；limit_sections 进指纹；限量判定封顶 NO_GATE）后基线全绿
+> （后端 4341/0/0/0、UI 295/295）重跑 100 节冒烟。
+
+- **A 轨完成**：77 节已付缓存 + 927 FRE + 成文在场（报告 `out/ab-gate-report-v9-smoke.json`）。
+- **B 轨 HTTP 402（Insufficient Balance）**：余额在 A 轨后耗尽，全部条款包拒付 →
+  整段退 stub → execution_status=failed → FAIL（fail-closed 正确；该报告 cons_ok=True
+  是 stub 逐字回显语义，非真通过）。
+- **已抢救**：`out/ws0-warm-a-100/ai_extract_cache.jsonl`（77 节，git-ignored，
+  跨机需拷贝）。**充值后主路径 = 跳过冒烟直接全量门禁 + --warm-a-cache 暖启动**
+  （命令见 `docs/handover-2026-09-08-ws0-company.md` §2③，已更新）。
 ## WS0 冒烟（2026-09-08）——100 节限量门禁 FAIL（单条款 stub 回退）；08-17 三大失败面全部收敛（e4382bb + 本档）
 
 > 用户授权付费并裁定「只抽 100 节控成本」。`--limit-sections` 贯通提交 `e4382bb`
