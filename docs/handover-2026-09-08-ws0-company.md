@@ -4,6 +4,19 @@
 > 单条款族）。本文给出三步的可执行命令、验收标准与机器前置清单。
 > **密钥纪律：API key 只走环境变量，绝不写入任何文件/仓库/文档。**
 
+## ⚠ 2026-09-08 晚间更新：第二轮冒烟因 DeepSeek 余额耗尽（HTTP 402）中止
+
+- 拉取 Mac 加固提交 `1ae08d1`（守恒 v9/护栏 v7/limit_sections 进指纹/限量判定封顶
+  NO_GATE）后基线全绿重跑冒烟：**A 轨完成**（77 节已付缓存 + 927 FRE + 成文在场），
+  **B 轨全部条款包被 402 拒付 → 整段退 stub → execution_status=failed → FAIL**
+  （fail-closed 语义正确；此时报告里的 cons_ok=True 是 stub 逐字回显语义，非真通过）。
+- **A 轨已付资产已抢救**：`out/ws0-warm-a-100/ai_extract_cache.jsonl`（77 节，
+  out/ 为 git-ignored，跨机器需随语料一并拷贝）。
+- **当前唯一阻塞 = 账户充值**。充值后推荐**跳过冒烟、直接跑全量正式门禁**（见 §2③
+  的暖启动命令：A 轨 77 节零付费复用，B 轨全量条款重付）。
+
+---
+
 ## 0. 当前状态快照（截至 de913a7，均已 push）
 
 - main = `de913a7`；关键提交：`9affa30`（红门修复+任务D闭环+conservation v8 豁免）、
@@ -67,10 +80,18 @@ expected_product_fingerprint=<产物 fingerprint>, route="openai_compatible")`�
   重抽该族时观察否定词是否落叙述（`item_narrative` 覆盖 behaviors/data_constraints）。
 - **验收**：B 守恒 preservation.ok=true；「守恒待核」清单不再有该族缺口行。
 
-### ③ 全量 343 节正式门禁（Go/No-Go）
+### ③ 全量 343 节正式门禁（Go/No-Go）——充值后的推荐主路径
 
-前置：①②收敛（B 轨 ok + 守恒闭合）。命令同上去掉 `--limit-sections 100`（或用仓库根
-`ws0-gate-rerun.cmd` 的全量版本，本机未提交、公司机按上文自拼）。
+前置：DeepSeek 账户已充值（本轮 402 即时中止，余额为 0）。**暖启动命令**（A 轨 77 节
+已付缓存零付费复用，仅余 243 节 + B 轨全量条款付费）：
+
+```
+PYTHONPATH=. RATOMIZER_LLM_API_KEY=<key> RATOMIZER_CONTEXT_PACK_STRATEGY=clause_family ^
+  python tools/ab_runner.py --parsed-dir out/abnt_nbr_16968 --template "<V2.3.12.xlsx>" ^
+  --route openai_compatible --truth golden_sets/ws0_human_v1/truth.jsonl ^
+  --thresholds golden_sets/ws0_human_v1/thresholds.json --keep-dirs ^
+  --warm-a-cache out/ws0-warm-a-100 --out out/ab-gate-report-full.json
+```
 
 - 退出码：0=PASS / 1=NO_GATE / 2=FAIL；报告 schema `ab-runner-report/v3`。
 - PASS 才进入 `RATOMIZER_EXECUTION_POLICY` 翻转讨论——触发条件见

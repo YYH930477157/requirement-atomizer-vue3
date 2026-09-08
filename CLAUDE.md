@@ -1,5 +1,19 @@
 # CLAUDE.md — Requirement Atomizer 项目上下文
 
+## WS0 冒烟二轮（2026-09-08b）——v9 基线重跑被 402 中止：A 轨完成（77 节已付缓存抢救），B 轨全拒付退 stub；唯一阻塞=充值
+
+> 拉 Mac 加固 `1ae08d1`（守恒 v9：豁免比对保留词界/小数点/符号；护栏 v7：诊断覆盖
+> 完整叙述+合并后重算；limit_sections 进指纹；限量判定封顶 NO_GATE）后基线全绿
+> （后端 4341/0/0/0、UI 295/295）重跑 100 节冒烟。
+
+- **A 轨完成**：77 节已付缓存 + 927 FRE + 成文在场（报告 `out/ab-gate-report-v9-smoke.json`）。
+- **B 轨 HTTP 402（Insufficient Balance）**：余额在 A 轨后耗尽，全部条款包拒付 →
+  整段退 stub → execution_status=failed → FAIL（fail-closed 正确；该报告 cons_ok=True
+  是 stub 逐字回显语义，非真通过）。
+- **已抢救**：`out/ws0-warm-a-100/ai_extract_cache.jsonl`（77 节，git-ignored，
+  跨机需拷贝）。**充值后主路径 = 跳过冒烟直接全量门禁 + --warm-a-cache 暖启动**
+  （命令见 `docs/handover-2026-09-08-ws0-company.md` §2③，已更新）。
+
 ## WS0 冒烟（2026-09-08）——100 节限量门禁 FAIL（单条款 stub 回退）；08-17 三大失败面全部收敛（e4382bb + 本档）
 
 > 用户授权付费并裁定「只抽 100 节控成本」。`--limit-sections` 贯通提交 `e4382bb`
