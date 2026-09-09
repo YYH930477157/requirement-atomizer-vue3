@@ -181,6 +181,9 @@ class FlagOffByteIdentityTests(unittest.TestCase):
             fe.FUNCTIONAL_EXTRACT_PROMPT_VERSION,
             fe.FUNCTIONAL_EXTRACT_GUARDS_VERSION,
             fe.FUNCTIONAL_CONSERVATION_MODEL_VERSION,
+            # bed36f8：语义装载器（noise 剔除/恰好一次判重）钉进 producer——
+            # 与 desktop_tasks.stage_producer 的拼接顺序保持一致。
+            fe.SEMANTIC_SECTION_LOADER_VERSION,
             *fe.routing_lineage_versions().values(),
         )) + "+impl-v1"
         base = _clean_env()
