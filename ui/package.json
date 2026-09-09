@@ -39,13 +39,20 @@
     "appId": "com.requirementatomizer.desktop",
     "productName": "标准需求抽取与审查平台",
     "asar": true,
+    "electronLanguages": [
+      "zh-CN",
+      "en-US"
+    ],
     "win": {
       "signAndEditExecutable": false
     },
     "files": [
       "dist/**/*",
       "electron/**/*",
-      "package.json"
+      "package.json",
+      "!node_modules/**/*",
+      "!dist/win-unpacked/**/*",
+      "!dist/*.exe"
     ],
     "extraResources": [
       { "from": "..", "to": ".", "filter": ["*.py"] },
