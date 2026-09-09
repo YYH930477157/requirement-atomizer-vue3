@@ -13,11 +13,13 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 from typing import Any
 
 OFFICECLI_ADAPTER_VERSION = "officecli-adapter-v1"
 OFFICECLI_ENV = "RATOMIZER_OFFICECLI"
 OFFICECLI_PATH_ENV = "RATOMIZER_OFFICECLI_PATH"
+_BUNDLED_ROOT = Path(__file__).resolve().parent / "vendor" / "officecli"
 _PARAGRAPH_RE = re.compile(r"\[/body/p\[(\d+)\]\] (?:[•·]\s*)?(?:「(?P<quoted>.*?)」|(?P<plain>.*?)) ← (?P<style>[^|\n]+)", re.S)
 _LIST_STYLE_RE = re.compile(r"list|bullet|number", re.I)
 
@@ -27,7 +29,8 @@ def officecli_path() -> str | None:
     if setting in {"0", "false", "off", "disabled"}:
         return None
     configured = os.environ.get(OFFICECLI_PATH_ENV, "").strip()
-    candidate = configured or shutil.which("officecli")
+    bundled = _BUNDLED_ROOT / ("officecli.exe" if sys.platform == "win32" else "officecli")
+    candidate = configured or (str(bundled) if bundled.is_file() else shutil.which("officecli"))
     if candidate and Path(candidate).is_file():
         return candidate
     return None

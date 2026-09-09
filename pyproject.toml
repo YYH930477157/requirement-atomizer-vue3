@@ -28,6 +28,7 @@ requirement-review = "llm_pipeline:main"
 requirement-api = "api_server:main"
 requirement-kb = "requirement_kb.cli:main"
 requirement-kb-server = "requirement_kb.server:main"
+requirement-officecli-install = "install_officecli:main"
 validate-kb = "requirement_kb.schema:main"
 validate-vault = "requirement_kb.vault:main"
 validate-atomic-requirements = "atomic_requirement_schema:main"
@@ -107,6 +108,7 @@ py-modules = [
   "paragraph_vision",
   "semantic_segmentation",
   "officecli_adapter",
+  "install_officecli",
   "doc_ir_export",
   "document_outline",
   "domain_pack",
