@@ -323,8 +323,15 @@ def command_run(args: argparse.Namespace, started: float, timing_ms: dict[str, i
 
 def export_functional_requirements(out_dir: Path, formats: list[str]) -> list[str]:
     """Export the complete functional product without routing through atomic exporters."""
-    payload_path = out_dir / "functional_requirements.json"
-    payload = json.loads(payload_path.read_text(encoding="utf-8"))
+    # governed 双路径读（package_v1 下产物在 .ratomizer/pipeline/；裸根 join 会漏）。
+    from requirements_analysis_rules import _read_functional_requirements_payload
+
+    payload = _read_functional_requirements_payload(out_dir)
+    if not isinstance(payload, dict) or not payload:
+        raise FileNotFoundError(
+            f"functional_requirements.json not found or unreadable in {out_dir}"
+            "——先运行功能直抽（run --track functional 或 functional-extract 阶段）"
+        )
     rows = payload.get("items") if isinstance(payload, dict) else []
     rows = rows if isinstance(rows, list) else []
     written: list[str] = []
@@ -373,6 +380,9 @@ def command_atomize(args: argparse.Namespace, started: float, timing_ms: dict[st
         domain_pack_dir=args.domain_pack,
         include_atomic_candidates=args.command != "parse",
         segmentation=options_from_args(args),
+        # parse 只做解析检查，没有跑任何需求流程——manifest 不声明 track，
+        # 不能用 "functional" 封死该目录后续的 review/assemble 旧阶段。
+        declare_track=args.command != "parse",
     )
     timing_ms["atomize"] = elapsed_ms(started)
     timing_ms["total"] = timing_ms["atomize"]

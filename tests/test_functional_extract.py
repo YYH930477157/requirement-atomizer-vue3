@@ -716,5 +716,106 @@ class ExtractProgressTests(unittest.TestCase):
             self.assertEqual(events[-1]["completed"], events[-1]["total"])
 
 
+class SemanticSectionLoaderTests(unittest.TestCase):
+    """语义分割 sidecar 接线：noise 块（页眉/页脚）不进条款文本与守恒基线。
+
+    旧 chunks 路径（build_chunks）跳过 noise；语义路径若把 noise 带进单元文本，
+    页脚页码/标准号会进入 preservation 基线造成假 blocking（2026-09-09 review）。
+    """
+
+    @staticmethod
+    def _seed(out_dir, blocks: list[dict], units: list[dict]) -> None:
+        from pathlib import Path
+
+        from result_package import governed_artifact_path
+
+        out_dir = Path(out_dir)
+        governed_artifact_path(
+            out_dir, "blocks.jsonl", category="pipeline", for_write=True,
+        ).write_text(
+            "".join(json.dumps(b, ensure_ascii=False) + "\n" for b in blocks),
+            encoding="utf-8")
+        governed_artifact_path(
+            out_dir, "semantic_segmentation.json", category="pipeline", for_write=True,
+        ).write_text(
+            json.dumps(
+                {"configuration": {"mode": "deterministic"}, "units": units},
+                ensure_ascii=False),
+            encoding="utf-8")
+
+    def test_noise_blocks_are_excluded_from_section_text_and_anchors(self) -> None:
+        blocks = [
+            {"block_id": "BLK-000001", "type": "paragraph",
+             "text": "The meter shall log events.", "noise": False},
+            {"block_id": "BLK-000002", "type": "paragraph",
+             "text": "NBR 16968 Page 12", "noise": True},
+        ]
+        units = [{
+            "semantic_unit_id": "SU-000001", "section_path": ["4", "4.1"],
+            "source_block_ids": ["BLK-000001", "BLK-000002"],
+            "text": "The meter shall log events.\nNBR 16968 Page 12",
+        }]
+        with TemporaryDirectory() as tmp:
+            self._seed(tmp, blocks, units)
+            sections, _ = fe.load_clauses_detailed(tmp)
+        self.assertEqual(len(sections), 1)
+        self.assertEqual(sections[0]["text"], "The meter shall log events.")
+        self.assertEqual(sections[0]["block_ids"], ["BLK-000001"])
+
+    def test_pure_noise_unit_is_released_without_breaking_coverage(self) -> None:
+        blocks = [
+            {"block_id": "BLK-000001", "type": "paragraph",
+             "text": "The meter shall log events.", "noise": False},
+            {"block_id": "BLK-000002", "type": "paragraph",
+             "text": "NBR 16968 Page 12", "noise": True},
+        ]
+        units = [
+            {"semantic_unit_id": "SU-000001", "section_path": ["4.1"],
+             "source_block_ids": ["BLK-000001"],
+             "text": "The meter shall log events."},
+            {"semantic_unit_id": "SU-000002", "section_path": ["4.1"],
+             "source_block_ids": ["BLK-000002"],
+             "text": "NBR 16968 Page 12"},
+        ]
+        with TemporaryDirectory() as tmp:
+            self._seed(tmp, blocks, units)
+            sections, _ = fe.load_clauses_detailed(tmp)
+        # 纯 noise 单元不成为条款（页脚不该要求任何 FRE 覆盖/保留）。
+        self.assertEqual([s["section_id"] for s in sections], ["SU-000001"])
+
+    def test_non_noise_block_gap_falls_back_to_chunks_path(self) -> None:
+        blocks = [
+            {"block_id": "BLK-000001", "type": "paragraph",
+             "text": "The meter shall log events.", "noise": False},
+            {"block_id": "BLK-000002", "type": "paragraph",
+             "text": "footer", "noise": True},
+        ]
+        # 单元只覆盖 noise 块——非 noise 块 BLK-000001 缺席 = 畸形分区，整体回落
+        # （chunks 缺席时走 blocks 现场聚合兜底，证明语义 sidecar 未被消费）。
+        units = [{"semantic_unit_id": "SU-000001", "section_path": ["4.1"],
+                  "source_block_ids": ["BLK-000002"], "text": "footer"}]
+        with TemporaryDirectory() as tmp:
+            self._seed(tmp, blocks, units)
+            sections, _ = fe.load_clauses_detailed(tmp)
+        self.assertEqual([s["section_id"] for s in sections], ["(root)"])
+
+    def test_duplicate_block_assignment_falls_back(self) -> None:
+        blocks = [
+            {"block_id": "BLK-000001", "type": "paragraph",
+             "text": "The meter shall log events.", "noise": False},
+        ]
+        units = [
+            {"semantic_unit_id": "SU-000001", "section_path": ["4.1"],
+             "source_block_ids": ["BLK-000001"], "text": "The meter shall log events."},
+            {"semantic_unit_id": "SU-000002", "section_path": ["4.2"],
+             "source_block_ids": ["BLK-000001"], "text": "The meter shall log events."},
+        ]
+        with TemporaryDirectory() as tmp:
+            self._seed(tmp, blocks, units)
+            sections, _ = fe.load_clauses_detailed(tmp)
+        # 同块双声明违反"恰好一次"分区契约——语义路径整体回落（blocks 聚合兜底）。
+        self.assertEqual([s["section_id"] for s in sections], ["(root)"])
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

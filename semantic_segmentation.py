@@ -13,7 +13,9 @@ from pathlib import Path
 import re
 from typing import Any
 
-SEMANTIC_SEGMENTATION_VERSION = "semantic-segmentation-v1"
+# v2（2026-09-09 review）：boundary_basis 按节如实标注——llm 模式某节回退后，
+# 该节单元不再误标 "llm"（改 "deterministic_fallback"），其余节保持真实来源。
+SEMANTIC_SEGMENTATION_VERSION = "semantic-segmentation-v2"
 SEMANTIC_PROMPT_VERSION = "semantic-segmentation-prompt-v2-contextual-boundaries"
 SEMANTIC_MODES = ("off", "deterministic", "llm")
 _TERMINAL_RE = re.compile(r"[.!?。！？；;:]$")
@@ -195,6 +197,9 @@ def build_semantic_report(blocks: list[dict[str, Any]], source: Path, *, mode: s
     errors: list[dict[str, str]] = []
     actual_mode = mode
     for section, section_blocks in by_section.items():
+        # 按节记录实际边界来源：某节 llm 失败回退不能把其他节的单元标成 llm，
+        # 也不能把本节回退单元标成 llm（血统不伪造；effective_mode 只作报告级汇总）。
+        section_mode = mode
         if mode == "off":
             groups = [[str(b["block_id"])] for b in section_blocks]
         elif mode == "llm":
@@ -204,6 +209,7 @@ def build_semantic_report(blocks: list[dict[str, Any]], source: Path, *, mode: s
             except Exception as exc:
                 errors.append({"section": " / ".join(section), "reason": type(exc).__name__})
                 groups = _deterministic_groups(section_blocks)
+                section_mode = "deterministic_fallback"
                 actual_mode = "deterministic_fallback"
         else:
             groups = _deterministic_groups(section_blocks)
@@ -213,7 +219,7 @@ def build_semantic_report(blocks: list[dict[str, Any]], source: Path, *, mode: s
             semantic_units.append({
                 "semantic_unit_id": f"SU-{len(semantic_units) + 1:06d}",
                 "section_path": list(section), "source_block_ids": group,
-                "text": source_text, "boundary_basis": "llm" if mode == "llm" and actual_mode == "llm" else mode,
+                "text": source_text, "boundary_basis": section_mode,
                 "review_status": "needs_review" if (mode == "llm" and errors) else "not_reviewed",
             })
     serialized = json.dumps(semantic_units, ensure_ascii=False, sort_keys=True).encode("utf-8")

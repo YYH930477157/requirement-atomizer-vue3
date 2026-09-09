@@ -84,6 +84,13 @@ PROMPT_REGISTRY: list[dict[str, str]] = [
      "owner_module": "functional_extract",
      "purpose": "Functional extract obligation/evidence conservation model version"},
 
+    # 语义段落分割（2026-09-09 补登记——caaccea/f1ab43f 落地时漏登，D1 契约测试
+    # 抓出）。提示词进 parse 阶段产物（semantic_segmentation.json 的
+    # configuration.prompt_version）与 atomize producer 戳。
+    {"id": "semantic-segmentation", "version": "semantic-segmentation-prompt-v2-contextual-boundaries",
+     "owner_module": "semantic_segmentation",
+     "purpose": "Semantic paragraph boundary adjudication prompt (LLM mode only)"},
+
     # partial export（2026-09-01，用户拍板政策反转）：守恒待核行级标记算法身份。
     # 登记 + 进 requirements-analysis/template-write 的 stage producer 与指纹
     # （desktop_tasks.stage_producer——只登记不进戳不够，续跑会复用未标记旧产物）。

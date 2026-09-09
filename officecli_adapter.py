@@ -16,7 +16,11 @@ import subprocess
 import sys
 from typing import Any
 
-OFFICECLI_ADAPTER_VERSION = "officecli-adapter-v1"
+# v2（2026-09-09 review）：默认从 auto 改 off——自动发现让解析产物依赖"机器是否
+# 恰好装了 officecli"，且 Windows 下 officecli 常驻进程持有被查看文件句柄（临时
+# 目录清理 WinError 32）。显式 RATOMIZER_OFFICECLI=auto/1/on 或设置
+# RATOMIZER_OFFICECLI_PATH 才启用。默认翻转必须 bump 使旧 atomize 阶段复用失效。
+OFFICECLI_ADAPTER_VERSION = "officecli-adapter-v2"
 OFFICECLI_ENV = "RATOMIZER_OFFICECLI"
 OFFICECLI_PATH_ENV = "RATOMIZER_OFFICECLI_PATH"
 _BUNDLED_ROOT = Path(__file__).resolve().parent / "vendor" / "officecli"
@@ -25,22 +29,35 @@ _LIST_STYLE_RE = re.compile(r"list|bullet|number", re.I)
 
 
 def officecli_path() -> str | None:
-    setting = os.environ.get(OFFICECLI_ENV, "auto").strip().lower()
-    if setting in {"0", "false", "off", "disabled"}:
-        return None
+    # 显式路径本身就是启用信号（优先级最高）；否则必须显式打开开关才做自动发现。
     configured = os.environ.get(OFFICECLI_PATH_ENV, "").strip()
+    if configured:
+        return configured if Path(configured).is_file() else None
+    setting = os.environ.get(OFFICECLI_ENV, "off").strip().lower()
+    if setting in {"", "0", "false", "off", "disabled"}:
+        return None
     bundled = _BUNDLED_ROOT / ("officecli.exe" if sys.platform == "win32" else "officecli")
-    candidate = configured or (str(bundled) if bundled.is_file() else shutil.which("officecli"))
+    candidate = str(bundled) if bundled.is_file() else shutil.which("officecli")
     if candidate and Path(candidate).is_file():
         return candidate
     return None
+
+
+def officecli_unavailable_reason() -> str:
+    """区分「显式关闭」「路径配置错」「开启但找不到」三种不可用成因（进 manifest 审计）。"""
+    configured = os.environ.get(OFFICECLI_PATH_ENV, "").strip()
+    if configured:
+        return "officecli_path_not_a_file"
+    if os.environ.get(OFFICECLI_ENV, "off").strip().lower() in {"", "0", "false", "off", "disabled"}:
+        return "officecli_disabled"
+    return "officecli_not_found"
 
 
 def enrich_docx_blocks(blocks: list[dict[str, Any]], input_path: Path, *, timeout_s: float = 20.0) -> dict[str, Any]:
     """Apply external DOCX style/path hints to parser-owned blocks in place."""
     executable = officecli_path()
     if executable is None:
-        return {"status": "unavailable", "reason": "officecli_not_found", "blocks_enriched": 0}
+        return {"status": "unavailable", "reason": officecli_unavailable_reason(), "blocks_enriched": 0}
     try:
         completed = subprocess.run(
             [executable, "view", str(input_path), "annotated", "--json"],
@@ -101,7 +118,7 @@ def enrich_xlsx_artifacts(blocks: list[dict[str, Any]], table_items: list[dict[s
     """Attach OfficeCLI worksheet/cell paths while keeping openpyxl values authoritative."""
     executable = officecli_path()
     if executable is None:
-        return {"status": "unavailable", "reason": "officecli_not_found", "cells_enriched": 0}
+        return {"status": "unavailable", "reason": officecli_unavailable_reason(), "cells_enriched": 0}
     try:
         completed = subprocess.run(
             [executable, "view", str(input_path), "text", "--json"],

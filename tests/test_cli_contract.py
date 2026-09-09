@@ -509,6 +509,27 @@ class CliContractTests(unittest.TestCase):
             ],
         )
 
+    def test_parse_does_not_declare_a_requirement_track(self) -> None:
+        """parse 只做解析检查：manifest 不声明 track，不封死该目录的后续旧阶段。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            input_path = tmp_path / "minimal.docx"
+            out_dir = tmp_path / "out"
+            write_minimal_docx(input_path)
+
+            result = self.run_cli("parse", str(input_path), "--out", str(out_dir), "--quiet")
+
+            manifest = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))
+            from pipeline_track import require_legacy_track, result_track
+
+            track = result_track(out_dir)
+            # 未声明轨道的解析目录不触发旧阶段拦截（assemble 等仍可显式选择）。
+            require_legacy_track(out_dir, "assemble")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("track", manifest)
+        self.assertEqual(track, "unknown")
+
     def test_compose_writes_engineering_requirement_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

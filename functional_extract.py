@@ -3621,11 +3621,24 @@ def run_functional_extract(
         "reason": "human truth set evaluation has not been supplied",
     }
     if truth_set is not None:
-        from tools.functional_truth_eval import _load_truth, evaluate_doc
+        # 阈值权威在评估工具（当前 0.0="不劣于空尺"起点，见该模块注释）——此处
+        # 必须引用常量而非字面量，否则阈值上调时产物里的 PASS 判定静默停在旧值。
+        from tools.functional_truth_eval import (
+            DEFAULT_PRECISION_THRESHOLD,
+            DEFAULT_RECALL_THRESHOLD,
+            _load_truth,
+            evaluate_doc,
+        )
         truth_entries = _load_truth(Path(truth_set).expanduser().resolve())
         evaluation = evaluate_doc(truth_entries, items)
         quality_gate = {
-            "status": "PASS" if truth_entries and evaluation["recall"] >= 0.0 and evaluation["precision"] >= 0.0 else "NO_GATE",
+            "status": (
+                "PASS"
+                if truth_entries
+                and evaluation["recall"] >= DEFAULT_RECALL_THRESHOLD
+                and evaluation["precision"] >= DEFAULT_PRECISION_THRESHOLD
+                else "NO_GATE"
+            ),
             "evaluator": "tools/functional_truth_eval.py",
             "truth_set": str(Path(truth_set).expanduser().resolve()),
             "metrics": evaluation,
@@ -3830,6 +3843,11 @@ def _load_semantic_sections(out_dir: Path) -> list[dict[str, Any]]:
     The sidecar is an input contract for functional extraction, so malformed or
     stale reports must fall back to the existing chunks path rather than
     silently dropping source blocks.
+
+    noise 块（页眉/页脚/版权行，parser 标 ``noise: true``）不进条款文本与守恒基线
+    ——与旧 chunks 路径同口径（``build_chunks`` 跳过 noise）。语义单元按"全块覆盖"
+    校验，因此 noise 块从覆盖要求中放行并从单元文本/块锚中剔除，而不是让页脚文本
+    携带页码/标准号进入 preservation 基线（否则守恒对噪声行假 blocking）。
     """
     from io_utils import read_jsonl
     from result_package import governed_artifact_path
@@ -3846,7 +3864,12 @@ def _load_semantic_sections(out_dir: Path) -> list[dict[str, Any]]:
             return []
         units = report.get("units")
         blocks = [row for row in read_jsonl(blocks_path) if isinstance(row, dict)]
-        block_ids = {str(row.get("block_id")) for row in blocks if row.get("block_id") is not None}
+        blocks_by_id = {
+            str(row["block_id"]): row for row in blocks if row.get("block_id") is not None
+        }
+        required_ids = {
+            block_id for block_id, row in blocks_by_id.items() if not row.get("noise")
+        }
         sections: list[dict[str, Any]] = []
         seen: set[str] = set()
         for unit in units if isinstance(units, list) else []:
@@ -3854,18 +3877,32 @@ def _load_semantic_sections(out_dir: Path) -> list[dict[str, Any]]:
                 return []
             source_ids = [str(value) for value in (unit.get("source_block_ids") or [])]
             unit_id = str(unit.get("semantic_unit_id") or "")
-            if not unit_id or not source_ids or unit_id in seen or any(value not in block_ids for value in source_ids):
+            if not unit_id or not source_ids or any(value not in blocks_by_id for value in source_ids):
                 return []
-            seen.update(source_ids)
+            kept_ids = [
+                block_id for block_id in source_ids
+                if not blocks_by_id[block_id].get("noise")
+            ]
+            if not kept_ids:
+                # 纯 noise 单元（孤立页脚等）没有可抽取/可守恒的正文，整单元放行。
+                continue
+            if any(block_id in seen for block_id in kept_ids):
+                # 分区契约：每块恰好一次。重复声明块的 sidecar 视为畸形，回落 chunks。
+                return []
+            seen.update(kept_ids)
             path = [str(value) for value in (unit.get("section_path") or [])]
             sections.append({
                 "section_id": unit_id,
                 "section_path": path,
                 "heading": path[-1] if path else "",
-                "text": str(unit.get("text") or ""),
-                "block_ids": source_ids,
+                # 语义单元不改写文本（member text 以 "\n" 拼接），从保留块重建与
+                # sidecar 文本逐字节一致——noise 成员被剔除。
+                "text": "\n".join(
+                    str(blocks_by_id[block_id].get("text") or "") for block_id in kept_ids
+                ),
+                "block_ids": kept_ids,
             })
-        if not sections or seen != block_ids:
+        if not sections or seen != required_ids:
             return []
         return sections
     except (OSError, ValueError, TypeError, KeyError):

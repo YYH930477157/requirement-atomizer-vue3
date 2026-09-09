@@ -51,7 +51,13 @@ class SemanticSegmentationTests(unittest.TestCase):
                 report = build_semantic_report(_blocks(), source, mode="llm")
             self.assertEqual(report["effective_mode"], "llm")
             self.assertEqual(report["errors"], [])
+            # 成功节的单元如实标 llm。
+            for unit in report["units"]:
+                self.assertEqual(unit["boundary_basis"], "llm")
             with mock.patch("semantic_segmentation._llm_groups", return_value=[["B1", "H1"], ["B2"], ["B3"]]):
                 fallback = build_semantic_report(_blocks(), source, mode="llm")
         self.assertEqual(fallback["effective_mode"], "deterministic_fallback")
         self.assertEqual(fallback["counts"]["errors"], 2)
+        # 回退后单元不得再标 llm——血统按节如实（2026-09-09 review 修复）。
+        for unit in fallback["units"]:
+            self.assertEqual(unit["boundary_basis"], "deterministic_fallback")

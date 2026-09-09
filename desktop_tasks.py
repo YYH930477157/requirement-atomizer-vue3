@@ -1809,7 +1809,12 @@ def _stage_reuse_check(out_dir: Path, stage: str, *,
         # Prose documents legitimately have no tables. Require the files, but
         # accept empty JSONL only when the parser manifest confirms zero rows.
         try:
-            manifest = json.loads((Path(out_dir) / "manifest.json").read_text(encoding="utf-8"))
+            # package_v1 寻址：manifest 随分析根走（与 pipeline_track.result_track
+            # 同口径），裸根 join 在打包目录下会读不到而误判不可复用。
+            from result_package import resolve_analysis_root
+
+            manifest_path = resolve_analysis_root(Path(out_dir)) / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             if manifest.get("track") != "functional":
                 return False, None
             counts = manifest.get("counts", {})

@@ -1187,12 +1187,14 @@ class ChainAndManifestTests(unittest.TestCase):
         # unchanged so adding the Phase 0 anchor cannot invalidate existing cached outputs.
         from table_dispositions import TABLE_DISPOSITION_RULE_VERSION
         from table_structure import TABLE_STRUCTURE_VERSION
+        from officecli_adapter import OFFICECLI_ADAPTER_VERSION
         from paragraph_segmentation import SEGMENTATION_VERSION
         from semantic_segmentation import SEMANTIC_PROMPT_VERSION, SEMANTIC_SEGMENTATION_VERSION
 
         expected = {
             "atomize": (
-                f"atomize+{SEGMENTATION_VERSION}+{SEMANTIC_SEGMENTATION_VERSION}+{SEMANTIC_PROMPT_VERSION}+{PDF_TEXT_REPAIR_VERSION}"
+                f"atomize+{SEGMENTATION_VERSION}+{SEMANTIC_SEGMENTATION_VERSION}+{SEMANTIC_PROMPT_VERSION}"
+                f"+{OFFICECLI_ADAPTER_VERSION}+{PDF_TEXT_REPAIR_VERSION}"
                 f"+repair-vocab-{text_repair_vocabulary_fingerprint()}"
                 # W8：D1/D2/D3 开关状态进戳（ON/OFF 不共用缓存）
                 f"+{pdf_layout_switch_fingerprint()}"

@@ -2847,6 +2847,7 @@ def run_atomizer_pipeline(
     domain_pack_dir: Path | None = None,
     include_atomic_candidates: bool = True,
     segmentation=None,
+    declare_track: bool = True,
 ) -> dict[str, Any]:
     from paragraph_segmentation import (
         SegmentationOptions, build_segmentation_report, render_segmentation_review, segmentation_mode,
@@ -3021,7 +3022,12 @@ def run_atomizer_pipeline(
         "input": str(input_path),
         "input_format": input_format.lstrip("."),
         "output_dir": str(out_dir),
-        "track": "legacy_a" if include_atomic_candidates else "functional",
+        # track 声明的是"本次解析所属的需求流程"。桌面 functional 运行与 legacy 运行
+        # 都有后续阶段背书；纯 parse（declare_track=False）没有跑任何需求流程，
+        # 不声明（manifest 无 track 键 → result_track=unknown，不封死后续任一轨道）。
+        **({
+            "track": "legacy_a" if include_atomic_candidates else "functional",
+        } if declare_track else {}),
         "atomic_candidates": "enabled" if include_atomic_candidates else "disabled",
         "officecli": officecli_status,
             "paragraph_segmentation": {key: value for key, value in paragraph_report.items() if key != "units"},
