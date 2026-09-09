@@ -2859,6 +2859,14 @@ def run_atomizer_pipeline(
     effective_mode = segmentation.initial_mode()  # Validate before producing any files.
     input_path = input_path.expanduser().resolve()
     out_dir = out_dir.expanduser().resolve()
+    if declare_track:
+        declared_track = "legacy_a" if include_atomic_candidates else "functional"
+    else:
+        # 解析不创建流程声明，也不能清除目录已有的流程边界。
+        # 无效声明在写任何产物前报错，避免覆盖后意外放开旧阶段。
+        from pipeline_track import result_track
+
+        declared_track = result_track(out_dir)
     if not input_path.exists():
         raise AtomizerInputError(f"Input file does not exist: {input_path}")
     input_format = input_path.suffix.lower()
@@ -3022,12 +3030,7 @@ def run_atomizer_pipeline(
         "input": str(input_path),
         "input_format": input_format.lstrip("."),
         "output_dir": str(out_dir),
-        # track 声明的是"本次解析所属的需求流程"。桌面 functional 运行与 legacy 运行
-        # 都有后续阶段背书；纯 parse（declare_track=False）没有跑任何需求流程，
-        # 不声明（manifest 无 track 键 → result_track=unknown，不封死后续任一轨道）。
-        **({
-            "track": "legacy_a" if include_atomic_candidates else "functional",
-        } if declare_track else {}),
+        **({"track": declared_track} if declared_track != "unknown" else {}),
         "atomic_candidates": "enabled" if include_atomic_candidates else "disabled",
         "officecli": officecli_status,
             "paragraph_segmentation": {key: value for key, value in paragraph_report.items() if key != "units"},

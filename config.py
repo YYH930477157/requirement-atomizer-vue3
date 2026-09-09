@@ -104,8 +104,8 @@ ENV_REGISTRY: tuple[EnvVar, ...] = (
     EnvVar("RATOMIZER_UNEXTRACTED_REGISTRY", "1", "未抽取内容登记册开关（=0 关闭 unextracted_registry.json；默认 1 纯登记不改行为）", False),
     EnvVar("RATOMIZER_DOCX_EXTRA_CHANNELS", "0", "DOCX 文本框/页眉页脚额外通道收容开关（=1 启用 parsers/docx_extra_channels.py；默认 0=正文块与 golden 基线逐字节一致）", False),
     EnvVar("RATOMIZER_XLSX_REQUIREMENT_LIST", "0", "Excel 需求清单型分流开关（=1 对 xlsx 行映射抽取并产出 base_library_candidates.jsonl；默认 0=维持 table 路径）", False),
-    EnvVar("RATOMIZER_OFFICECLI", "off", "OfficeCLI 结构提示开关（默认 off——解析产物不得因机器是否恰好装了 officecli 而漂移；=auto/1/on 显式启用 bundled/PATH 二进制参与 DOCX/XLSX 结构提示。Windows 下 officecli 常驻进程会持有被查看文件句柄，故必须显式选择）", False),
-    EnvVar("RATOMIZER_OFFICECLI_PATH", "", "OfficeCLI 二进制显式路径（设置即视为启用，优先于 RATOMIZER_OFFICECLI 的自动发现）", False),
+    EnvVar("RATOMIZER_OFFICECLI", "bundled", "OfficeCLI 结构提示：默认使用 macOS/Windows 项目内置版本；auto/1/on 额外允许发现系统 PATH；off 始终禁用，包括显式路径", False),
+    EnvVar("RATOMIZER_OFFICECLI_PATH", "", "OfficeCLI 二进制显式路径（优先于内置版本和 PATH；RATOMIZER_OFFICECLI=off 时仍禁用）", False),
     EnvVar("RATOMIZER_CLAIM_RESCAN", "0", "claim 账本四视角确定性复扫开关（=1 将归属/数值/约束/覆盖问题汇入 quality_report；默认 0）", False),
     # --- V4 A9 招标文件适配（默认关，OFF 时行为字节不变） ---
     EnvVar("RATOMIZER_TENDER_TABLE_FILTER", "0", "A9-1 商务/表单表识别排除开关（=1 启用 tender_table_filter.py；默认 0=维持既有 table 分类）", False),

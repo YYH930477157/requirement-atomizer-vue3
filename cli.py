@@ -380,8 +380,7 @@ def command_atomize(args: argparse.Namespace, started: float, timing_ms: dict[st
         domain_pack_dir=args.domain_pack,
         include_atomic_candidates=args.command != "parse",
         segmentation=options_from_args(args),
-        # parse 只做解析检查，没有跑任何需求流程——manifest 不声明 track，
-        # 不能用 "functional" 封死该目录后续的 review/assemble 旧阶段。
+        # parse 不创建需求流程声明；已有目录的 track 由解析器保留。
         declare_track=args.command != "parse",
     )
     timing_ms["atomize"] = elapsed_ms(started)

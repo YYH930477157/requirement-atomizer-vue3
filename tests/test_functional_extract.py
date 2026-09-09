@@ -816,6 +816,39 @@ class SemanticSectionLoaderTests(unittest.TestCase):
         # 同块双声明违反"恰好一次"分区契约——语义路径整体回落（blocks 聚合兜底）。
         self.assertEqual([s["section_id"] for s in sections], ["(root)"])
 
+    def test_duplicate_members_within_one_unit_fall_back(self) -> None:
+        blocks = [{"block_id": "B1", "type": "paragraph",
+                   "text": "The meter shall log events."}]
+        units = [{"semantic_unit_id": "SU-000001", "source_block_ids": ["B1", "B1"],
+                  "text": "The meter shall log events."}]
+        with TemporaryDirectory() as tmp:
+            self._seed(tmp, blocks, units)
+            sections, _ = fe.load_clauses_detailed(tmp)
+        self.assertEqual([s["section_id"] for s in sections], ["(root)"])
+        self.assertEqual(sections[0]["text"].count("The meter shall log events."), 1)
+
+    def test_duplicate_unit_ids_fall_back(self) -> None:
+        blocks = [
+            {"block_id": "B1", "type": "paragraph", "text": "The meter shall log events."},
+            {"block_id": "B2", "type": "paragraph", "text": "The meter shall retain records."},
+        ]
+        units = [{"semantic_unit_id": "SU-000001", "source_block_ids": [b["block_id"]],
+                  "text": b["text"]} for b in blocks]
+        with TemporaryDirectory() as tmp:
+            self._seed(tmp, blocks, units)
+            sections, _ = fe.load_clauses_detailed(tmp)
+        self.assertEqual([s["section_id"] for s in sections], ["(root)"])
+
+    def test_loader_version_invalidates_stage_cache(self) -> None:
+        import desktop_tasks
+        from unittest.mock import patch
+
+        before = desktop_tasks.stage_producer("functional-extract")
+        with patch.object(fe, "SEMANTIC_SECTION_LOADER_VERSION", "semantic-section-loader-next"):
+            after = desktop_tasks.stage_producer("functional-extract")
+        self.assertNotEqual(before, after)
+        self.assertIn("semantic-section-loader-next", after)
+
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

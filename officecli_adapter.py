@@ -16,40 +16,50 @@ import subprocess
 import sys
 from typing import Any
 
-# v2（2026-09-09 review）：默认从 auto 改 off——自动发现让解析产物依赖"机器是否
-# 恰好装了 officecli"，且 Windows 下 officecli 常驻进程持有被查看文件句柄（临时
-# 目录清理 WinError 32）。显式 RATOMIZER_OFFICECLI=auto/1/on 或设置
-# RATOMIZER_OFFICECLI_PATH 才启用。默认翻转必须 bump 使旧 atomize 阶段复用失效。
-OFFICECLI_ADAPTER_VERSION = "officecli-adapter-v2"
+from config import get_env
+
+# 默认只发现项目内置版本；系统 PATH 需显式 auto，off 始终优先。
+OFFICECLI_ADAPTER_VERSION = "officecli-adapter-v3"
 OFFICECLI_ENV = "RATOMIZER_OFFICECLI"
 OFFICECLI_PATH_ENV = "RATOMIZER_OFFICECLI_PATH"
 _BUNDLED_ROOT = Path(__file__).resolve().parent / "vendor" / "officecli"
 _PARAGRAPH_RE = re.compile(r"\[/body/p\[(\d+)\]\] (?:[•·]\s*)?(?:「(?P<quoted>.*?)」|(?P<plain>.*?)) ← (?P<style>[^|\n]+)", re.S)
 _LIST_STYLE_RE = re.compile(r"list|bullet|number", re.I)
+_DISABLED_MODES = frozenset({"0", "false", "off", "disabled"})
+_PATH_MODES = frozenset({"auto", "1", "true", "yes", "on"})
+
+
+def officecli_mode() -> str:
+    return get_env(OFFICECLI_ENV).strip().lower()
 
 
 def officecli_path() -> str | None:
-    # 显式路径本身就是启用信号（优先级最高）；否则必须显式打开开关才做自动发现。
+    setting = officecli_mode()
+    if setting in _DISABLED_MODES or setting not in _PATH_MODES | {"bundled"}:
+        return None
     configured = os.environ.get(OFFICECLI_PATH_ENV, "").strip()
     if configured:
-        return configured if Path(configured).is_file() else None
-    setting = os.environ.get(OFFICECLI_ENV, "off").strip().lower()
-    if setting in {"", "0", "false", "off", "disabled"}:
-        return None
+        candidate = Path(configured).expanduser()
+        return str(candidate.resolve()) if candidate.is_file() else None
     bundled = _BUNDLED_ROOT / ("officecli.exe" if sys.platform == "win32" else "officecli")
-    candidate = str(bundled) if bundled.is_file() else shutil.which("officecli")
+    if sys.platform in {"darwin", "win32"} and bundled.is_file():
+        return str(bundled.resolve())
+    candidate = shutil.which("officecli") if setting in _PATH_MODES else None
     if candidate and Path(candidate).is_file():
         return candidate
     return None
 
 
 def officecli_unavailable_reason() -> str:
-    """区分「显式关闭」「路径配置错」「开启但找不到」三种不可用成因（进 manifest 审计）。"""
+    """与路径选择相同优先级的不可用原因，写入 manifest。"""
+    setting = officecli_mode()
+    if setting in _DISABLED_MODES:
+        return "officecli_disabled"
+    if setting not in _PATH_MODES | {"bundled"}:
+        return "officecli_invalid_mode"
     configured = os.environ.get(OFFICECLI_PATH_ENV, "").strip()
     if configured:
         return "officecli_path_not_a_file"
-    if os.environ.get(OFFICECLI_ENV, "off").strip().lower() in {"", "0", "false", "off", "disabled"}:
-        return "officecli_disabled"
     return "officecli_not_found"
 
 

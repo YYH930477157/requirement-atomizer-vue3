@@ -12,10 +12,11 @@ class RunSmokeTests(unittest.TestCase):
         modules = run_smoke.load_modules(run_smoke.DEFAULT_MANIFEST)
         suite = run_smoke.build_suite(modules)
         self.assertEqual(len(modules), 91)
-        # 1820 = 1792 + 23（队列收敛第 2 步） + 3（功能产物 governed/API 回归）
+        # 1822 = 1792 + 23（队列收敛第 2 步） + 3（功能产物 governed/API 回归）
         #        + 1（任务 D 闭环：保留丢失 data_constraints 回归钉）
         #        + 1（2026-09-09 review 修复：parse 不声明轨道的 CLI 契约钉）
-        self.assertEqual(suite.countTestCases(), 1820)
+        #        + 2（parse 保留已有轨道、无效轨道写入前拒绝）
+        self.assertEqual(suite.countTestCases(), 1822)
 
     def test_manifest_rejects_duplicates_and_non_test_modules(self) -> None:
         for content in ("tests.test_atomize\ntests.test_atomize\n", "atomize\n"):

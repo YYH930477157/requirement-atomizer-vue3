@@ -4,10 +4,83 @@ import tempfile
 import unittest
 from unittest import mock
 
+import officecli_adapter as adapter
 from officecli_adapter import enrich_docx_blocks
 
 
 class OfficeCliAdapterTests(unittest.TestCase):
+    def setUp(self):
+        environment = {key: value for key, value in os.environ.items()
+                       if key not in {adapter.OFFICECLI_ENV, adapter.OFFICECLI_PATH_ENV}}
+        self.environment_patch = mock.patch.dict(os.environ, environment, clear=True)
+        self.environment_patch.start()
+        self.addCleanup(self.environment_patch.stop)
+
+    def test_default_uses_bundled_runtime_on_mac_and_windows(self):
+        for platform, filename in (("darwin", "officecli"), ("win32", "officecli.exe")):
+            with self.subTest(platform=platform), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp).resolve()
+                binary = root / filename
+                binary.write_bytes(b"bundled")
+                with mock.patch.object(adapter.sys, "platform", platform), \
+                     mock.patch.object(adapter, "_BUNDLED_ROOT", root), \
+                     mock.patch.object(adapter.shutil, "which") as which:
+                    self.assertEqual(adapter.officecli_path(), str(binary))
+                    which.assert_not_called()
+
+    def test_path_discovery_requires_explicit_auto(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            external = root / "external"
+            external.write_bytes(b"external")
+            with mock.patch.object(adapter, "_BUNDLED_ROOT", root / "missing"), \
+                 mock.patch.object(adapter.shutil, "which", return_value=str(external)) as which:
+                self.assertIsNone(adapter.officecli_path())
+                self.assertEqual(adapter.officecli_unavailable_reason(), "officecli_not_found")
+                which.assert_not_called()
+                os.environ[adapter.OFFICECLI_ENV] = "auto"
+                self.assertEqual(adapter.officecli_path(), str(external))
+
+    def test_explicit_off_overrides_path_without_running_process(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            binary = Path(tmp) / "officecli"
+            binary.write_bytes(b"runtime")
+            os.environ[adapter.OFFICECLI_PATH_ENV] = str(binary)
+            for mode in ("off", "0", "false", "disabled"):
+                with self.subTest(mode=mode), mock.patch.object(adapter.subprocess, "run") as run:
+                    os.environ[adapter.OFFICECLI_ENV] = mode
+                    self.assertIsNone(adapter.officecli_path())
+                    result = enrich_docx_blocks([], Path("source.docx"))
+                    self.assertEqual(result["reason"], "officecli_disabled")
+                    run.assert_not_called()
+
+    def test_invalid_mode_and_invalid_explicit_path_are_honest(self):
+        os.environ[adapter.OFFICECLI_ENV] = "typo"
+        self.assertIsNone(adapter.officecli_path())
+        self.assertEqual(adapter.officecli_unavailable_reason(), "officecli_invalid_mode")
+        os.environ[adapter.OFFICECLI_ENV] = "bundled"
+        with tempfile.TemporaryDirectory() as tmp:
+            os.environ[adapter.OFFICECLI_PATH_ENV] = str(Path(tmp) / "absent")
+            self.assertIsNone(adapter.officecli_path())
+            self.assertEqual(adapter.officecli_unavailable_reason(), "officecli_path_not_a_file")
+
+    def test_atomize_cache_tracks_runtime_selection_and_content(self):
+        from desktop_tasks import stage_input_fingerprint
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            binary = root / "runtime"
+            binary.write_bytes(b"version-one")
+            os.environ[adapter.OFFICECLI_PATH_ENV] = str(binary)
+            enabled = stage_input_fingerprint(root, "atomize")
+            os.environ[adapter.OFFICECLI_ENV] = "off"
+            disabled = stage_input_fingerprint(root, "atomize")
+            self.assertNotEqual(enabled, disabled)
+            os.environ[adapter.OFFICECLI_ENV] = "bundled"
+            self.assertEqual(enabled, stage_input_fingerprint(root, "atomize"))
+            binary.write_bytes(b"version-two-updated")
+            self.assertNotEqual(enabled, stage_input_fingerprint(root, "atomize"))
+
     def test_xlsx_adds_stable_cell_paths_without_rewriting_values(self):
         cells = [{"sheet_name": "Requirements", "a1_address": "B2", "text": "original"}]
         rows = [{"sheet_name": "Requirements", "row_index": 2}]

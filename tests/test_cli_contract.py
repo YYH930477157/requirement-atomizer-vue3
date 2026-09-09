@@ -530,6 +530,45 @@ class CliContractTests(unittest.TestCase):
         self.assertNotIn("track", manifest)
         self.assertEqual(track, "unknown")
 
+    def test_parse_preserves_existing_track_and_functional_boundary(self) -> None:
+        from pipeline_track import require_legacy_track, result_track
+
+        for track in ("functional", "legacy_a"):
+            with self.subTest(track=track), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                source = root / "minimal.docx"
+                out = root / "out"
+                out.mkdir()
+                write_minimal_docx(source)
+                (out / "manifest.json").write_text(json.dumps({"track": track}), encoding="utf-8")
+                product = out / "functional_requirements.json"
+                product.write_text('{"items": []}', encoding="utf-8")
+                result = self.run_cli("parse", str(source), "--out", str(out), "--quiet")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result_track(out), track)
+                self.assertEqual(product.read_text(encoding="utf-8"), '{"items": []}')
+                if track == "functional":
+                    for stage in ("llm-review", "assemble", "compose"):
+                        with self.assertRaises(ValueError):
+                            require_legacy_track(out, stage)
+                else:
+                    require_legacy_track(out, "assemble")
+
+    def test_parse_rejects_invalid_existing_track_before_writing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "minimal.docx"
+            out = root / "out"
+            out.mkdir()
+            write_minimal_docx(source)
+            manifest = out / "manifest.json"
+            original = '{"track": "unexpected"}'
+            manifest.write_text(original, encoding="utf-8")
+            result = self.run_cli("parse", str(source), "--out", str(out), "--quiet")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(manifest.read_text(encoding="utf-8"), original)
+            self.assertFalse((out / "blocks.jsonl").exists())
+
     def test_compose_writes_engineering_requirement_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

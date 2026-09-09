@@ -59,6 +59,7 @@ from cosem_behavior_spec import extract_codes, extract_ints
 from requirement_record import provenance
 
 FUNCTIONAL_EXTRACT_VERSION = "functional-extract-v1"
+SEMANTIC_SECTION_LOADER_VERSION = "semantic-section-loader-v2"
 FUNCTIONAL_EXTRACT_PROMPT_VERSION = "functional-extract-prompt-v5"  # v5（2026-09-06）：明确表格参数行的字段名/值/单位/适用条件进入所属需求 data_constraints；表头、示例与上下文数字只有在条款定义为约束时才进入。v4 及以前见 CLAUDE.md。
 # S1-8：bump v1→v2。``_reject_drifted_codes`` 清洗范围从仅 objective 扩到全部叙述字段
 # （behaviors/data_constraints/variants/exceptions/preconditions/description），缓存产物内容
@@ -3872,13 +3873,17 @@ def _load_semantic_sections(out_dir: Path) -> list[dict[str, Any]]:
         }
         sections: list[dict[str, Any]] = []
         seen: set[str] = set()
+        seen_units: set[str] = set()
         for unit in units if isinstance(units, list) else []:
             if not isinstance(unit, dict):
                 return []
             source_ids = [str(value) for value in (unit.get("source_block_ids") or [])]
             unit_id = str(unit.get("semantic_unit_id") or "")
-            if not unit_id or not source_ids or any(value not in blocks_by_id for value in source_ids):
+            if (not unit_id or unit_id in seen_units or not source_ids
+                    or len(source_ids) != len(set(source_ids))
+                    or any(value not in blocks_by_id for value in source_ids)):
                 return []
+            seen_units.add(unit_id)
             kept_ids = [
                 block_id for block_id in source_ids
                 if not blocks_by_id[block_id].get("noise")

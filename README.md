@@ -49,12 +49,15 @@ This writes a source-preserving paragraph report and an offline review page. Use
 `vision_assisted` only after confirming that the configured model accepts images.
 Visual suggestions are limited to flagged regions and never rewrite source units.
 
-For DOCX files, the bundled OfficeCLI adapter enriches parser blocks with the
-document's paragraph style and stable element path. Run
+For DOCX and XLSX files, the OfficeCLI adapter adds paragraph style hints or
+worksheet/cell paths while preserving the parser's source text. Run
 `requirement-officecli-install` to install the macOS or Windows runtime under
-`vendor/officecli`; it is used automatically. An `officecli` on PATH is also
-accepted; set `RATOMIZER_OFFICECLI=off` to disable it or
-`RATOMIZER_OFFICECLI_PATH` to select a binary. Parser text and source spans remain
+`vendor/officecli`; it is used automatically (the default mode is `bundled`).
+Set `RATOMIZER_OFFICECLI=auto` to additionally allow a binary on the system PATH,
+or `RATOMIZER_OFFICECLI_PATH` to select a binary explicitly.
+`RATOMIZER_OFFICECLI=off` disables all versions, including an explicit path.
+The runtime is installed by the command above, not downloaded during parsing.
+Parser text and source spans remain
 authoritative, and an unavailable adapter is recorded in `manifest.json` before
 falling back to the built-in parser.
 

@@ -1213,6 +1213,7 @@ def stage_producer(stage: str, *, out_dir: Path | None = None,
                 FUNCTIONAL_EXTRACT_GUARDS_VERSION,
                 FUNCTIONAL_EXTRACT_PROMPT_VERSION,
                 FUNCTIONAL_EXTRACT_VERSION,
+                SEMANTIC_SECTION_LOADER_VERSION,
                 routing_lineage_versions,
             )
             producer = "+".join((
@@ -1221,6 +1222,7 @@ def stage_producer(stage: str, *, out_dir: Path | None = None,
                 FUNCTIONAL_EXTRACT_PROMPT_VERSION,
                 FUNCTIONAL_EXTRACT_GUARDS_VERSION,
                 FUNCTIONAL_CONSERVATION_MODEL_VERSION,
+                SEMANTIC_SECTION_LOADER_VERSION,
                 *routing_lineage_versions().values(),
                 *outline_authority_lineage().values(),
             ))
@@ -1546,6 +1548,21 @@ def stage_input_fingerprint(out_dir: Path, stage: str, *, route: str | None = No
             out_dir=root,
             kb_paths=(config or {}).get("kb_paths") if stage == "llm-review" else None,
         )
+    officecli_identity = None
+    if stage == "atomize":
+        from officecli_adapter import officecli_mode, officecli_path
+
+        executable = officecli_path()
+        try:
+            runtime_sha256 = _file_sha256_cached(Path(executable)) if executable else None
+        except OSError:
+            # 运行时不可读/被替换时仍允许解析器走既有 unavailable 回退。
+            runtime_sha256 = None
+        officecli_identity = {
+            "mode": officecli_mode(),
+            "runtime_path": executable,
+            "runtime_sha256": runtime_sha256,
+        }
     payload = {
         "stage": stage,
         "producer": producer,
@@ -1617,6 +1634,8 @@ def stage_input_fingerprint(out_dir: Path, stage: str, *, route: str | None = No
             if stage == "requirements-analysis" else None
         ),
     }
+    if stage == "atomize":
+        payload["officecli"] = officecli_identity
     encoded = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 

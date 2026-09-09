@@ -17,7 +17,7 @@ def asset() -> str:
 def main() -> int:
     name = asset()
     target = ROOT / ("officecli.exe" if sys.platform == "win32" else "officecli")
-    hint = "（启用：设置 RATOMIZER_OFFICECLI=auto；默认 off，解析不依赖本机是否安装）"
+    hint = "（macOS/Windows 默认使用内置版本；RATOMIZER_OFFICECLI=off 可禁用）"
     if target.is_file() and target.stat().st_size:
         print(f"OfficeCLI {VERSION} 已安装: {target}{hint}")
         return 0
