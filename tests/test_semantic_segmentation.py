@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from semantic_segmentation import build_semantic_report
+from semantic_segmentation import _semantic_prompt, build_semantic_report
 
 
 def _blocks():
@@ -18,6 +18,17 @@ def _blocks():
 
 
 class SemanticSegmentationTests(unittest.TestCase):
+    def test_prompt_states_contextual_goal_and_hard_constraints(self) -> None:
+        prompt = _semantic_prompt()
+        for phrase in (
+            "lead-in sentence introduces its list",
+            "numbered clause containing a full sentence",
+            "preserve source order",
+            "never rewrite, summarize, translate, or invent text",
+            "mark the case uncertain",
+        ):
+            self.assertIn(phrase, prompt)
+
     def test_deterministic_grouping_keeps_independent_obligations_separate(self):
         with tempfile.TemporaryDirectory() as td:
             source = Path(td) / "doc.pdf"

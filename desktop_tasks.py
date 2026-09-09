@@ -1226,7 +1226,8 @@ def stage_producer(stage: str, *, out_dir: Path | None = None,
             ))
         elif stage == "atomize":
             from paragraph_segmentation import SEGMENTATION_VERSION
-            producer = f"{producer}+{SEGMENTATION_VERSION}"
+            from semantic_segmentation import SEMANTIC_PROMPT_VERSION, SEMANTIC_SEGMENTATION_VERSION
+            producer = f"{producer}+{SEGMENTATION_VERSION}+{SEMANTIC_SEGMENTATION_VERSION}+{SEMANTIC_PROMPT_VERSION}"
             # PDF text repair changes blocks consumed by every downstream stage. Include both
             # the algorithm version and the bundled vocabulary content in the producer so a
             # repaired parser cannot silently reuse an old atomize run. Source alignment is a
