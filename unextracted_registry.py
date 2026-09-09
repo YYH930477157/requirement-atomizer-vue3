@@ -212,11 +212,12 @@ def _collect_figure_pages(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
             None,
         )
         title_text = str(title_block.get("text") or "") if title_block else ""
+        title_section = title_block.get("section_path") or [] if title_block else []
         entries.append(_entry(
             KIND_FIGURE_PAGE,
             "整页文本极少且疑似含图/流程图，请专家人工核对是否含规范性内容",
             source_id=f"PAGE-{page_number}",
-            section=" > ".join(str(p) for p in (title_block.get("section_path") or []) if title_block),
+            section=" > ".join(str(p) for p in title_section),
             text_preview=title_text,
             evidence={
                 "page_number": page_number,

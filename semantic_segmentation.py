@@ -5,7 +5,6 @@ Every emitted semantic unit is a validated, ordered partition of source blocks.
 """
 from __future__ import annotations
 
-from collections import defaultdict
 from dataclasses import asdict
 import hashlib
 import json
@@ -15,12 +14,90 @@ from typing import Any
 
 # v2（2026-09-09 review）：boundary_basis 按节如实标注——llm 模式某节回退后，
 # 该节单元不再误标 "llm"（改 "deterministic_fallback"），其余节保持真实来源。
-SEMANTIC_SEGMENTATION_VERSION = "semantic-segmentation-v2"
-SEMANTIC_PROMPT_VERSION = "semantic-segmentation-prompt-v2-contextual-boundaries"
+# v3：确定性边界修复——编号义务句按正文处理、冒号引导句与首项清单同组、
+# 清单后的正文切开、罗马编号小节单独成单元。
+# v4：真实 PDF 跨页表格续文只登记可审计候选，保留物理表边界，不静默拼接。
+# v5：编号义务句允许编号末尾句点（如 ``9.2.2.1. The meter shall ...``），
+#      修复 PDF 视觉标题误分类后留下的半句正文。
+SEMANTIC_SEGMENTATION_VERSION = "semantic-segmentation-v5"
+SEMANTIC_PROMPT_VERSION = "semantic-segmentation-prompt-v3-contextual-boundaries"
 SEMANTIC_MODES = ("off", "deterministic", "llm")
 _TERMINAL_RE = re.compile(r"[.!?。！？；;:]$")
 _CONTINUATION_RE = re.compile(r"^(?:and|or|but|which|that|this|these|it|they|where|when|if|for|with)\b", re.I)
 _OBLIGATION_RE = re.compile(r"\b(?:shall|must|required|should)\b", re.I)
+_LIST_ITEM_RE = re.compile(r"^(?:[•▪◦‣]|[-–—]|\d{1,2}[).]|[A-Za-z][).]|[ivxlcdm]{1,4}[).])\s+", re.I)
+_ROMAN_SECTION_RE = re.compile(
+    r"^(?:[ivxlcdm]{1,8})[.)]\s+[A-Z][^.!?]{2,}$", re.I)
+_CLAUSE_INDEX_RE = re.compile(r"^\s*\d+(?:\.\s*\d+)+\s*$")
+
+
+def _table_row_values(block: dict[str, Any], index: int) -> list[str]:
+    rows = block.get("data_rows")
+    if not isinstance(rows, list) or not rows:
+        return []
+    row = rows[index]
+    return [str(value or "").strip() for value in row] if isinstance(row, list) else []
+
+
+def _table_continuation_evidence(previous: dict[str, Any], current: dict[str, Any]) -> dict[str, Any] | None:
+    """Return conservative evidence for a PDF table page continuation.
+
+    This is intentionally an audit link, not a merge instruction.  The parser
+    has already materialized two physical tables; silently joining them would
+    destroy independent-table boundaries when layout evidence is ambiguous.
+    """
+    if str(previous.get("type") or "") != "table" or str(current.get("type") or "") != "table":
+        return None
+    if list(previous.get("section_path") or []) != list(current.get("section_path") or []):
+        return None
+    previous_page = previous.get("page_number")
+    current_page = current.get("page_number")
+    if not isinstance(previous_page, int) or not isinstance(current_page, int):
+        return None
+    if current_page != previous_page + 1:
+        return None
+    if previous.get("columns") != current.get("columns"):
+        return None
+    previous_rows = previous.get("data_rows")
+    current_rows = current.get("data_rows")
+    if not isinstance(previous_rows, list) or not previous_rows:
+        return None
+    if not isinstance(current_rows, list) or not current_rows:
+        return None
+    previous_last = _table_row_values(previous, -1)
+    current_first = _table_row_values(current, 0)
+    if not previous_last or not current_first:
+        return None
+    previous_index = next((value for value in previous_last if _CLAUSE_INDEX_RE.match(value)), "")
+    non_empty_current = [value for value in current_first if value]
+    if not previous_index or not non_empty_current:
+        return None
+    # A continuation fragment has no clause number in its first row, and the
+    # first textual cell starts mid-sentence.  Requiring at least two populated
+    # cells avoids flagging a normal single-cell table on the next page.
+    current_index = next((value for value in current_first if _CLAUSE_INDEX_RE.match(value)), "")
+    if current_index or len(non_empty_current) < 2:
+        return None
+    first_text = non_empty_current[0]
+    if not first_text[:1].islower():
+        return None
+    return {
+        "from_block_id": str(previous.get("block_id") or ""),
+        "from_table_id": str(previous.get("table_id") or ""),
+        "to_block_id": str(current.get("block_id") or ""),
+        "to_table_id": str(current.get("table_id") or ""),
+        "from_page": previous_page,
+        "to_page": current_page,
+        "evidence": [
+            "adjacent_pages",
+            "same_section_path",
+            "same_column_count",
+            f"previous_last_clause:{previous_index}",
+            "current_first_row_has_no_clause_index",
+            "current_first_text_starts_lowercase",
+        ],
+        "action": "manual_review_or_llm_context",
+    }
 
 
 def add_semantic_arguments(parser) -> None:
@@ -36,6 +113,55 @@ def semantic_options_from_args(args) -> dict[str, str]:
     }
 
 
+def _is_list_item(block: dict[str, Any]) -> bool:
+    """Recognize list markers even when a PDF parser cannot recover list metadata."""
+    return bool(block.get("is_list_item")) or bool(
+        _LIST_ITEM_RE.match(str(block.get("text") or "").strip())
+    )
+
+
+def _is_roman_section_marker(block: dict[str, Any]) -> bool:
+    """Treat short roman-numbered subtopic markers as boundaries in PDF prose."""
+    text = str(block.get("text") or "").strip()
+    return str(block.get("type") or "paragraph") == "paragraph" and bool(
+        _ROMAN_SECTION_RE.match(text)
+    )
+
+
+def _is_normative_heading(block: dict[str, Any]) -> bool:
+    """A numbered sentence containing an obligation is body text, not a heading.
+
+    PDF layout extraction can label the first visual line of a wrapped numbered
+    requirement as ``heading``.  The semantic layer must repair that boundary
+    without changing parser-owned source blocks.
+    """
+    text = str(block.get("text") or "").strip()
+    return (
+        str(block.get("type") or "") == "heading"
+        and bool(re.match(r"^\d+(?:\.\d+)*\.?\s+", text))
+        and bool(_OBLIGATION_RE.search(text))
+    )
+
+
+def _split_noise_boundaries(groups: list[list[str]], blocks: list[dict[str, Any]]) -> list[list[str]]:
+    """Keep parser-marked headers/footers out of semantic prose units."""
+    by_id = {str(block.get("block_id")): block for block in blocks}
+    result: list[list[str]] = []
+    for group in groups:
+        current: list[str] = []
+        current_noise: bool | None = None
+        for block_id in group:
+            is_noise = bool(by_id.get(block_id, {}).get("noise"))
+            if current and is_noise != current_noise:
+                result.append(current)
+                current = []
+            current.append(block_id)
+            current_noise = is_noise
+        if current:
+            result.append(current)
+    return result
+
+
 def _deterministic_groups(blocks: list[dict[str, Any]]) -> list[list[str]]:
     groups: list[list[str]] = []
     current: list[str] = []
@@ -46,11 +172,24 @@ def _deterministic_groups(blocks: list[dict[str, Any]]) -> list[list[str]]:
         text = str(block.get("text") or "").strip()
         if not block_id:
             continue
-        new_group = (not current or kind != "paragraph" or block.get("is_list_item")
-                     or previous is None or str(previous.get("type") or "paragraph") != "paragraph")
+        new_group = (not current or kind != "paragraph"
+                     or _is_roman_section_marker(block)
+                     or previous is None or str(previous.get("type") or "paragraph") != "paragraph"
+                     or _is_roman_section_marker(previous))
         if not new_group and previous is not None:
             prev_text = str(previous.get("text") or "").strip()
-            new_group = bool(_TERMINAL_RE.search(prev_text) and not _CONTINUATION_RE.match(text))
+            # A colon lead-in owns the immediately following list.  This is a
+            # semantic dependency, not a sentence boundary.
+            if prev_text.endswith((":", "：")) and _is_list_item(block):
+                new_group = False
+            elif _is_list_item(previous) and not _is_list_item(block):
+                # A prose block after a list is a new unit.  PDF extraction often
+                # loses list metadata, so this check must use the marker text too.
+                new_group = True
+            elif _is_list_item(block):
+                new_group = True
+            else:
+                new_group = bool(_TERMINAL_RE.search(prev_text) and not _CONTINUATION_RE.match(text))
             # Two independent normative sentences are separate units even when a PDF
             # gave them identical visual spacing.
             if _OBLIGATION_RE.search(prev_text) and _OBLIGATION_RE.search(text):
@@ -190,13 +329,56 @@ def build_semantic_report(blocks: list[dict[str, Any]], source: Path, *, mode: s
                           route: str = "openai_compatible") -> dict[str, Any]:
     if mode not in SEMANTIC_MODES:
         raise ValueError("invalid semantic segmentation mode")
-    by_section: dict[tuple[str, ...], list[dict[str, Any]]] = defaultdict(list)
+    # Table page continuations are reported as links, never silently merged.
+    # A noise-only page footer/header between two tables does not break the
+    # physical adjacency; any real prose block does.
+    table_continuations: list[dict[str, Any]] = []
+    previous_table: dict[str, Any] | None = None
     for block in blocks:
-        by_section[tuple(str(x) for x in (block.get("section_path") or []))].append(block)
+        kind = str(block.get("type") or "paragraph")
+        if kind == "table":
+            if previous_table is not None:
+                evidence = _table_continuation_evidence(previous_table, block)
+                if evidence is not None:
+                    table_continuations.append(evidence)
+            previous_table = block
+        elif not block.get("noise"):
+            previous_table = None
+    # Build contiguous section runs instead of globally grouping by path.  A
+    # document can legitimately reuse a path after an intervening heading; a
+    # dict keyed only by path would let the semantic layer cross that heading.
+    normative_parent_by_path: dict[tuple[str, ...], list[str]] = {}
+    section_runs: list[tuple[tuple[str, ...], list[dict[str, Any]]]] = []
+    for block in blocks:
+        if _is_normative_heading(block):
+            path = [str(x) for x in (block.get("section_path") or [])]
+            normative_parent_by_path[tuple(path)] = path[:-1]
+    for block in blocks:
+        # Keep parser blocks immutable, but repair a common PDF classification
+        # error in the semantic view: ``9.1.1 The meter shall ...`` is a wrapped
+        # requirement whose continuation belongs to the parent section.
+        semantic_block = block
+        raw_path = tuple(str(x) for x in (block.get("section_path") or []))
+        semantic_path = normative_parent_by_path.get(raw_path)
+        if semantic_path is not None or _is_normative_heading(block):
+            semantic_block = dict(block)
+            semantic_block["type"] = "paragraph"
+            semantic_block["is_list_item"] = False
+            semantic_block["_semantic_section_path"] = semantic_path if semantic_path is not None else list(raw_path[:-1])
+        section_path = semantic_block.get("_semantic_section_path", semantic_block.get("section_path") or [])
+        section_key = tuple(str(x) for x in section_path)
+        if not section_runs or section_runs[-1][0] != section_key:
+            section_runs.append((section_key, []))
+        section_runs[-1][1].append(semantic_block)
     semantic_units: list[dict[str, Any]] = []
     errors: list[dict[str, str]] = []
+    continuation_by_block: dict[str, dict[str, Any]] = {}
+    continued_to_by_block: dict[str, dict[str, Any]] = {}
+    for continuation in table_continuations:
+        continuation_by_block[continuation["to_block_id"]] = continuation
+        continued_to_by_block[continuation["from_block_id"]] = continuation
     actual_mode = mode
-    for section, section_blocks in by_section.items():
+    for section, section_blocks in section_runs:
         # 按节记录实际边界来源：某节 llm 失败回退不能把其他节的单元标成 llm，
         # 也不能把本节回退单元标成 llm（血统不伪造；effective_mode 只作报告级汇总）。
         section_mode = mode
@@ -213,21 +395,43 @@ def build_semantic_report(blocks: list[dict[str, Any]], source: Path, *, mode: s
                 actual_mode = "deterministic_fallback"
         else:
             groups = _deterministic_groups(section_blocks)
+        groups = _split_noise_boundaries(groups, section_blocks)
         blocks_by_id = {str(b["block_id"]): b for b in section_blocks}
         for index, group in enumerate(groups, start=1):
             source_text = "\n".join(str(blocks_by_id[bid].get("text") or "") for bid in group)
-            semantic_units.append({
+            review_flags: list[str] = []
+            table_contexts: list[dict[str, Any]] = []
+            for block_id in group:
+                continuation = continuation_by_block.get(block_id)
+                if continuation is not None:
+                    review_flags.append("possible_table_continuation")
+                    table_contexts.append(continuation)
+                continued_to = continued_to_by_block.get(block_id)
+                if continued_to is not None:
+                    review_flags.append("has_table_continuation")
+                    table_contexts.append(continued_to)
+            review_flags = list(dict.fromkeys(review_flags))
+            review_status = "needs_review" if review_flags else (
+                "needs_review" if (mode == "llm" and errors) else "not_reviewed")
+            unit = {
                 "semantic_unit_id": f"SU-{len(semantic_units) + 1:06d}",
                 "section_path": list(section), "source_block_ids": group,
                 "text": source_text, "boundary_basis": section_mode,
-                "review_status": "needs_review" if (mode == "llm" and errors) else "not_reviewed",
-            })
+                "review_status": review_status,
+            }
+            if review_flags:
+                unit["review_flags"] = review_flags
+            if table_contexts:
+                unit["table_contexts"] = table_contexts
+            semantic_units.append(unit)
     serialized = json.dumps(semantic_units, ensure_ascii=False, sort_keys=True).encode("utf-8")
     return {
         "schema": "semantic-segmentation/v1", "version": SEMANTIC_SEGMENTATION_VERSION,
         "source_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
         "configuration": {"mode": mode, "route": route, "prompt_version": SEMANTIC_PROMPT_VERSION}, "effective_mode": actual_mode,
         "quality_status": "not_evaluated", "errors": errors,
-        "counts": {"units": len(semantic_units), "source_blocks": len(blocks), "errors": len(errors)},
+        "counts": {"units": len(semantic_units), "source_blocks": len(blocks), "errors": len(errors),
+                   "table_continuations": len(table_continuations)},
+        "table_continuations": table_continuations,
         "units_fingerprint": hashlib.sha256(serialized).hexdigest(), "units": semantic_units,
     }

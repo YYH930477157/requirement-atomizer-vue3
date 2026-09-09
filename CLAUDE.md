@@ -5,6 +5,22 @@
 - 正式桌面端是 `ui/`（Vue3 + Electron）和 Python 后端。
 - 旧 `gui/` PySide6 界面、`ratomizer-gui` 入口及其测试已移除；历史段落中出现的 PySide6 内容仅记录当时的实现和决策，不代表当前仓库仍提供该能力。
 
+## 决策（2026-09-09c）——真实文档段落复查首轮收敛
+
+- `semantic-segmentation-v4` 已将编号义务句按正文处理，使跨视觉行的完整要求
+  保持在同一语义单元；冒号引导句与首项清单绑定，清单后的正文和罗马编号小节
+  单独分开，解析器标记的页眉/页脚噪声不得混入业务语义单元。
+- ZETDC 99 页真实 PDF 的首轮复查工件保存在本机 `out/`（不入库）：最新链路
+  900 个 layout block、779 个语义单元；无视觉模型时开启
+  `RATOMIZER_TENDER_FIGURE_PAGE_FILTER=1` 可登记疑似流程图页，视觉能力仍由用户
+  显式确认。语义报告现将 5 个跨页表格续文候选写入
+  `table_continuations`，并在相关语义单元标记 `possible_table_continuation` /
+  `has_table_continuation`；候选只提供相邻页、同节、同列数、上一页末条款号和下一页
+  小写续文等证据，保留物理表边界，交由人工或 LLM 上下文复核，禁止无证据自动拼表。
+- `paragraph-segmentation-v2` 将提示分为 `manual_review` 与 `informational`：封面未归属、
+  保留原文换行和小写续行只保留审计信息，不再伪装成章节级人工待办；只有长段落、疑似
+  标题正文混淆和表格结构缺证据进入 `needs_review`。
+
 ## 决策（2026-09-09b）——ABNT golden 基线退役（普通需求文件定位，非金标）
 
 > 承接 2026-09-09 关账决策。用户裁定「ABNT 已经退化了，就是一个普通的需求文件，

@@ -442,6 +442,19 @@ class TenderFigurePageTests(unittest.TestCase):
         finally:
             os.environ.pop("RATOMIZER_TENDER_FIGURE_PAGE_FILTER", None)
 
+    def test_sparse_figure_page_without_heading_is_safe(self):
+        os.environ["RATOMIZER_TENDER_FIGURE_PAGE_FILTER"] = "1"
+        try:
+            blocks = [
+                {"block_id": "B1", "type": "paragraph", "text": "A small image", "page_number": 63},
+            ]
+            registry = unextracted_registry.build_unextracted_registry(Path("x.pdf"), blocks)
+            figure_entries = [e for e in registry["entries"] if e["kind"] == "figure_page"]
+            self.assertEqual(len(figure_entries), 1)
+            self.assertEqual(figure_entries[0]["section"], "")
+        finally:
+            os.environ.pop("RATOMIZER_TENDER_FIGURE_PAGE_FILTER", None)
+
     def test_text_rich_page_not_figure(self):
         os.environ["RATOMIZER_TENDER_FIGURE_PAGE_FILTER"] = "1"
         try:

@@ -81,6 +81,7 @@ parse(parsers/) → blocks.jsonl / chunks.jsonl / doc_map.json
 
 ## 测试
 
-`python -m unittest discover -s tests`（约 750，全部 unittest.TestCase——**pytest 未装**）；
-`cd ui && npx vitest run && npx vue-tsc --noEmit`。golden 六项只在 main 的 out/ 基线存在时跑。
+`python -m unittest discover -s tests`（全部 unittest.TestCase——**pytest 未装**）；
+`cd ui && npx vitest run && npx vue-tsc --noEmit`。ABNT golden 基线已退役，回归以
+`tests/test_regression_portfolio.py`、FreshPipeline 钉和真实文档全流程为准。
 真实语料回归：`python -m corpus_eval --out <旧> --label A --out <新> --label B`。
