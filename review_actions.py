@@ -1,6 +1,4 @@
-"""专家审查裁决入口（顶层，被现役 Vue3 后端 `api_server` 与已冻结的 PySide6 `gui/`
-共用）。原在 `gui/review_actions.py`，2026-06-27 提升到顶层以解开 API↔GUI 耦合，
-使 `gui/`（PySide6，已冻结）成为无人依赖的纯 UI 叶子。"""
+"""专家审查裁决入口，被现役 Vue3/Electron 后端 API 共用。"""
 from __future__ import annotations
 
 import getpass

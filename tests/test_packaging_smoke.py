@@ -39,6 +39,12 @@ class WheelPackagingSmokeTests(unittest.TestCase):
             self.assertIn('"vendor/officecli"', spec)
             self.assertIn("Bundled OfficeCLI runtime is missing", spec)
 
+    def test_cli_spec_has_no_legacy_pyside6_target(self) -> None:
+        spec = (ROOT / "packaging" / "ratomizer.spec").read_text(encoding="utf-8")
+        self.assertNotIn("PySide6", spec)
+        self.assertNotIn('ROOT / "gui"', spec)
+        self.assertNotIn("gui_analysis", spec)
+
     def test_electron_backend_build_requires_office_com_runtime(self) -> None:
         script = (ROOT / "packaging" / "build-electron-backend.ps1").read_text(
             encoding="utf-8"

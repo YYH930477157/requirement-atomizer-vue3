@@ -24,7 +24,6 @@ datas = [
     (str(ROOT / "knowledge_bases" / "*.json"), "knowledge_bases"),
     (str(ROOT / "schemas" / "*.json"), "schemas"),
     (str(ROOT / "golden_sets" / "claim_ledger_v1"), "golden_sets/claim_ledger_v1"),
-    (str(ROOT / "gui" / "theme.qss.template"), "gui"),
     (str(ROOT / "parsers" / "data"), "parsers/data"),
 ]
 
@@ -94,11 +93,6 @@ hiddenimports = (
 excludes = [
     "tests",
     "tkinter",
-    "PySide6.QtNetwork",
-    "PySide6.QtQml",
-    "PySide6.QtQuick",
-    "PySide6.QtWebEngineCore",
-    "PySide6.QtWebEngineWidgets",
 ]
 
 cli_analysis = Analysis(
@@ -128,40 +122,10 @@ cli_exe = EXE(
     contents_directory=".",
 )
 
-gui_analysis = Analysis(
-    [str(ROOT / "gui" / "app.py")],
-    pathex=[str(ROOT)],
-    binaries=[(str(OFFICECLI_BINARY), "vendor/officecli")],
-    datas=datas,
-    hiddenimports=hiddenimports,
-    hookspath=[],
-    hooksconfig={},
-    runtime_hooks=[],
-    excludes=excludes,
-    noarchive=False,
-)
-gui_pyz = PYZ(gui_analysis.pure)
-gui_exe = EXE(
-    gui_pyz,
-    gui_analysis.scripts,
-    [],
-    exclude_binaries=True,
-    name="RequirementAtomizer",
-    debug=False,
-    bootloader_ignore_signals=False,
-    strip=False,
-    upx=True,
-    console=False,
-    contents_directory=".",
-)
-
 coll = COLLECT(
     cli_exe,
-    gui_exe,
     cli_analysis.binaries,
     cli_analysis.datas,
-    gui_analysis.binaries,
-    gui_analysis.datas,
     strip=False,
     upx=True,
     upx_exclude=[],

@@ -67,7 +67,6 @@ cli.py                      # 稳定的机器可读 CLI（ratomizer）
 desktop_tasks.py            # Electron 任务桥 / chain 编排
 api_server.py               # 本地评审 API
 ui/                         # Vue3 + Electron 桌面 UI（现役）
-gui/                        # PySide6 旧界面（已冻结，不再扩展）
 requirement_kb/             # 可复用知识库包
 knowledge_bases/            # 运行时 JSON 知识库
 obsidian-vault/             # 可编辑 KB 源（Obsidian）

@@ -18,7 +18,6 @@ $DistRoot = Join-Path $RepoRoot "dist"
 $BuildRoot = Join-Path $RepoRoot "build"
 $AppDir = Join-Path $DistRoot "RequirementAtomizer"
 $CliExe = Join-Path $AppDir "ratomizer.exe"
-$GuiExe = Join-Path $AppDir "RequirementAtomizer.exe"
 $SpecPath = Join-Path $PSScriptRoot "ratomizer.spec"
 
 Remove-Item -LiteralPath $DistRoot -Recurse -Force -ErrorAction SilentlyContinue
@@ -115,18 +114,9 @@ book.save(path)
     if (-not $pdfJson.ok -or $pdfJson.manifest.input_format -ne "pdf") {
         throw "ratomizer.exe run PDF smoke returned invalid envelope"
     }
-
-    $env:QT_QPA_PLATFORM = "offscreen"
-    & $GuiExe --smoke
-    if ($LASTEXITCODE -ne 0) {
-        throw "RequirementAtomizer.exe --smoke failed with exit code $LASTEXITCODE"
-    }
-    # 装配冒烟：走 assemble→spec_enrich 等生成器导入链（默认 stub，不调 LLM），
-    # 防回归——任一生成器模块未被打包收全会在此 ImportError 崩。$outDir 已由上面 run 产出原子文件。
-    & $GuiExe --smoke-assemble $outDir
-    if ($LASTEXITCODE -ne 0) {
-        throw "RequirementAtomizer.exe --smoke-assemble failed with exit code $LASTEXITCODE"
-    }
+    # 旧 PySide6 GUI 冒烟（QT_QPA offscreen + --smoke/--smoke-assemble）已随 gui/
+    # 移除（1544fc8）一并删除——ratomizer.spec 不再构建 GUI exe，$GuiExe 不再存在；
+    # 装配导入链的打包收全由 desktop_backend.spec 的 hiddenimports + 其自身冒烟覆盖。
 }
 finally {
     Remove-Item -LiteralPath $SmokeRoot -Recurse -Force -ErrorAction SilentlyContinue

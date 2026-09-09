@@ -1,5 +1,10 @@
 # CLAUDE.md — Requirement Atomizer 项目上下文
 
+## 当前架构（2026-09-09）
+
+- 正式桌面端是 `ui/`（Vue3 + Electron）和 Python 后端。
+- 旧 `gui/` PySide6 界面、`ratomizer-gui` 入口及其测试已移除；历史段落中出现的 PySide6 内容仅记录当时的实现和决策，不代表当前仓库仍提供该能力。
+
 ## 决策（2026-09-09b）——ABNT golden 基线退役（普通需求文件定位，非金标）
 
 > 承接 2026-09-09 关账决策。用户裁定「ABNT 已经退化了，就是一个普通的需求文件，
