@@ -6,6 +6,14 @@ param(
 $ErrorActionPreference = "Stop"
 
 $RepoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
+$Python = (Get-Command $Python -ErrorAction Stop).Source
+
+# ratomizer.spec 将 OfficeCLI 作为随包二进制收集；先按当前 Windows 架构准备它。
+& $Python (Join-Path $RepoRoot "install_officecli.py")
+if ($LASTEXITCODE -ne 0) {
+    throw "Bundled OfficeCLI installation failed"
+}
+
 $DistRoot = Join-Path $RepoRoot "dist"
 $BuildRoot = Join-Path $RepoRoot "build"
 $AppDir = Join-Path $DistRoot "RequirementAtomizer"

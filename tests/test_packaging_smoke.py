@@ -32,6 +32,13 @@ def _build_wheel(target: Path) -> Path:
 
 
 class WheelPackagingSmokeTests(unittest.TestCase):
+    def test_pyinstaller_specs_require_and_collect_bundled_officecli(self) -> None:
+        for filename in ("ratomizer.spec", "desktop_backend.spec"):
+            spec = (ROOT / "packaging" / filename).read_text(encoding="utf-8")
+            self.assertIn("OFFICECLI_BINARY", spec)
+            self.assertIn('"vendor/officecli"', spec)
+            self.assertIn("Bundled OfficeCLI runtime is missing", spec)
+
     def test_electron_backend_build_requires_office_com_runtime(self) -> None:
         script = (ROOT / "packaging" / "build-electron-backend.ps1").read_text(
             encoding="utf-8"
@@ -40,6 +47,11 @@ class WheelPackagingSmokeTests(unittest.TestCase):
         self.assertIn("import pythoncom, win32com.client", script)
         self.assertIn("Office COM packaging dependencies are missing", script)
         self.assertIn("Resolve-Path -LiteralPath $Python", script)
+        self.assertIn("install_officecli.py", script)
+
+    def test_desktop_build_prepares_bundled_officecli(self) -> None:
+        script = (ROOT / "packaging" / "build.ps1").read_text(encoding="utf-8")
+        self.assertIn("install_officecli.py", script)
 
     def test_wheel_contents_and_installed_imports(self) -> None:
         with tempfile.TemporaryDirectory() as td:

@@ -16,6 +16,11 @@ if ($Python -eq "python") {
 }
 
 $RepoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
+# desktop_backend.spec 要求内置 OfficeCLI 已存在，打包前自动准备当前 Windows 架构版本。
+& $Python (Join-Path $RepoRoot "install_officecli.py")
+if ($LASTEXITCODE -ne 0) {
+    throw "Bundled OfficeCLI installation failed"
+}
 $DistBackend = Join-Path $RepoRoot "dist-backend"
 $BuildDir = Join-Path $RepoRoot "build-electron-backend"
 $Entry = Join-Path $RepoRoot "desktop_backend.py"

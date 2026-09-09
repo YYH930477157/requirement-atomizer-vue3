@@ -9,6 +9,15 @@ from PyInstaller.utils.hooks import collect_submodules
 ROOT = Path(SPECPATH).parent
 DIST_DIR = ROOT / "dist-backend"
 
+OFFICECLI_BINARY = ROOT / "vendor" / "officecli" / (
+    "officecli.exe" if __import__("sys").platform == "win32" else "officecli"
+)
+if not OFFICECLI_BINARY.is_file() or OFFICECLI_BINARY.stat().st_size == 0:
+    raise SystemExit(
+        "Bundled OfficeCLI runtime is missing. Run `python -m install_officecli` "
+        "on macOS or Windows before building the desktop package."
+    )
+
 datas = [
     (str(ROOT / "llm_agents" / "*.yaml"), "llm_agents"),
     (str(ROOT / "domain_packs"), "domain_packs"),
@@ -86,7 +95,7 @@ hiddenimports = (
 a = Analysis(
     [str(ROOT / "desktop_backend.py")],
     pathex=[str(ROOT)],
-    binaries=[],
+    binaries=[(str(OFFICECLI_BINARY), "vendor/officecli")],
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
