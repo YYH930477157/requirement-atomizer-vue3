@@ -77,7 +77,7 @@ parse(parsers/) → blocks.jsonl / chunks.jsonl / doc_map.json
   `merged_consistency` `review_insights` `doc_annotation_export`
 - 基建：`llm_client`（重试/429 预算/trace/JSON 模式/用途 floors）`config` `requirement_record`
   `xlsx_io` `corpus_eval` `desktop_tasks`（chain/manifest）`api_server`
-- 桌面：`ui/`（Vue3+Electron；`gui/` PySide6 已冻结勿动）
+- 桌面：`ui/`（Vue3+Electron）
 
 ## 测试
 

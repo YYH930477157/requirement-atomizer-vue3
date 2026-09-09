@@ -18,7 +18,6 @@ $DistRoot = Join-Path $RepoRoot "dist"
 $BuildRoot = Join-Path $RepoRoot "build"
 $AppDir = Join-Path $DistRoot "RequirementAtomizer"
 $CliExe = Join-Path $AppDir "ratomizer.exe"
-$GuiExe = Join-Path $AppDir "RequirementAtomizer.exe"
 $SpecPath = Join-Path $PSScriptRoot "ratomizer.spec"
 
 Remove-Item -LiteralPath $DistRoot -Recurse -Force -ErrorAction SilentlyContinue

@@ -58,6 +58,5 @@ npm run build    # vue-tsc --noEmit + vite build（类型检查在这里）
   `Expand-Archive` 解压到 `ui/node_modules/electron/dist`，并写入
   `ui/node_modules/electron/path.txt`（内容为 `electron.exe`）。
   根治方案：使用 Node LTS 22。electron-builder 打包不受影响。
-- **GUI 测试**：未安装 PySide6 时自动跳过（`gui/` 已冻结，不影响主流程）。
 - **API Key**：只允许放在环境变量（如 `RATOMIZER_LLM_API_KEY`），
   配置文件里只存变量名，绝不明文入库。

@@ -1046,10 +1046,10 @@ class PlatformScaffoldTests(unittest.TestCase):
         self.assertEqual(scripts["claim-shadow-review-packet"], "claim_review_packet:main")
         self.assertEqual(scripts["claim-shadow-review-import"], "claim_review_import:main")
         self.assertIn("requirement_kb*", payload["tool"]["setuptools"]["packages"]["find"]["include"])
-        self.assertEqual(payload["project"]["optional-dependencies"]["gui"], ["PySide6>=6.6"])
         self.assertEqual(payload["project"]["optional-dependencies"]["package"], ["pyinstaller>=6.0"])
-        self.assertEqual(payload["project"]["gui-scripts"]["ratomizer-gui"], "gui.app:main")
-        self.assertEqual(payload["tool"]["setuptools"]["package-data"]["gui"], ["theme.qss.template"])
+        self.assertNotIn("gui-scripts", payload["project"])
+        self.assertNotIn("gui", payload["tool"]["setuptools"].get("package-data", {}))
+        self.assertNotIn("gui*", payload["tool"]["setuptools"]["packages"]["find"]["include"])
 
     def test_desktop_backend_spec_includes_requirements_analysis_modules(self) -> None:
         spec_text = (ROOT / "packaging" / "desktop_backend.spec").read_text(encoding="utf-8")
