@@ -1,5 +1,19 @@
 # CLAUDE.md — Requirement Atomizer 项目上下文
 
+## 决策（2026-09-09b）——ABNT golden 基线退役（普通需求文件定位，非金标）
+
+> 承接 2026-09-09 关账决策。用户裁定「ABNT 已经退化了，就是一个普通的需求文件，
+> 不是啥金标」——`tests/test_golden_regression.py` 的 `GoldenRegressionTests`
+> （冻结基线四钉 + 代表性需求钉，依赖 `golden_sets/abnt_nbr_16968_v5/` 与本机
+> `out/abnt_nbr_16968_atomizer_v5/`）整体移除；**版本 bump 后重生成 golden 基线
+> 的流程义务同步取消**。保留 `FreshPipelineRegressionTests`（最小 docx 全新管线
+> 行为钉，不依赖任何基线，随处可跑）。冻结基线文件与 out/ 产物按关账决策
+> 「资产留档」保留在原位，不进任何门禁。多文档回归主体仍是
+> `tests/test_regression_portfolio.py`（12 钉）；日常验收走 portfolio + 真实
+> 文档全流程（f143734 新主线）。同批：bed36f8 的 `SEMANTIC_SECTION_LOADER_VERSION`
+> 进 functional-extract producer 后，`test_outline_authority_wiring` 的字节钉
+> 已同步（923602d）。
+
 ## 决策（2026-09-09）——WS0/ABNT 轨道关账（因目的消失）；收尾主线转向真实文档验收
 
 > 用户质询「为什么还在纠结 ABNT？」→ 复盘确认关账。三个事实：①门禁的本来目的

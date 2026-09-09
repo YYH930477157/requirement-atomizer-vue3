@@ -1,19 +1,20 @@
-"""ABNT golden 回归：多文档回归组合中 ABNT 成员的深度字节级钉。
+"""最小 docx 全新管线稳定性钉（原 ABNT golden 回归已退役）。
 
-本套件比对冻结基线 out/abnt_nbr_16968_atomizer_v5/（只在存在该目录的
-检出执行，worktree 里环境性 skip），是多文档回归组合里 ABNT 一员的
-深度钉；组合主体（四类文档病理 fixture、12 钉）见
-tests/test_regression_portfolio.py。2026-08-28 起 golden 不再是单独
-合并门，漂移按组合成员对待：零漂移或逐项归因（真回归 vs 基线过期）。
-本模块另含一条不依赖 out/ 基线的最小 docx 全新管线钉
-（FreshPipelineRegressionTests）。
+ABNT 基线测试已于 2026-09-09 退役（用户裁定）：ABNT 文档回归"普通需求文件"
+定位，不再是金标。决策脉络见 f143734（WS0/ABNT 轨道关账——门禁目的被产品
+演进绕过：功能轨已是生产默认，A/B/C 匹配层裁定撤销）。冻结基线文件
+golden_sets/abnt_nbr_16968_v5/ 与本机 out/abnt_nbr_16968_atomizer_v5/
+按"资产留档"保留，不再进任何门禁；多文档回归主体是
+tests/test_regression_portfolio.py（四类文档病理 fixture、12 钉）。
+
+本模块保留 FreshPipelineRegressionTests：不依赖 out/ 基线的最小 docx
+全新管线行为钉（块计数/表格/原子候选形状），随仓库随处可跑。
 """
 from __future__ import annotations
 
 import json
 import tempfile
 import unittest
-from collections import Counter
 from pathlib import Path
 
 import atomize
@@ -22,46 +23,6 @@ from io_utils import read_jsonl
 
 
 ROOT = Path(__file__).resolve().parents[1]
-GOLDEN = ROOT / "golden_sets" / "abnt_nbr_16968_v5" / "golden_summary.json"
-CURRENT_OUTPUT = ROOT / "out" / "abnt_nbr_16968_atomizer_v5"
-
-
-class GoldenRegressionTests(unittest.TestCase):
-    def setUp(self) -> None:
-        if not CURRENT_OUTPUT.exists():
-            self.skipTest(f"Golden output directory not found: {CURRENT_OUTPUT}")
-        self.golden = json.loads(GOLDEN.read_text(encoding="utf-8"))
-        self.manifest = json.loads((CURRENT_OUTPUT / "manifest.json").read_text(encoding="utf-8"))
-        self.quality = json.loads((CURRENT_OUTPUT / "quality_report.json").read_text(encoding="utf-8"))
-        self.atomic = read_jsonl(CURRENT_OUTPUT / "atomic_requirements.jsonl")
-
-    def test_manifest_counts_match_golden_baseline(self) -> None:
-        for key, expected in self.golden["counts"].items():
-            if key == "cosem_object_instances":
-                continue
-            self.assertEqual(self.manifest["counts"].get(key), expected, key)
-
-    def test_requirement_type_distribution_matches_golden_baseline(self) -> None:
-        actual = Counter(row["requirement_type"] for row in self.atomic)
-        self.assertEqual(dict(actual), self.golden["requirement_type_counts"])
-
-    def test_source_type_distribution_matches_golden_baseline(self) -> None:
-        actual = Counter(row["source_type"] for row in self.atomic)
-        self.assertEqual(dict(actual), self.golden["source_type_counts"])
-
-    def test_quality_coverage_matches_golden_baseline(self) -> None:
-        self.assertEqual(self.quality["coverage"], self.golden["coverage"])
-
-    def test_representative_requirements_are_present(self) -> None:
-        for expected in self.golden["representative_requirements"]:
-            matches = [
-                row
-                for row in self.atomic
-                if row.get("requirement_type") == expected["requirement_type"]
-                and row.get("object") == expected["object"]
-                and expected["requirement_contains"] in row.get("requirement", "")
-            ]
-            self.assertTrue(matches, expected)
 
 
 class FreshPipelineRegressionTests(unittest.TestCase):
