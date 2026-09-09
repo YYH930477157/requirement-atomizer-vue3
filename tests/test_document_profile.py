@@ -22,6 +22,11 @@ class DocumentProfileTests(unittest.TestCase):
         self.assertTrue(is_noise("Draft Watermark", document_profile=profile))
         self.assertFalse(is_noise("Vendor Confidential - internal"))
 
+    def test_pdf_page_footer_variants_are_noise(self) -> None:
+        self.assertTrue(is_noise("Page 21 of 99"))
+        self.assertTrue(is_noise("P a g e 21 | 99"))
+        self.assertFalse(is_noise("See page 21 of the manual for details."))
+
     def test_profile_major_headings_extend_heading_detection(self) -> None:
         profile = DocumentProfile(major_headings=("conformance",))
 

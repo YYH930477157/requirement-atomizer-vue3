@@ -397,6 +397,13 @@ def is_noise(text: str, *, document_profile: DocumentProfile | None = None) -> b
         return True
     if re.fullmatch(r"\d+\s+pages?", low):
         return True
+    # PDF footer variants are frequently extracted with inconsistent spacing:
+    # ``Page 21 of 99`` and ``P a g e 21 | 99``.  Treat only the compact,
+    # page-number-shaped form as noise so ordinary prose mentioning a page is
+    # preserved.
+    compact = re.sub(r"\s+", "", low)
+    if re.fullmatch(r"page\d+(?:of|\|)\d+", compact):
+        return True
     if re.fullmatch(r"[ivxlcdm]+", low):
         return True
     if re.fullmatch(r"\d+", text):
@@ -2980,7 +2987,7 @@ def run_atomizer_pipeline(
     write_json(governed_artifact_path(out_dir, "paragraph_segmentation.json"), paragraph_report)
     write_json(governed_artifact_path(out_dir, "semantic_segmentation.json"), semantic_report)
     governed_artifact_path(out_dir, "paragraph_review.html").write_text(
-        render_segmentation_review(paragraph_report), encoding="utf-8")
+        render_segmentation_review(paragraph_report, semantic_report), encoding="utf-8")
     block_count = write_jsonl(out_dir / "blocks.jsonl", blocks)
     chunk_count = write_jsonl(out_dir / "chunks.jsonl", chunks)
     table_count = write_jsonl(out_dir / "table_items.jsonl", table_items)

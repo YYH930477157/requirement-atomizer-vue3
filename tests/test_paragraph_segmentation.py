@@ -34,14 +34,39 @@ class ParagraphSegmentationContractTests(unittest.TestCase):
             self.assertEqual(report["units"][0]["text_original"], "Line one\nLine two")
             self.assertIn("manual_line_breaks_preserved_in_source", report["units"][0]["review_flags"])
             self.assertIn("possible_heading_body_merge", report["units"][1]["review_flags"])
+            self.assertEqual(report["counts"]["needs_review"], 1)
+            self.assertEqual(report["counts"]["informational"], 1)
+            self.assertEqual(report["units"][0]["review_severity"], "informational")
             page = render_segmentation_review(report)
             self.assertIn("Line one\nLine two", page)
             self.assertIn("规则提示不等于错误", page)
 
+    def test_render_includes_semantic_review_when_available(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            source = Path(td) / "sample.docx"
+            source.write_bytes(b"source")
+            report = build_segmentation_report([{
+                "block_id": "BLK-1", "order": 1, "type": "paragraph",
+                "text": "The device shall report status.",
+                "section_path": ["4 Requirements"], "is_list_item": False,
+            }], source, SegmentationOptions())
+            page = render_segmentation_review(report, {
+                "counts": {"table_continuations": 1},
+                "units": [{
+                    "semantic_unit_id": "SU-1", "source_block_ids": ["BLK-1"],
+                    "boundary_basis": "deterministic", "review_status": "needs_review",
+                    "review_flags": ["possible_table_continuation"],
+                    "text": "The device shall report status.",
+                }],
+            })
+        self.assertIn('id="semantic-review"', page)
+        self.assertIn("跨页表格续文候选：1", page)
+        self.assertIn("possible_table_continuation", page)
+
     def test_lineage_is_key_free_and_distinguishes_modes(self) -> None:
         text = SegmentationOptions(mode="text_only").lineage()
         layout = SegmentationOptions(mode="layout").lineage()
-        self.assertEqual(text["version"], "paragraph-segmentation-v1")
+        self.assertEqual(text["version"], "paragraph-segmentation-v2")
         self.assertEqual(text["mode"], "text_only")
         self.assertEqual(layout["mode"], "layout")
         self.assertNotIn("api_key", json.dumps(layout))

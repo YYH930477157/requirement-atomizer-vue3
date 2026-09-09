@@ -1,4 +1,4 @@
-# TODO — 待办与路线（2026-08-29 更新）
+# TODO — 待办与路线（2026-09-09 更新）
 
 > 来源：架构评审（2026-07-06）+ 组件增强评审 + 项目战略评审 + 架构收敛计划
 > （`docs/architecture-convergence-plan-2026-08-27.md`）。完成一项划一项；
@@ -35,11 +35,16 @@
   preservation 闭环接线（这些本身是产品资产）。若未来真需要 P/R 指标，前置是
   重建真值方法论（分析师侧），不是匹配器调参。
 - [ ] **新收尾主线（2026-09-09 起）——以真实工作文档为验收场**：
-  ① 语义段落分割质量在真实文档上的验证（契约/报告/复核入口已落，缺边界质量
-  门槛与真实文档金标——Mac 侧正在推进）；② 用手头真实工作文档（SBD/ZETDC/
-  Canna29 实际规格）跑日常 GUI 全流程（功能需求+澄清+待核），以守恒门 +
-  待核诚实标记为质量口径——守恒 v9 已全绿、partial export 已就位；③ 桌面
-  安装包分发验证（`npm run desktop:pack`，Electron/PyInstaller 链）。
+  ① **进行中**：最新版 ZETDC 真实文档已完成第一轮解析复查；编号义务句、冒号
+  引导清单、列表后正文、罗马编号小节和噪声隔离已加规则与回归钉，仍需人工复核
+  语义质量；跨页表格续文已按“相邻页、同节、同列数、上一页末条款号、下一页
+  小写续文且无条款号”登记为 5 个 `manual_review_or_llm_context` 候选，保留物理
+  表边界，不自动拼接；`paragraph_review.html` 已同时展示语义单元与候选提示；②
+  **已完成本机无付费链路检查**：功能需求直抽
+  240 条、原文块全覆盖，stub 结果如实标 `evidence_presence` 待核并生成
+  `document_annotation.html`；真实 LLM 运行仍需用户配置模型与密钥；③ **待 Windows
+  主机完成分发验证**：Mac 已完成前端测试/构建，`desktop:pack` 在 macOS 因
+  PowerShell 不存在无法执行，Windows 端需跑完整 Electron/PyInstaller 链。
 - [ ] **大纲权威 flag 翻转评估重启（可选）**：v1 验证已判 **No-Go**。重启前置
   里 heading-only 退化 objective **已修**（routing v8）；仍缺短条款抽取覆盖
   强化、可选 ¥7 对照腿；须在 routing v8 / conservation v7 基线上重新测量。

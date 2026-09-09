@@ -14,10 +14,15 @@ import json
 from pathlib import Path
 import re
 
-SEGMENTATION_VERSION = "paragraph-segmentation-v1"
+SEGMENTATION_VERSION = "paragraph-segmentation-v2"
 MODES = ("text_only", "layout", "vision_assisted")
 FALLBACKS = ("keep_for_review", "text_fallback", "fail_closed")
 _ACTIVE_MODE: ContextVar[str] = ContextVar("paragraph_mode", default="layout")
+_MANUAL_REVIEW_FLAGS = frozenset({
+    "long_paragraph_check_boundary",
+    "possible_heading_body_merge",
+    "table_structure_needs_review",
+})
 
 
 @dataclass(frozen=True)
@@ -129,6 +134,7 @@ def build_segmentation_report(blocks: list[dict], source: Path,
             flags.append("manual_line_breaks_preserved_in_source")
         if kind == "table" and block.get("geometry_kind") in ("none", "conflict"):
             flags.append("table_structure_needs_review")
+        manual_review = bool(_MANUAL_REVIEW_FLAGS.intersection(flags))
         unit = {
             "unit_id": str(block["block_id"]), "type": kind,
             "text_original": raw, "text_normalized": text,
@@ -147,7 +153,10 @@ def build_segmentation_report(blocks: list[dict], source: Path,
                               else "table_structure" if kind == "table" else "parser_structure",
             "confidence": None,  # No human boundary truth: never invent probabilities.
             "review_flags": flags,
-            "status": "needs_review" if flags else "not_reviewed",
+            # 低风险提示仍保留供审计，但不制造人工待办：封面无节路径、原文换行
+            # 和 PDF 小写续行都属于解析上下文信息，只有结构风险才进入复核队列。
+            "review_severity": "manual_review" if manual_review else "informational",
+            "status": "needs_review" if manual_review else "not_reviewed",
         }
         units.append(unit)
     signature = json.dumps(units, ensure_ascii=False, sort_keys=True).encode("utf-8")
@@ -157,34 +166,68 @@ def build_segmentation_report(blocks: list[dict], source: Path,
         "units_fingerprint": hashlib.sha256(signature).hexdigest(),
         "configuration": options.lineage(), "effective_mode": options.initial_mode(),
         "quality_status": "not_evaluated", "confidence_basis": "human_boundary_truth_required",
-        "counts": {"units": len(units), "needs_review": sum(bool(u["review_flags"]) for u in units)},
+        "counts": {
+            "units": len(units),
+            "needs_review": sum(u["status"] == "needs_review" for u in units),
+            "informational": sum(bool(u["review_flags"]) and u["status"] == "not_reviewed" for u in units),
+        },
         "vision": {"status": "not_requested", "suggestions": [], "applied": False},
         "units": units,
     }
 
 
-def render_segmentation_review(report: dict) -> str:
-    """Offline, script-free inspection: preserve manual breaks and escape all source text."""
+def render_segmentation_review(report: dict, semantic_report: dict | None = None) -> str:
+    """Offline, script-free inspection of parser and semantic boundaries.
+
+    The semantic report is optional for backwards compatibility with callers
+    that only have the parser report.  Source text and audit metadata are
+    escaped before rendering; this page is an inspection surface, not an
+    executable review app.
+    """
     esc = lambda value: html.escape(str(value), quote=True)
     rows = []
     for unit in report["units"]:
         flags = " / ".join(unit["review_flags"]) or "未发现规则提示；尚未人工确认"
+        severity = "需要人工复核" if unit.get("review_severity") == "manual_review" else "信息提示"
         rows.append(f'<article id="{esc(unit["unit_id"])}"><h2>{esc(unit["unit_id"])} · '
                     f'{esc(unit["type"])}</h2><p>{esc(" / ".join(unit["section_path"]))}</p>'
                     f'<p>来源：{esc(json.dumps(unit["source_ref"], ensure_ascii=False))}</p>'
-                    f'<p class="risk">{esc(flags)}</p><div class="columns"><section><h3>解析原文</h3>'
+                    f'<p class="risk">{esc(severity)}：{esc(flags)}</p><div class="columns"><section><h3>解析原文</h3>'
                     f'<pre>{esc(unit["text_original"])}</pre></section><section><h3>规范文本</h3>'
                     f'<pre>{esc(unit["text_normalized"])}</pre></section></div></article>')
     vision = esc(json.dumps(report["vision"], ensure_ascii=False, indent=2))
+    semantic_html = ""
+    if isinstance(semantic_report, dict):
+        semantic_units = semantic_report.get("units") if isinstance(semantic_report.get("units"), list) else []
+        semantic_rows = []
+        for unit in semantic_units:
+            if not isinstance(unit, dict):
+                continue
+            flags = " / ".join(str(value) for value in (unit.get("review_flags") or [])) or "未发现规则提示"
+            semantic_rows.append(
+                f'<article class="semantic-unit"><h3>{esc(unit.get("semantic_unit_id", ""))} · '
+                f'{esc(unit.get("review_status", "not_reviewed"))}</h3>'
+                f'<p>来源块：{esc(", ".join(str(value) for value in (unit.get("source_block_ids") or [])))}'
+                f' · 边界依据：{esc(unit.get("boundary_basis", ""))}</p>'
+                f'<p class="risk">{esc(flags)}</p><pre>{esc(unit.get("text", ""))}</pre></article>'
+            )
+        continuation_count = (semantic_report.get("counts") or {}).get("table_continuations", 0)
+        semantic_html = (
+            '<section id="semantic-review"><h2>语义单元复核</h2>'
+            f'<p>语义单元：{esc(len(semantic_units))} · 跨页表格续文候选：{esc(continuation_count)}。'
+            '候选只提供审计证据，不自动合并物理表格。</p>'
+            + "".join(semantic_rows) + "</section>"
+        )
     return ('<!doctype html><html lang="zh-CN"><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width,initial-scale=1">'
             '<title>段落划分复核</title><style>body{font:16px system-ui;max-width:1200px;margin:32px auto;padding:0 20px;'
             'color:#233047;background:#f5f7fa}article{background:white;padding:20px;margin:16px 0;border:1px solid #dce1e8;'
             'border-radius:12px}h2{font-size:18px}.columns{display:grid;grid-template-columns:1fr 1fr;gap:24px}'
             'pre{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit}.risk{color:#805700}'
+            '.semantic-unit{border:1px solid #e4e8ef;padding:12px;margin:10px 0;border-radius:8px}'
             '@media(max-width:700px){.columns{grid-template-columns:1fr}}</style>'
             '<h1>段落划分复核</h1><p>本页用于检查解析边界，规则提示不等于错误；无提示也不代表已确认。'
             'PDF 原文栏为解析器恢复的文字，不代表未经处理的原始 PDF 字符。</p>'
             f'<p>请求模式：{esc(report["configuration"]["mode"])} · 实际模式：{esc(report["effective_mode"])}</p>'
             f'<details><summary>视觉辅助运行记录（建议尚未应用）</summary><pre>{vision}</pre></details>'
-            + "".join(rows) + '</html>')
+            + semantic_html + "".join(rows) + '</html>')

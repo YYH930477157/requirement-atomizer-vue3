@@ -86,8 +86,9 @@ PROMPT_REGISTRY: list[dict[str, str]] = [
 
     # 语义段落分割（2026-09-09 补登记——caaccea/f1ab43f 落地时漏登，D1 契约测试
     # 抓出）。提示词进 parse 阶段产物（semantic_segmentation.json 的
-    # configuration.prompt_version）与 atomize producer 戳。
-    {"id": "semantic-segmentation", "version": "semantic-segmentation-prompt-v2-contextual-boundaries",
+    # configuration.prompt_version）与 atomize producer 戳。v3 同步确定性边界
+    # 修复：编号义务句、清单依赖和罗马编号小节。
+    {"id": "semantic-segmentation", "version": "semantic-segmentation-prompt-v3-contextual-boundaries",
      "owner_module": "semantic_segmentation",
      "purpose": "Semantic paragraph boundary adjudication prompt (LLM mode only)"},
 
