@@ -106,6 +106,7 @@ py-modules = [
   "paragraph_segmentation",
   "paragraph_vision",
   "semantic_segmentation",
+  "officecli_adapter",
   "doc_ir_export",
   "document_outline",
   "domain_pack",

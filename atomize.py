@@ -2878,12 +2878,17 @@ def run_atomizer_pipeline(
     LOGGER.info("extracting %s", input_format.lstrip("."))
     _reset_table_structure_hypotheses()  # S1-4：双轨假设累积按本次运行隔离
     xlsx_requirement_list_candidates: int | None = None
+    officecli_status: dict[str, Any] | None = None
     if input_format == ".docx":
         blocks, table_items, table_cell_items = extract_docx(input_path, knowledge_bases=knowledge_bases, document_profile=document_profile)
+        from officecli_adapter import enrich_docx_blocks
+        officecli_status = enrich_docx_blocks(blocks, input_path)
     elif input_format == ".xlsx":
         from parsers.xlsx_parser import extract_xlsx
 
         blocks, table_items, table_cell_items = extract_xlsx(input_path, knowledge_bases=knowledge_bases, document_profile=document_profile)
+        from officecli_adapter import enrich_xlsx_artifacts
+        officecli_status = enrich_xlsx_artifacts(blocks, table_items, table_cell_items, input_path)
         # A6：需求清单型 xlsx 行映射分流（默认关）
         if os.environ.get("RATOMIZER_XLSX_REQUIREMENT_LIST", "").strip().lower() in {"1", "true", "yes", "on"}:
             from xlsx_requirement_list import extract_requirement_list_candidates, write_base_library_candidates
@@ -3018,6 +3023,7 @@ def run_atomizer_pipeline(
         "output_dir": str(out_dir),
         "track": "legacy_a" if include_atomic_candidates else "functional",
         "atomic_candidates": "enabled" if include_atomic_candidates else "disabled",
+        "officecli": officecli_status,
             "paragraph_segmentation": {key: value for key, value in paragraph_report.items() if key != "units"},
             "semantic_segmentation": {key: value for key, value in semantic_report.items() if key != "units"},
         "generated_at": datetime.now(timezone.utc).isoformat(),
