@@ -7,6 +7,7 @@ and leaves the existing parser untouched.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -14,12 +15,23 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from typing import Any
 
 from config import get_env
 
-# 默认只发现项目内置版本；系统 PATH 需显式 auto，off 始终优先。
-OFFICECLI_ADAPTER_VERSION = "officecli-adapter-v3"
+# v3（bed36f8）：默认 bundled——只发现项目内置二进制，PATH 需显式 auto，off 最优先。
+# v4（2026-09-09 Windows 打包验证）：①subprocess 显式 encoding="utf-8"——officecli
+# 输出 UTF-8（含 「」），中文 Windows 默认 GBK 解码在 reader 线程抛
+# UnicodeDecodeError（被 ValueError 分支吞掉）→ 内置 OfficeCLI 在 zh-CN 机器上
+# 永远静默降级 unavailable；②onefile 冻结环境下按内容哈希复制二进制到稳定缓存
+# 再执行——officecli 常驻进程锁住被执行的 exe，PyInstaller 退出时删不掉 _MEI*
+# 临时解包目录（每次运行泄漏一个完整解包目录）。
+# v5：③输入文件同样走稳定副本——officecli 常驻进程对被查看文件**永不释放句柄**
+# （实测 30s+ 仍锁），直接查看会把用户的源文档永久锁死（不能移动/删除/改名），
+# 测试临时目录也因此清理失败（WinError 32）。副本按 源路径+大小+mtime 哈希落
+# 稳定缓存，同一文档版本只复制一次、跨解析复用。
+OFFICECLI_ADAPTER_VERSION = "officecli-adapter-v5"
 OFFICECLI_ENV = "RATOMIZER_OFFICECLI"
 OFFICECLI_PATH_ENV = "RATOMIZER_OFFICECLI_PATH"
 _BUNDLED_ROOT = Path(__file__).resolve().parent / "vendor" / "officecli"
@@ -27,6 +39,13 @@ _PARAGRAPH_RE = re.compile(r"\[/body/p\[(\d+)\]\] (?:[•·]\s*)?(?:「(?P<quote
 _LIST_STYLE_RE = re.compile(r"list|bullet|number", re.I)
 _DISABLED_MODES = frozenset({"0", "false", "off", "disabled"})
 _PATH_MODES = frozenset({"auto", "1", "true", "yes", "on"})
+# officecli 的 JSON/标注输出是 UTF-8；绝不能随 Windows locale（zh-CN=GBK）解码。
+# cwd 固定为系统临时目录：officecli 常驻进程继承调用方工作目录并持有其句柄，
+# 调用方目录（测试临时目录/用户目录）会因此删不掉/被锁。
+_SUBPROCESS_KWARGS = {
+    "encoding": "utf-8", "errors": "replace",
+    "cwd": str(Path(tempfile.gettempdir())),
+}
 
 
 def officecli_mode() -> str:
@@ -63,15 +82,76 @@ def officecli_unavailable_reason() -> str:
     return "officecli_not_found"
 
 
+def _executable_for_invocation(executable: str) -> str:
+    """onefile 冻结环境下返回稳定缓存副本的路径；其余场景原样返回。
+
+    onefile 打包把二进制解包进每次运行唯一的 ``_MEI*`` 临时目录，而 officecli
+    常驻进程会锁住被执行的 exe——PyInstaller 退出清理 ``_MEI`` 时删不掉，每次
+    运行泄漏一个完整解包目录。按内容哈希复制到稳定缓存后，daemon 锁的是缓存
+    副本（同一二进制只复制一次）；失败时回退原路径（解析仍可用，泄漏照旧）。
+    """
+    if not getattr(sys, "frozen", False):
+        return executable
+    return str(_stable_copy(Path(executable), "ratomizer-officecli", "officecli"))
+
+
+def _invocation_input(input_path: Path) -> Path:
+    """返回输入文档的稳定副本路径；officecli 只被允许查看副本。
+
+    officecli 常驻进程对被查看文件**永不释放句柄**（实测 30s+ 仍锁）——直接查看
+    会把用户源文档永久锁死（不能移动/删除/改名），测试临时目录也因此清理失败。
+    副本按 源路径+大小+mtime_ns 哈希命名，同一文档版本只复制一次、跨解析复用；
+    复制失败时回退原路径（宁可冒锁定风险也不让解析失败）。
+    """
+    return _stable_copy(input_path, "ratomizer-officecli-inputs", "doc")
+
+
+def _stable_copy(source: Path, cache_dir_name: str, stem: str) -> Path:
+    """按 (路径, 大小, mtime_ns) 哈希把 source 复制到稳定缓存并返回副本路径。
+
+    daemon 长期持有副本句柄（Windows 下删不掉），所以**不做**用后清理——缓存
+    增长与"解析过的不同文档/二进制版本数"成正比，有界。
+    """
+    try:
+        stat = source.stat()
+        key = hashlib.sha256(
+            f"{source.resolve()}|{stat.st_size}|{stat.st_mtime_ns}".encode("utf-8")
+        ).hexdigest()[:16]
+    except OSError:
+        return source
+    staged = (Path(tempfile.gettempdir()) / cache_dir_name
+              / f"{stem}-{key}{source.suffix}")
+    if not staged.is_file():
+        tmp: Path | None = None
+        try:
+            staged.parent.mkdir(parents=True, exist_ok=True)
+            tmp = staged.with_name(f"{staged.name}.{os.getpid()}.tmp")
+            shutil.copy2(source, tmp)
+            os.replace(tmp, staged)
+        except OSError:
+            # 并发竞争/被锁时：另一进程可能已放好同内容副本，存在即复用。
+            if tmp is not None:
+                try:
+                    tmp.unlink()
+                except OSError:
+                    pass
+            if not staged.is_file():
+                return source
+    return staged
+
+
 def enrich_docx_blocks(blocks: list[dict[str, Any]], input_path: Path, *, timeout_s: float = 20.0) -> dict[str, Any]:
     """Apply external DOCX style/path hints to parser-owned blocks in place."""
     executable = officecli_path()
     if executable is None:
         return {"status": "unavailable", "reason": officecli_unavailable_reason(), "blocks_enriched": 0}
+    executable = _executable_for_invocation(executable)
     try:
+        view_input = _invocation_input(input_path)
         completed = subprocess.run(
-            [executable, "view", str(input_path), "annotated", "--json"],
+            [executable, "view", str(view_input), "annotated", "--json"],
             capture_output=True, text=True, timeout=timeout_s, check=False,
+            **_SUBPROCESS_KWARGS,
         )
         if completed.returncode != 0:
             return {"status": "unavailable", "reason": "officecli_nonzero_exit", "blocks_enriched": 0}
@@ -129,10 +209,13 @@ def enrich_xlsx_artifacts(blocks: list[dict[str, Any]], table_items: list[dict[s
     executable = officecli_path()
     if executable is None:
         return {"status": "unavailable", "reason": officecli_unavailable_reason(), "cells_enriched": 0}
+    executable = _executable_for_invocation(executable)
     try:
+        view_input = _invocation_input(input_path)
         completed = subprocess.run(
-            [executable, "view", str(input_path), "text", "--json"],
+            [executable, "view", str(view_input), "text", "--json"],
             capture_output=True, text=True, timeout=timeout_s, check=False,
+            **_SUBPROCESS_KWARGS,
         )
         if completed.returncode != 0:
             return {"status": "unavailable", "reason": "officecli_nonzero_exit", "cells_enriched": 0}
