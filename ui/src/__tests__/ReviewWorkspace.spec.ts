@@ -1171,6 +1171,14 @@ describe("review workspace shell", () => {
           "knowledge_bases/compiled_from_obsidian.json",
         ],
         domainPackDir: "domain_packs/dlms_cosem",
+        paragraphMode: "layout",
+        paragraphFallback: "keep_for_review",
+        paragraphVisionCapable: false,
+        paragraphVisionMaxRegions: 5,
+        paragraphVisionMaxCalls: 5,
+        paragraphVisionMaxTokens: 100000,
+        semanticMode: "deterministic",
+        semanticRoute: "openai_compatible",
       })
     })
     // 单次 Run 自动接上后端 chain（LLM 关 → stub）
@@ -1712,6 +1720,14 @@ describe("review workspace shell", () => {
           "knowledge_bases/compiled_from_obsidian.json",
         ],
         domainPackDir: "domain_packs/dlms_cosem",
+        paragraphMode: "layout",
+        paragraphFallback: "keep_for_review",
+        paragraphVisionCapable: false,
+        paragraphVisionMaxRegions: 5,
+        paragraphVisionMaxCalls: 5,
+        paragraphVisionMaxTokens: 100000,
+        semanticMode: "deterministic",
+        semanticRoute: "openai_compatible",
       })
     })
     expect(wrapper.find('[data-testid="run-progress-detail"]').text()).toContain("50")
