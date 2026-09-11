@@ -325,8 +325,29 @@ def _validated_semantic_groups(groups: Any, blocks: list[dict[str, Any]]) -> lis
     return groups
 
 
+def _groups_from_pre_review(pre_review: dict[str, Any], blocks: list[dict[str, Any]]) -> list[list[str]]:
+    """Materialize LLM boundary hypotheses without trusting them as source truth."""
+    annotations = pre_review.get("elements")
+    if pre_review.get("effective_mode") != "llm" or not isinstance(annotations, list):
+        raise ValueError("semantic pre-review is not an effective LLM result")
+    expected = [str(block["block_id"]) for block in blocks]
+    annotations_by_id = {str(row.get("element_id") or ""): row for row in annotations if isinstance(row, dict)}
+    if any(element_id not in annotations_by_id for element_id in expected):
+        raise ValueError("semantic pre-review IDs do not match the section")
+    groups: list[list[str]] = []
+    for index, element_id in enumerate(expected):
+        row = annotations_by_id[element_id]
+        relation = str(row.get("relation_to_previous") or "independent")
+        join = index > 0 and relation in {"continues", "inherits"} and not bool(blocks[index].get("noise"))
+        if not groups or not join:
+            groups.append([element_id])
+        else:
+            groups[-1].append(element_id)
+    return _validated_semantic_groups(groups, blocks)
+
+
 def build_semantic_report(blocks: list[dict[str, Any]], source: Path, *, mode: str = "deterministic",
-                          route: str = "openai_compatible") -> dict[str, Any]:
+                          route: str = "openai_compatible", pre_review: dict[str, Any] | None = None) -> dict[str, Any]:
     if mode not in SEMANTIC_MODES:
         raise ValueError("invalid semantic segmentation mode")
     # Table page continuations are reported as links, never silently merged.
@@ -384,6 +405,14 @@ def build_semantic_report(blocks: list[dict[str, Any]], source: Path, *, mode: s
         section_mode = mode
         if mode == "off":
             groups = [[str(b["block_id"])] for b in section_blocks]
+        elif mode == "llm" and pre_review is not None and pre_review.get("effective_mode") == "llm":
+            try:
+                groups = _groups_from_pre_review(pre_review, section_blocks)
+            except Exception as exc:
+                errors.append({"section": " / ".join(section), "reason": type(exc).__name__})
+                groups = _deterministic_groups(section_blocks)
+                section_mode = "deterministic_fallback"
+                actual_mode = "deterministic_fallback"
         elif mode == "llm":
             try:
                 groups = _llm_groups(section_blocks, route=route)

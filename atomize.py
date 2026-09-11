@@ -2861,6 +2861,7 @@ def run_atomizer_pipeline(
     )
     from paragraph_vision import add_visual_suggestions
     from semantic_segmentation import build_semantic_report
+    from semantic_pre_review import build_semantic_pre_review
 
     segmentation = segmentation or SegmentationOptions()
     effective_mode = segmentation.initial_mode()  # Validate before producing any files.
@@ -2922,8 +2923,20 @@ def run_atomizer_pipeline(
         with segmentation_mode(effective_mode):
             blocks, table_items, table_cell_items = extract_pdf(input_path, knowledge_bases=knowledge_bases, document_profile=document_profile)
     paragraph_report = build_segmentation_report(blocks, input_path, segmentation)
+    # 语义预审是独立的假设层：显式开关才运行，并在语义分段前生成，
+    # 这样 LLM 的上下文关系才会真正参与边界判断。
+    pre_review_enabled = os.environ.get("RATOMIZER_SEMANTIC_PRE_REVIEW", "0").strip().lower() in {"1", "true", "yes", "on"}
+    semantic_pre_review = None
+    if pre_review_enabled:
+        semantic_pre_review = build_semantic_pre_review(
+            blocks,
+            input_path,
+            mode="llm" if segmentation.semantic_mode == "llm" else "deterministic",
+            route=segmentation.semantic_route,
+        )
     semantic_report = build_semantic_report(
         blocks, input_path, mode=segmentation.semantic_mode, route=segmentation.semantic_route,
+        pre_review=semantic_pre_review,
     )
     add_visual_suggestions(paragraph_report, input_path, segmentation)
     visual_state = paragraph_report["vision"]["status"]
@@ -2946,6 +2959,7 @@ def run_atomizer_pipeline(
             # block partition used by semantic extraction as well.
             semantic_report = build_semantic_report(
                 blocks, input_path, mode=segmentation.semantic_mode, route=segmentation.semantic_route,
+                pre_review=semantic_pre_review,
             )
     LOGGER.info("extracted %s blocks, %s table rows, %s table cells", len(blocks), len(table_items), len(table_cell_items))
     # S1-4：双轨签发的表格结构假设落盘（OFF / 无假设 → 不写任何文件，产物与 main 一致）。
@@ -2986,6 +3000,15 @@ def run_atomizer_pipeline(
     LOGGER.info("writing outputs")
     write_json(governed_artifact_path(out_dir, "paragraph_segmentation.json"), paragraph_report)
     write_json(governed_artifact_path(out_dir, "semantic_segmentation.json"), semantic_report)
+    if semantic_pre_review is not None:
+        write_json(governed_artifact_path(out_dir, "semantic_pre_review.json"), semantic_pre_review)
+    else:
+        # 预审是显式开关；重跑时清掉同一结果包里的旧产物，避免读者把
+        # 上一次开启预审的结果误认为本次运行仍然有效。
+        try:
+            governed_artifact_path(out_dir, "semantic_pre_review.json", for_write=False).unlink()
+        except FileNotFoundError:
+            pass
     governed_artifact_path(out_dir, "paragraph_review.html").write_text(
         render_segmentation_review(paragraph_report, semantic_report), encoding="utf-8")
     block_count = write_jsonl(out_dir / "blocks.jsonl", blocks)
@@ -3041,7 +3064,7 @@ def run_atomizer_pipeline(
         "atomic_candidates": "enabled" if include_atomic_candidates else "disabled",
         "officecli": officecli_status,
             "paragraph_segmentation": {key: value for key, value in paragraph_report.items() if key != "units"},
-            "semantic_segmentation": {key: value for key, value in semantic_report.items() if key != "units"},
+        "semantic_segmentation": {key: value for key, value in semantic_report.items() if key != "units"},
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "knowledge_bases": [
             {
@@ -3077,6 +3100,11 @@ def run_atomizer_pipeline(
             "summary": "summary.md",
         },
     }
+    if semantic_pre_review is not None:
+        manifest["semantic_pre_review"] = {
+            key: value for key, value in semantic_pre_review.items() if key not in {"elements", "semantic_map"}
+        }
+        manifest["files"]["semantic_pre_review"] = "semantic_pre_review.json"
     if include_atomic_candidates:
         manifest["files"]["atomic_requirements"] = "atomic_requirements.jsonl"
         manifest["files"]["llm_tasks"] = "llm_tasks.jsonl"
