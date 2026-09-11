@@ -3590,6 +3590,15 @@ def run_functional_extract(
         progress_callback, completed=0, total=len(sections),
     )
     resolved_strategy = context_pack_strategy(strategy)
+    semantic_pre_review: dict[str, Any] | None = None
+    try:
+        from result_package import governed_artifact_path
+        import json
+        pre_path = governed_artifact_path(out_dir, "semantic_pre_review.json", for_write=False)
+        if pre_path.is_file():
+            semantic_pre_review = json.loads(pre_path.read_text(encoding="utf-8"))
+    except Exception:
+        semantic_pre_review = None
     if resolved_strategy == "clause_family" and doc_map is None:
         try:
             from doc_map import load_doc_map
@@ -3644,7 +3653,7 @@ def run_functional_extract(
 
     items, executed_route = extract_functional_requirements(
         sections, chat=chat, route=route, blocks=blocks,
-        strategy=resolved_strategy, doc_map=doc_map, max_chars=max_chars,
+        strategy=resolved_strategy, doc_map=doc_map, semantic_pre_review=semantic_pre_review, max_chars=max_chars,
         progress_callback=progress_callback,
     )
     conservation = conservation_report(

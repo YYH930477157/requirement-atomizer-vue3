@@ -2630,9 +2630,8 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
     ordered = [s for s in CHAIN_ORDER if s in set(stages)]
     if not ordered:
         raise ValueError("阶段清单为空")
-    # WS2 条款直抽（默认开）：RATOMIZER_FUNCTIONAL_EXTRACT=1 时 ai-extract（拆原子）+
-    # functional-synthesis（重并）整体替换为 functional-extract——UI/CLI 仍传旧阶段名，
-    # 替换在此单点完成并落账；显式 =0 时保留旧原子化回滚路径。
+    # WS2 条款直抽（默认开）：功能抽取整体替换旧阶段；旧阶段名仅作为显式兼容入口，
+    # 不属于默认产品流程。
     functional_extract_replaced: list[str] = []
     from functional_extract import (
         FunctionalConservationError,
