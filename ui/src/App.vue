@@ -739,9 +739,7 @@
               </div>
               <div class="settings-kb-list">
                 <span>知识库</span>
-                <ul>
-                  <li v-for="path in abntPreset.kbPaths" :key="path">{{ path }}</li>
-                </ul>
+                <strong>未启用（需显式选择）</strong>
               </div>
             </section>
           </div>
@@ -1369,11 +1367,7 @@ function applyRunManifestSummary(summary: Record<string, unknown> | null) {
 
 const abntPreset = {
   chunkChars: 3500,
-  // 单编译库：三个种子库的富化超集（86 条目 id 100% 继承，实证 2026-07-07），
-  // 四库并载会重复命中（同一探针 10 hits 含 5 重复）——污染 kb_matches 并膨胀 prompt
-  kbPaths: [
-    "knowledge_bases/compiled_from_obsidian.json",
-  ],
+  // 知识库默认关闭；用户显式选择后才随配置传入后端。
   domainPackDir: "domain_packs/dlms_cosem",
 }
 const TEST_LLM_REVIEW_LIMIT = 50

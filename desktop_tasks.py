@@ -119,9 +119,9 @@ def resolve_bundled_path(path: Path | None) -> Path | None:
 
 
 def resolve_kb_paths(kb_paths: list[Path] | None) -> list[Path]:
-    """把显式 --kb 路径列表逐个解析（见 resolve_bundled_path）；None 时用 default_kb_paths()。"""
+    """只解析用户显式传入的知识库路径；None 表示知识库关闭。"""
     if kb_paths is None:
-        return default_kb_paths()
+        return []
     return [resolve_bundled_path(path) for path in kb_paths]
 
 
