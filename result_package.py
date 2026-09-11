@@ -132,6 +132,7 @@ _ARTIFACTS = {
         _artifact("paragraph_review", "pipeline/paragraph_review.html", legacy_path="paragraph_review.html"),
         _artifact("semantic_segmentation", "pipeline/semantic_segmentation.json", legacy_path="semantic_segmentation.json"),
         _artifact("semantic_pre_review", "pipeline/semantic_pre_review.json", legacy_path="semantic_pre_review.json"),
+        _artifact("requirement_candidates", "pipeline/requirement_candidates.json", legacy_path="requirement_candidates.json"),
         _artifact("chunks", "pipeline/chunks.jsonl", legacy_path="chunks.jsonl"),
         _artifact("table_items", "pipeline/table_items.jsonl", legacy_path="table_items.jsonl"),
         _artifact("table_cell_items", "pipeline/table_cell_items.jsonl", legacy_path="table_cell_items.jsonl"),
