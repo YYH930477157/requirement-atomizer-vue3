@@ -35,3 +35,30 @@ def classify_semantic_units(units: Sequence[dict[str, Any]]) -> dict[str, Any]:
         rows.append({"semantic_unit_id": unit.get("semantic_unit_id") or unit.get("unit_id"), "category": category, "reason": reason, "source_block_ids": list(unit.get("source_block_ids") or [])})
     counts = Counter(row["category"] for row in rows)
     return {"schema": "requirement-candidates/v1", "counts": dict(counts), "units": rows}
+
+
+def build_full_coverage_audit(units: Sequence[dict[str, Any]], candidates: dict[str, Any]) -> dict[str, Any]:
+    """Audit excluded context so candidate filtering cannot silently hide obligations."""
+    candidate_ids = {str(row.get("semantic_unit_id")) for row in (candidates.get("units") or [])
+                     if row.get("category") in {"requirement_candidate", "table_candidate", "needs_review"}}
+    suspicious: list[dict[str, Any]] = []
+    for unit in units:
+        uid = str(unit.get("semantic_unit_id") or unit.get("unit_id") or "")
+        if uid in candidate_ids:
+            continue
+        text = str(unit.get("text") or unit.get("text_normalized") or "").strip()
+        if not text or PAGE.match(text):
+            continue
+        # Numeric thresholds, modal verbs in non-English forms, and imperative
+        # language are useful recall signals even when shall/must is absent.
+        if re.search(r"\b(?:at least|at most|minimum|maximum|within|before|after|only if|shall be|应|不得|必须)\b|\d+\s*(?:V|A|Hz|%|days?|years?)\b", text, re.I):
+            suspicious.append({"semantic_unit_id": uid, "text": text, "source_block_ids": list(unit.get("source_block_ids") or []), "reason": "excluded_context_has_constraint_signal"})
+    return {
+        "schema": "requirement-candidate-coverage/v1",
+        "source_units": len(units),
+        "candidate_units": len(candidate_ids),
+        "excluded_units": max(0, len(units) - len(candidate_ids)),
+        "suspicious_excluded_units": len(suspicious),
+        "status": "needs_review" if suspicious else "covered",
+        "suspicious": suspicious,
+    }
