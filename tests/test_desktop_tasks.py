@@ -38,13 +38,12 @@ class ResolveKbPathsTests(unittest.TestCase):
     """锁定 desktop_tasks.resolve_kb_paths：前端预设送相对 --kb 路径，打包后端 cwd=resources/backend
     命中不到时必须按 package_root() 解析（否则报 'No such file: …/backend/knowledge_bases/…json'）。"""
 
-    def test_none_uses_default_kb_paths(self) -> None:
+    def test_none_disables_knowledge_base(self) -> None:
         from desktop_tasks import resolve_kb_paths
 
-        sentinel = [Path("X") / "default.json"]
-        with patch("desktop_tasks.default_kb_paths", return_value=sentinel) as default_kb_paths:
-            self.assertEqual(resolve_kb_paths(None), sentinel)
-            default_kb_paths.assert_called_once()
+        with patch("desktop_tasks.default_kb_paths") as default_kb_paths:
+            self.assertEqual(resolve_kb_paths(None), [])
+            default_kb_paths.assert_not_called()
 
     def test_absolute_paths_pass_through(self) -> None:
         from desktop_tasks import resolve_kb_paths

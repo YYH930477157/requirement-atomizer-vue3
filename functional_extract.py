@@ -858,10 +858,27 @@ def _doc_map_summary_for(section: dict[str, Any], doc_map: dict[str, Any] | None
     return "\n".join(lines)
 
 
+def _semantic_pre_review_summary_for(section: dict[str, Any], pre_review: dict[str, Any] | None) -> str:
+    """Expose compact, source-linked context hypotheses to extraction prompts."""
+    if not isinstance(pre_review, dict):
+        return ""
+    ids = {str(x) for x in (section.get("source_block_ids") or section.get("block_ids") or [])}
+    rows = [row for row in (pre_review.get("elements") or [])
+            if isinstance(row, dict) and (not ids or str(row.get("element_id")) in ids)]
+    if not rows:
+        return ""
+    relations = [str(row.get("relation_to_previous") or "independent") for row in rows]
+    uncertain = sum(str(row.get("uncertainty") or "low") != "low" for row in rows)
+    if set(relations) <= {"independent"} and not uncertain:
+        return ""
+    return f"语义预审关系（仅作上下文提示，原文优先）：{', '.join(relations)}；不确定项 {uncertain}"
+
+
 def build_context_packages(
     sections: Sequence[dict[str, Any]],
     *,
     doc_map: dict[str, Any] | None = None,
+    semantic_pre_review: dict[str, Any] | None = None,
     max_chars: int | None = None,
 ) -> list[dict[str, Any]]:
     """按条款自然边界组装上下文包：目标条款整文 + 同族相邻条款 + doc_map 热区摘要。
@@ -896,7 +913,10 @@ def build_context_packages(
             "target": section,
             "neighbors": neighbors,
             "clause_family": key,
-            "doc_map_summary": _doc_map_summary_for(section, doc_map),
+            "doc_map_summary": "\n".join(filter(None, [
+                _doc_map_summary_for(section, doc_map),
+                _semantic_pre_review_summary_for(section, semantic_pre_review),
+            ])),
         })
     return packages
 
@@ -2649,6 +2669,7 @@ def extract_functional_requirements(
     blocks: Sequence[dict[str, Any]] | None = None,
     strategy: str = "legacy",
     doc_map: dict[str, Any] | None = None,
+    semantic_pre_review: dict[str, Any] | None = None,
     max_chars: int | None = None,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> tuple[list[dict[str, Any]], str]:
@@ -2671,7 +2692,7 @@ def extract_functional_requirements(
     bank = _load_adjudication_bank() if active_chat is not None else {}
     if strategy == "clause_family":
         return _extract_by_context_packages(
-            sections, active_chat, executed_route, doc_map=doc_map, max_chars=max_chars,
+            sections, active_chat, executed_route, doc_map=doc_map, semantic_pre_review=semantic_pre_review, max_chars=max_chars,
             bank=bank,
             progress_callback=progress_callback,
         )
@@ -2718,12 +2739,13 @@ def _extract_by_context_packages(
     executed_route: str,
     *,
     doc_map: dict[str, Any] | None,
+    semantic_pre_review: dict[str, Any] | None = None,
     max_chars: int | None,
     bank: dict[str, Any] | None = None,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> tuple[list[dict[str, Any]], str]:
     """clause_family 策略：每条款包一次 LLM 调用；包级失败只退化受影响条款。"""
-    packages = build_context_packages(sections, doc_map=doc_map, max_chars=max_chars)
+    packages = build_context_packages(sections, doc_map=doc_map, semantic_pre_review=semantic_pre_review, max_chars=max_chars)
     items: list[dict[str, Any]] = []
     llm_ok = 0
     stub_fallback = 0

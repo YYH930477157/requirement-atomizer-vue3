@@ -37,6 +37,16 @@ class EntrySwitchTests(unittest.TestCase):
         self.assertTrue(fe.functional_extract_enabled("1"))
         self.assertTrue(fe.functional_extract_enabled("true"))
 
+    def test_context_package_includes_semantic_pre_review_hint(self) -> None:
+        section = _clause("4", ["B1", "B2"], "The system shall support local operation.")
+        pre_review = {"elements": [
+            {"element_id": "B1", "relation_to_previous": "independent", "uncertainty": "low"},
+            {"element_id": "B2", "relation_to_previous": "continues", "uncertainty": "medium"},
+        ]}
+        package = fe.build_context_packages([section], semantic_pre_review=pre_review)[0]
+        self.assertIn("语义预审关系", package["doc_map_summary"])
+        self.assertIn("原文优先", package["doc_map_summary"])
+
 
 class StubRouteTests(unittest.TestCase):
     def test_stub_route_produces_one_item_per_clause_with_honest_provenance(self) -> None:

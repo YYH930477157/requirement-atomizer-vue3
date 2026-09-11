@@ -2862,6 +2862,7 @@ def run_atomizer_pipeline(
     from paragraph_vision import add_visual_suggestions
     from semantic_segmentation import build_semantic_report
     from semantic_pre_review import build_semantic_pre_review
+    from requirement_candidates import classify_semantic_units
 
     segmentation = segmentation or SegmentationOptions()
     effective_mode = segmentation.initial_mode()  # Validate before producing any files.
@@ -2938,6 +2939,7 @@ def run_atomizer_pipeline(
         blocks, input_path, mode=segmentation.semantic_mode, route=segmentation.semantic_route,
         pre_review=semantic_pre_review,
     )
+    requirement_candidates = classify_semantic_units(semantic_report.get("units") or [])
     add_visual_suggestions(paragraph_report, input_path, segmentation)
     visual_state = paragraph_report["vision"]["status"]
     if visual_state in ("unavailable", "partial"):
@@ -3000,6 +3002,7 @@ def run_atomizer_pipeline(
     LOGGER.info("writing outputs")
     write_json(governed_artifact_path(out_dir, "paragraph_segmentation.json"), paragraph_report)
     write_json(governed_artifact_path(out_dir, "semantic_segmentation.json"), semantic_report)
+    write_json(governed_artifact_path(out_dir, "requirement_candidates.json"), requirement_candidates)
     if semantic_pre_review is not None:
         write_json(governed_artifact_path(out_dir, "semantic_pre_review.json"), semantic_pre_review)
     else:
@@ -3065,6 +3068,7 @@ def run_atomizer_pipeline(
         "officecli": officecli_status,
             "paragraph_segmentation": {key: value for key, value in paragraph_report.items() if key != "units"},
         "semantic_segmentation": {key: value for key, value in semantic_report.items() if key != "units"},
+        "requirement_candidates": {"counts": requirement_candidates["counts"]},
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "knowledge_bases": [
             {
@@ -3089,7 +3093,8 @@ def run_atomizer_pipeline(
         "files": {
             "paragraph_segmentation": "paragraph_segmentation.json",
             "paragraph_review": "paragraph_review.html",
-            "semantic_segmentation": "semantic_segmentation.json",
+        "semantic_segmentation": "semantic_segmentation.json",
+        "requirement_candidates": "requirement_candidates.json",
             "blocks": "blocks.jsonl",
             "chunks": "chunks.jsonl",
             "table_items": "table_items.jsonl",
