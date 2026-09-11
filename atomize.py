@@ -2926,7 +2926,10 @@ def run_atomizer_pipeline(
     paragraph_report = build_segmentation_report(blocks, input_path, segmentation)
     # 语义预审是独立的假设层：显式开关才运行，并在语义分段前生成，
     # 这样 LLM 的上下文关系才会真正参与边界判断。
-    pre_review_enabled = os.environ.get("RATOMIZER_SEMANTIC_PRE_REVIEW", "0").strip().lower() in {"1", "true", "yes", "on"}
+    pre_review_enabled = (
+        os.environ.get("RATOMIZER_SEMANTIC_PRE_REVIEW", "0").strip().lower() in {"1", "true", "yes", "on"}
+        or segmentation.semantic_mode == "llm"
+    )
     semantic_pre_review = None
     if pre_review_enabled:
         semantic_pre_review = build_semantic_pre_review(

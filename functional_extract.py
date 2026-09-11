@@ -3567,6 +3567,22 @@ def run_functional_extract(
         # 报告不可得时如实回退原始边界并记 unavailable（审计随产物落盘）。
         sections, outline_authority_audit = load_clauses_detailed(out_dir)
     sections = list(sections)
+    # 候选筛选层：只把需求/表格/待判断语义单元对应的条款送入抽取，
+    # 缺少候选产物时保持兼容并继续使用完整条款池。
+    try:
+        from result_package import governed_artifact_path
+        import json
+        candidate_path = governed_artifact_path(out_dir, "requirement_candidates.json", for_write=False)
+        if candidate_path.is_file():
+            candidate_payload = json.loads(candidate_path.read_text(encoding="utf-8"))
+            selected_ids = {str(block_id) for row in (candidate_payload.get("units") or [])
+                            if row.get("category") in {"requirement_candidate", "table_candidate", "needs_review"}
+                            for block_id in (row.get("source_block_ids") or [])}
+            filtered = [section for section in sections if selected_ids.intersection(str(x) for x in (section.get("block_ids") or []))]
+            if filtered:
+                sections = filtered
+    except Exception:
+        pass
     source_section_count = len(sections)
     if limit_sections is not None:
         sections = sections[:limit_sections]
