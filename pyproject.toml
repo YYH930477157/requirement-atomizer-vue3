@@ -103,6 +103,7 @@ py-modules = [
   "paragraph_segmentation",
   "paragraph_vision",
   "semantic_segmentation",
+  "semantic_pre_review",
   "officecli_adapter",
   "install_officecli",
   "doc_ir_export",

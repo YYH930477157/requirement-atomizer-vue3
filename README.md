@@ -66,6 +66,13 @@ Semantic grouping is configured separately with `--semantic-mode deterministic` 
 source blocks express one semantic unit; it returns only block groups and falls back to
 deterministic grouping when the route is unavailable or the response violates the partition contract.
 
+The optional semantic pre-review can be enabled with `RATOMIZER_SEMANTIC_PRE_REVIEW=1`.
+It writes `semantic_pre_review.json`, a source-conserving hypothesis layer containing
+element roles, continuation/list relationships, uncertainty, and a small topic map. It
+does not rewrite source text or change the final semantic units. With `--semantic-mode llm`
+it uses the configured route; otherwise it records a deterministic pre-review. An
+unavailable or invalid LLM result falls back explicitly and remains visible in `errors`.
+
 The main output files are written under the selected `out` directory:
 
 ```text
