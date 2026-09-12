@@ -7,6 +7,17 @@ from typing import Any, Sequence
 
 NORMATIVE = re.compile(r"\b(shall|must|required|required to|should|may not|不得|应当|必须)\b", re.I)
 PAGE = re.compile(r"^(?:p\s*a\s*g\s*e|page)\s*\d+\s*(?:\||of)\s*\d+", re.I)
+NON_REQUIREMENT_REGION = re.compile(r"\b(?:foreword|introduction|references?|definitions?|terms and definitions|contents|bibliography|acknowledg)\b", re.I)
+
+
+def _region_role(unit: dict[str, Any], text: str) -> str:
+    path = " / ".join(str(x) for x in (unit.get("section_path") or []))
+    heading = str(unit.get("heading") or "")
+    if NON_REQUIREMENT_REGION.search(f"{path} {heading} {text[:120]}"):
+        return "informational"
+    if re.search(r"\b(?:annex|appendix)\b", f"{path} {heading}", re.I):
+        return "annex"
+    return "normative_body"
 
 
 def classify_semantic_units(units: Sequence[dict[str, Any]]) -> dict[str, Any]:
@@ -14,13 +25,14 @@ def classify_semantic_units(units: Sequence[dict[str, Any]]) -> dict[str, Any]:
     for unit in units:
         text = str(unit.get("text") or unit.get("text_normalized") or "").strip()
         low = text.lower()
+        region_role = _region_role(unit, text)
         if not text or PAGE.match(text) or unit.get("noise"):
             category = "noise"
             reason = "page_or_parser_noise"
         elif unit.get("type") == "table" or "column_" in low:
             category = "table_candidate"
             reason = "table_context_required"
-        elif NORMATIVE.search(text):
+        elif NORMATIVE.search(text) and region_role != "informational":
             category = "requirement_candidate"
             reason = "normative_language"
         elif re.match(r"^\d+(?:\.\d+)+\s+", text):
@@ -32,7 +44,7 @@ def classify_semantic_units(units: Sequence[dict[str, Any]]) -> dict[str, Any]:
         else:
             category = "context"
             reason = "non_normative_context"
-        rows.append({"semantic_unit_id": unit.get("semantic_unit_id") or unit.get("unit_id"), "category": category, "reason": reason, "source_block_ids": list(unit.get("source_block_ids") or [])})
+        rows.append({"semantic_unit_id": unit.get("semantic_unit_id") or unit.get("unit_id"), "category": category, "reason": reason, "region_role": region_role, "source_block_ids": list(unit.get("source_block_ids") or [])})
     counts = Counter(row["category"] for row in rows)
     return {"schema": "requirement-candidates/v1", "counts": dict(counts), "units": rows}
 
