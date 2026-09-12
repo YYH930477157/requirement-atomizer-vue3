@@ -10,6 +10,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from result_package import governed_artifact_path
+from config import get_env
 from typing import Any, Callable
 
 from ai_review_actions import read_ai_review_states, source_ai_requirement_id
@@ -45,7 +46,15 @@ SCHEMA_VERSION = "requirements-analysis/v1"
 # v5：注入文档背景/条款原文/相邻需求,正文连贯成文（2026-07-12 富化深度）
 ANALYZE_PROMPT_VERSION = "analyze-llm-v8"
 # P0-8：负例 few-shot 注入数量上限（可配）。
-ANALYZE_NEGATIVE_K = int(os.environ.get("RATOMIZER_ANALYZE_NEGATIVE_K", "2"))
+def _int_env(name: str, default: int) -> int:
+    """Read a registered integer setting without making module import fail."""
+    try:
+        return int(get_env(name))
+    except (TypeError, ValueError):
+        return default
+
+
+ANALYZE_NEGATIVE_K = _int_env("RATOMIZER_ANALYZE_NEGATIVE_K", 2)
 # WP2 待澄清规则版本——确定性后处理（拒/无据 → 待澄清 + open_questions 同步）变更必须
 # bump 并进 analyze_enrich_cache 指纹与阶段 producer（AGENTS.md 缓存指纹纪律）
 # v4：编造编码字段级拒收（只拒含码字段,干净字段放行;同判据逐字段重检保防幻觉红线）
@@ -97,7 +106,7 @@ MAX_ANALYZE_BATCH = 8
 
 
 def _resolve_analyze_batch(explicit: int | None = None) -> int:
-    raw: Any = explicit if explicit is not None else os.environ.get(ANALYZE_BATCH_ENV)
+    raw: Any = explicit if explicit is not None else get_env(ANALYZE_BATCH_ENV)
     try:
         value = int(raw)
     except (TypeError, ValueError):
@@ -107,7 +116,7 @@ def _resolve_analyze_batch(explicit: int | None = None) -> int:
 
 def requirements_analysis_enrichment_enabled() -> bool:
     """返回普通应用调用是否启用需求分析 LLM 富化；默认关闭。"""
-    return os.environ.get(REQUIREMENTS_ANALYSIS_ENRICH_ENV, "0").strip().lower() in {
+    return get_env(REQUIREMENTS_ANALYSIS_ENRICH_ENV).strip().lower() in {
         "1", "true", "yes", "on",
     }
 
@@ -267,6 +276,15 @@ def _functional_payload(out_dir: Path) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
+def _existing_pipeline_artifact(root: Path, filename: str) -> Path:
+    """Resolve a pipeline input from package storage, with legacy-root fallback."""
+    governed = governed_artifact_path(
+        root, filename, category="pipeline", for_write=False)
+    if governed.is_file():
+        return governed
+    return root / filename
+
+
 def _attach_conservation_pending_marks(
     out_dir: Path,
     requirements: list[dict[str, Any]],
@@ -343,8 +361,10 @@ def run_requirements_analysis(
     allow_unclosed: bool = False,
 ) -> dict[str, Any]:
     out_dir = Path(out_dir).expanduser().resolve()
-    synthesized_path = out_dir / "functional_requirements.json"
-    source_path = out_dir / "ai_requirements.jsonl"
+    # New result packages keep these inputs under .ratomizer/pipeline; direct
+    # root paths remain the compatibility layout for older runs and unit tests.
+    synthesized_path = _existing_pipeline_artifact(out_dir, "functional_requirements.json")
+    source_path = _existing_pipeline_artifact(out_dir, "ai_requirements.jsonl")
     unclosed_basis = False
     pending_marks: dict[str, list[str]] = {}
     if not source_path.exists():
