@@ -22,10 +22,24 @@ def _region_role(unit: dict[str, Any], text: str) -> str:
 
 def classify_semantic_units(units: Sequence[dict[str, Any]]) -> dict[str, Any]:
     rows: list[dict[str, Any]] = []
+    current_role = "normative_body"
     for unit in units:
         text = str(unit.get("text") or unit.get("text_normalized") or "").strip()
         low = text.lower()
         region_role = _region_role(unit, text)
+        if re.search(r"\bforeword\b", text, re.I):
+            current_role = "informational"
+        elif re.search(r"\bintroduction\b", text, re.I):
+            current_role = "informational"
+        elif re.match(r"^\s*\d+(?:\.\d+)*\s+(?:scope|terms|definitions|requirements|functional)", text, re.I):
+            current_role = "normative_body"
+        elif region_role == "informational":
+            current_role = "informational"
+        elif region_role == "annex":
+            current_role = "annex"
+        elif current_role == "informational" and re.match(r"^\s*\d+(?:\.\d+)+\s+", text):
+            current_role = "normative_body"
+        region_role = current_role
         if not text or PAGE.match(text) or unit.get("noise"):
             category = "noise"
             reason = "page_or_parser_noise"
