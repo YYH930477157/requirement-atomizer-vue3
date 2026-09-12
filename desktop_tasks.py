@@ -265,10 +265,14 @@ def run_pipeline_task(
         # Track is explicit in the current UI; review is an independent stage.
         parser_only = resolved_track == "functional"
         atomize_outputs = PARSER_STAGE_OUTPUTS if parser_only else STAGE_REQUIRED_OUTPUTS["atomize"]
+        # Preserve the desktop pipeline's historical default KB behavior while
+        # keeping ``resolve_kb_paths(None)`` as the explicit "disable KB"
+        # helper used by lower-level callers and tests.
+        effective_kb_paths = default_kb_paths() if kb_paths is None else kb_paths
         atomize_config = {
             "paragraph_segmentation": segmentation.lineage(),
             "chunk_chars": chunk_chars,
-            "kb_paths": [str(path) for path in resolve_kb_paths(kb_paths)],
+            "kb_paths": [str(path) for path in resolve_kb_paths(effective_kb_paths)],
             "domain_pack_dir": str(resolve_bundled_path(domain_pack_dir) or ""),
             "mode": "functional_parser_only" if parser_only else "legacy_a_track",
         }
@@ -292,7 +296,7 @@ def run_pipeline_task(
                         input_path,
                         out_dir,
                         chunk_chars=chunk_chars,
-                        kb_paths=resolve_kb_paths(kb_paths),
+                        kb_paths=resolve_kb_paths(effective_kb_paths),
                         domain_pack_dir=resolve_bundled_path(domain_pack_dir),
                         include_atomic_candidates=not parser_only,
                         segmentation=segmentation,
@@ -1412,10 +1416,10 @@ def _hash_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-# 阶段输入文件 sha256 记忆化（键=解析后路径，值=((dev, ino, size, mtime_ns), sha256)）：
+# 阶段输入文件 sha256 记忆化（键=解析后路径，值=((dev, ino, size, mtime_ns, ctime_ns), sha256)）：
 # 一次阶段评估会把同一批 STAGE_INPUTS 哈希最多 5-6 遍（复用检查/租约前后/记账），
 # 统计签名命中即免全量重读；签名变化回退全量重哈希，指纹值逐字节不变。
-_STAGE_INPUT_SHA_CACHE: dict[str, tuple[tuple[int, int, int, int], str]] = {}
+_STAGE_INPUT_SHA_CACHE: dict[str, tuple[tuple[int, int, int, int, int], str]] = {}
 _STAGE_INPUT_SHA_CACHE_LOCK = RLock()
 # 有界化（2026-08-15，与 doc_annotation_export._FILE_SHA256_MEMO_MAX 同口径）：
 # 原先条目只在文件消失时逐条淘汰，长驻进程跨多个 out_dir 评估阶段输入会无界
@@ -1425,7 +1429,7 @@ _STAGE_INPUT_SHA_CACHE_MAX = 256
 
 
 def _file_sha256_cached(path: Path) -> str | None:
-    """sha256(path)，带 (dev, ino, size, mtime_ns) 文件身份统计签名记忆化。
+    """sha256(path)，带 (dev, ino, size, mtime_ns, ctime_ns) 文件身份统计签名记忆化。
 
     身份模型 (device, file-id, size, mtime)：工具链所有写路径都是 tmp + os.replace
     原子替换（新文件标识）→ 每次工具链写必然失配重哈希，杜绝「同尺寸原子替换 +
@@ -1442,7 +1446,9 @@ def _file_sha256_cached(path: Path) -> str | None:
         with _STAGE_INPUT_SHA_CACHE_LOCK:
             _STAGE_INPUT_SHA_CACHE.pop(key, None)
         return None
-    signature = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
+    # ctime_ns 在 Windows 表示 metadata change time，在部分文件系统上比
+    # mtime_ns 更细，能够捕获同尺寸的快速原地覆写。
+    signature = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
     with _STAGE_INPUT_SHA_CACHE_LOCK:
         cached = _STAGE_INPUT_SHA_CACHE.get(key)
         if cached is not None and cached[0] == signature:
