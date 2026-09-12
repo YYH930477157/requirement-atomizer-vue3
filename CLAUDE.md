@@ -2217,4 +2217,5 @@ CLI 契约见 `docs/cli-contract.md`（对接公司任务管理系统的接口�
 - 已安装并验证项目运行环境：Python 3.12 bundled runtime、PyYAML/jsonschema，以及 Node.js LTS 24.19.0/npm 11.19.0；`ui/` 依赖安装完成。
 - 需求解析流程完成一轮加固：严格表格 cell 守恒与 disposition 闭合、路由决策血统校验、HTML/PDF 解析顺序与外键一致性、pipeline plan 投递物约束、Electron 文件路径授权，以及缺失模块的打包注册。
 - 修复阶段输入同尺寸快速覆写可能命中旧哈希的问题（加入 `ctime_ns`），恢复桌面流水线未显式传 KB 时的默认知识库行为；语义预审 prompt/config 已纳入治理注册表。
+- 需求分析消费端补充失败直抽载荷门禁：即使遗留 `ai_requirements.jsonl` 与失败的 `functional_requirements.json` 同时存在，也不会回退并继续成文。
 - 当前验证：前端 296/296 测试通过、生产构建通过；后端全量并行 4362 tests 中 9 failures/2 errors，剩余主要是旧 atomic/golden 基线与并行环境敏感测试，功能路由/守恒/PDF/表格相关测试均通过。
