@@ -11,6 +11,7 @@ from atomize import build_table_artifacts
 from extraction_units import (
     EXTRACTION_UNIT_PLANNER_VERSION,
     EXTRACTION_UNIT_SCHEMA,
+    _validate_cell_conservation,
     build_extraction_units,
     load_extraction_units,
     plan_extraction_units,
@@ -184,6 +185,14 @@ class ExtractionUnitPlannerTests(unittest.TestCase):
         self.assertEqual(all_cells, own | covered)
         self.assertFalse(own & covered)
         self.assertEqual(conservation["cells_total"], len(all_cells))
+
+    def test_duplicate_cell_coverage_is_rejected(self) -> None:
+        cell = {"cell_id": "C1"}
+        row_unit = {"unit_kind": "table_row", "covers_cell_ids": ["C1"]}
+        cell_unit = {"unit_kind": "table_cell",
+                     "table_context": {"cell_id": "C1"}}
+        with self.assertRaises(ValueError):
+            _validate_cell_conservation([row_unit, cell_unit], [cell])
 
     def test_definitions_and_references_become_context_units(self) -> None:
         defs = [u for u in self.units if u["unit_kind"] == "definition"]

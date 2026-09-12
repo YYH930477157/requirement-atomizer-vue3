@@ -362,21 +362,36 @@ def _context_refs_for(block: dict[str, Any], section_defs: dict[str, list[str]])
 
 def _validate_cell_conservation(units: list[dict[str, Any]],
                                 cell_items: list[dict[str, Any]]) -> dict[str, Any]:
-    all_cells = {str(cell.get("cell_id")) for cell in cell_items if cell.get("cell_id")}
-    own_cells = {str(unit.get("table_context", {}).get("cell_id"))
-                 for unit in units if unit.get("unit_kind") == "table_cell"}
-    covered = set()
+    # 守恒是“恰好一次”而非集合相等：集合运算会把重复覆盖静默折叠掉。
+    cell_ids = [str(cell.get("cell_id")) for cell in cell_items if cell.get("cell_id")]
+    all_cells = set(cell_ids)
+    duplicate_inputs = sorted({cid for cid in cell_ids if cell_ids.count(cid) > 1})
+    coverage: dict[str, int] = {}
+    own_cells: set[str] = set()
     for unit in units:
-        covered.update(str(cell_id) for cell_id in unit.get("covers_cell_ids") or [])
-    missing = sorted(all_cells - own_cells - covered)
-    extra = sorted((own_cells | covered) - all_cells)
-    if missing or extra:
+        if unit.get("unit_kind") == "table_cell":
+            cid = str((unit.get("table_context") or {}).get("cell_id") or "")
+            if cid:
+                coverage[cid] = coverage.get(cid, 0) + 1
+                own_cells.add(cid)
+        for cell_id in unit.get("covers_cell_ids") or []:
+            cid = str(cell_id or "")
+            if cid:
+                coverage[cid] = coverage.get(cid, 0) + 1
+    missing = sorted(cid for cid in all_cells if coverage.get(cid, 0) == 0)
+    duplicate_coverage = sorted(cid for cid, count in coverage.items()
+                                if count > 1 and cid in all_cells)
+    extra = sorted(set(coverage) - all_cells)
+    if duplicate_inputs or missing or duplicate_coverage or extra:
         raise ValueError(
-            f"extraction unit cell 守恒破坏：missing={missing[:5]} extra={extra[:5]}")
+            "extraction unit cell 守恒破坏："
+            f"missing={missing[:5]} duplicate={duplicate_coverage[:5]} "
+            f"duplicate_inputs={duplicate_inputs[:5]} extra={extra[:5]}")
+    row_cells = {cid for cid, count in coverage.items() if count == 1} - own_cells
     return {
         "cells_total": len(all_cells),
         "cells_own_units": len(own_cells),
-        "cells_covered_by_row_units": len(covered - own_cells),
+        "cells_covered_by_row_units": len(row_cells),
         "ok": True,
     }
 

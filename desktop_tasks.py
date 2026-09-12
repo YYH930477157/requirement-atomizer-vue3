@@ -2873,6 +2873,21 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
                 leased_input_files = (str(stage_payload.get("_input_files_fingerprint") or "")
                                       if isinstance(stage_payload, dict) else "") or None
                 completion_status = _stage_completion_status(stage, stage_payload)
+                # Functional extraction reports degraded execution in its payload rather
+                # than raising (for example mixed/failed section jobs).  Treat that state
+                # as a hard input gate for downstream analysis, template and clarification
+                # stages; otherwise they may consume a partial or stale product.
+                if (
+                    stage == "functional-extract"
+                    and completion_status in {"partial", "failed"}
+                ):
+                    conservation_blocked = True
+                    conservation_block_error = (
+                        f"功能直抽执行不完整（execution_status={completion_status}），"
+                        "下游分析与成文已阻断"
+                    )
+                    payload["conservation_blocked"] = True
+                    payload["conservation_block_error"] = conservation_block_error
                 update_run_manifest(out_dir, stage, completion_status, route=actual_route,
                                     outputs=stage_outputs or _stage_outputs(stage), action="ran",
                                     template_path=stage_template, config=stage_config,

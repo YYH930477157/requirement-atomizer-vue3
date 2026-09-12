@@ -112,6 +112,12 @@ def _seed_out(out: Path, *, cell_roles: list[str] | None = None,
         _decision(f"UNIT-C{index + 1}", route)
         for index, route in enumerate(routes)
     ]
+    by_id = {unit["unit_id"]: unit for unit in units}
+    for decision in decisions:
+        unit = by_id.get(decision["unit_id"])
+        if unit:
+            decision["source_text_hash"] = unit["source_text_hash"]
+            decision["planner_version"] = unit["planner_version"]
     _write_jsonl(out / "extraction_units.jsonl", units)
     _write_jsonl(out / "unit_routing_decisions.jsonl", decisions)
 

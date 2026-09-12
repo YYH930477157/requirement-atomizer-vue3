@@ -114,6 +114,10 @@ def _seed(out: Path, *, dispositions: bool, cell_route: str = "a_track") -> None
         "leaf_role": "row", "row_index": 1, "text": "230 | 5",
         "section_path": ["6"],
     }])
+    _write_jsonl(out / "table_cell_items.jsonl", [
+        {"cell_id": "C230", "table_block_id": "T1", "table_id": "TBL-000001", "text": "230"},
+        {"cell_id": "C5", "table_block_id": "T1", "table_id": "TBL-000001", "text": "5"},
+    ])
     units = [
         _prose_unit(),
         _cell_unit("UNIT-C230", "230"),
@@ -124,6 +128,13 @@ def _seed(out: Path, *, dispositions: bool, cell_route: str = "a_track") -> None
         _decision("UNIT-C230", cell_route),
         _decision("UNIT-C5", cell_route),
     ]
+    # Routing cache lineage is content-bound; include the current unit hash and
+    # planner version so this fixture exercises the cached decisions path.
+    by_id = {unit["unit_id"]: unit for unit in units}
+    for decision in decisions:
+        unit = by_id[decision["unit_id"]]
+        decision["source_text_hash"] = unit["source_text_hash"]
+        decision["planner_version"] = unit["planner_version"]
     _write_jsonl(out / "extraction_units.jsonl", units)
     _write_jsonl(out / "unit_routing_decisions.jsonl", decisions)
     if dispositions:
@@ -273,6 +284,10 @@ class ConservationTrackSplitTests(unittest.TestCase):
                 "table_block_id": "T1", "leaf_role": "row", "row_index": 1,
                 "text": "230 | 5", "section_path": ["6"],
             }])
+            _write_jsonl(out / "table_cell_items.jsonl", [
+                {"cell_id": "C230", "table_block_id": "T1", "table_id": "TBL-000001", "text": "230"},
+                {"cell_id": "C5", "table_block_id": "T1", "table_id": "TBL-000001", "text": "5"},
+            ])
             units = [
                 _prose_unit(),
                 _cell_unit("UNIT-C230", "230"),
@@ -283,6 +298,11 @@ class ConservationTrackSplitTests(unittest.TestCase):
                 _decision("UNIT-C230", "a_track"),
                 _decision("UNIT-C5", "b_track"),
             ]
+            by_id = {unit["unit_id"]: unit for unit in units}
+            for decision in decisions:
+                unit = by_id[decision["unit_id"]]
+                decision["source_text_hash"] = unit["source_text_hash"]
+                decision["planner_version"] = unit["planner_version"]
             _write_jsonl(out / "extraction_units.jsonl", units)
             _write_jsonl(out / "unit_routing_decisions.jsonl", decisions)
             _write_jsonl(out / "table_cell_dispositions.jsonl", [
@@ -337,6 +357,11 @@ class ConservationTrackSplitTests(unittest.TestCase):
              "table_block_id": "T2", "leaf_role": "row", "row_index": 1,
              "text": "230 | 5", "section_path": ["6"]},
         ])
+        _write_jsonl(out / "table_cell_items.jsonl", [
+            {"cell_id": cid, "table_block_id": bid, "table_id": tid, "text": txt}
+            for bid, tid, prefix in (("T1", "TBL-000001", "C"), ("T2", "TBL-000002", "D"))
+            for cid, txt in ((f"{prefix}230", "230"), (f"{prefix}5", "5"))
+        ])
         units = [
             _prose_unit(),
             _cell_unit("UNIT-C230", "230", block_id="T1"),
@@ -351,6 +376,11 @@ class ConservationTrackSplitTests(unittest.TestCase):
             _decision("UNIT-D230", "b_track"),
             _decision("UNIT-D5", "b_track"),
         ]
+        by_id = {unit["unit_id"]: unit for unit in units}
+        for decision in decisions:
+            unit = by_id[decision["unit_id"]]
+            decision["source_text_hash"] = unit["source_text_hash"]
+            decision["planner_version"] = unit["planner_version"]
         _write_jsonl(out / "extraction_units.jsonl", units)
         _write_jsonl(out / "unit_routing_decisions.jsonl", decisions)
         _write_jsonl(out / "table_cell_dispositions.jsonl", [

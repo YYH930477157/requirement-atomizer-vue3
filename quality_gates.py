@@ -119,7 +119,8 @@ def evaluate_document_gates(out_dir, *,
 
     cell_items = read_jsonl(_gap(out_dir, "table_cell_items.jsonl",
                                  category="pipeline", for_write=False))
-    dispositions = read_jsonl(_gap(out_dir, "table_cell_dispositions.jsonl"))
+    dispositions = read_jsonl(_gap(out_dir, "table_cell_dispositions.jsonl",
+                                   category="pipeline", for_write=False))
     if not cell_items and not dispositions:
         gates["table_cell_closure"] = _gate(
             GATE_PASS, "无表格内容（table-cell closure 不适用）")
@@ -127,15 +128,43 @@ def evaluate_document_gates(out_dir, *,
         gates["table_cell_closure"] = _gate(
             GATE_NEEDS_WORK, "有表格产物但 table_cell_dispositions.jsonl 缺失")
     else:
-        pending = sum(1 for row in dispositions
-                      if str(row.get("structure_review_status") or "") == "pending")
-        if pending:
+        # Closure requires an exact one-to-one disposition for every canonical
+        # cell.  A non-empty disposition file with omitted/duplicate cells is
+        # incomplete and must not be reported as PASS.
+        expected_ids = [str(row.get("cell_id") or "") for row in cell_items
+                        if row.get("cell_id")]
+        actual_ids = [str(row.get("cell_id") or "") for row in dispositions
+                      if row.get("cell_id")]
+        invalid_disposition_count = sum(1 for row in dispositions
+                                       if not row.get("cell_id"))
+        expected = set(expected_ids)
+        actual = set(actual_ids)
+        duplicate_ids = sorted({cid for cid in actual_ids if actual_ids.count(cid) > 1})
+        missing_ids = sorted(expected - actual)
+        extra_ids = sorted(actual - expected)
+        # Without a canonical cell artifact there is no authoritative set to
+        # compare (legacy packages may contain dispositions only); retain the
+        # historical pending/ready behavior in that case.
+        if (cell_items and (len(expected_ids) != len(expected) or
+                invalid_disposition_count or duplicate_ids or missing_ids or extra_ids)):
             gates["table_cell_closure"] = _gate(
-                GATE_NEEDS_REVIEW, f"{pending} 个 cell 处置待审（review 候选阻断 Ledger Ready）",
-                pending_count=pending)
+                GATE_NEEDS_WORK,
+                "table-cell 处置与 canonical cell 集合不一致",
+                missing_count=len(missing_ids), extra_count=len(extra_ids),
+                duplicate_count=len(duplicate_ids),
+                invalid_count=invalid_disposition_count,
+                missing_cell_ids=missing_ids[:20], extra_cell_ids=extra_ids[:20],
+                duplicate_cell_ids=duplicate_ids[:20])
         else:
-            gates["table_cell_closure"] = _gate(
-                GATE_PASS, f"{len(dispositions)} 个 canonical cell 处置就绪")
+            pending = sum(1 for row in dispositions
+                          if str(row.get("structure_review_status") or "") == "pending")
+            if pending:
+                gates["table_cell_closure"] = _gate(
+                    GATE_NEEDS_REVIEW, f"{pending} 个 cell 处置待审（review 候选阻断 Ledger Ready）",
+                    pending_count=pending)
+            else:
+                gates["table_cell_closure"] = _gate(
+                    GATE_PASS, f"{len(dispositions)} 个 canonical cell 处置就绪")
 
     # 3) routing review 候选（M2 shadow 产物；缺产物 = 未路由，不阻塞 legacy 执行）
     decisions = read_jsonl(_governed(out_dir, "unit_routing_decisions.jsonl"))

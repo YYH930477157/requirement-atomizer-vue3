@@ -185,6 +185,18 @@ py-modules = [
   "text_normalize",
   "unextracted_registry",
   "version",
+  "annotation_translations",
+  "extraction_units",
+  "functional_reextract",
+  "llm_job_runner",
+  "paid_cache_store",
+  "pipeline_plan",
+  "pipeline_contracts",
+  "quality_gates",
+  "routed_execution",
+  "routing_gaps",
+  "routing_escalation",
+  "unit_router",
 ]
 
 [tool.setuptools.dynamic]

@@ -78,13 +78,13 @@ class PdfSwitchTests(unittest.TestCase):
 
     def test_switch_on_modern_ok_stamps_modern_provenance(self) -> None:
         os.environ[pdf_parser.PDF_MODERN_PARSER_SWITCH] = "1"
-        # Modern route must NOT call the handwritten body, so we patch it with
-        # a plain Mock that would fail the test loudly if it were called.
+        # Modern route also consults the handwritten parser for prose because
+        # the modern adapter currently materializes tables only.
         with patch.object(pdf_modern_adapter, "parse_pdf_modern", lambda path: _FakeModernOk()), \
-             patch.object(pdf_parser, "_extract_pdf_handwritten") as hw:
+             patch.object(pdf_parser, "_extract_pdf_handwritten", return_value=([], [], [])) as hw:
             blocks, _tables, _cells = pdf_parser.extract_pdf(Path("x.pdf"))
         self.assertEqual(blocks[0]["parser_provenance"], "modern:docling")
-        hw.assert_not_called()
+        hw.assert_called_once()
 
     def test_switch_truthy_values_accepted(self) -> None:
         for value in ("1", "true", "YES", "on"):

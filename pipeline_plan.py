@@ -78,11 +78,19 @@ def _delivery_stages(delivery: dict[str, bool], translation_mode: str,
                      policy: str) -> list[str]:
     if policy == "legacy_combined":
         stages = list(_LEGACY_STAGES)
-        if translation_mode == "off":
+        if not delivery.get("cosem_spec", True):
+            stages = [stage for stage in stages if stage not in {"assemble", "compose"}]
+        if not delivery.get("software_requirements", True):
+            stages = [stage for stage in stages if stage != "requirements-analysis"]
+        if not delivery.get("template_workbook", True):
+            stages = [stage for stage in stages if stage != "template-write"]
+        if not delivery.get("annotation_bundle", True):
+            stages = [stage for stage in stages if stage != "export-annotation-html"]
+        if translation_mode == "off" or not delivery.get("annotation_bundle", True):
             stages = [stage for stage in stages if stage != "full-translation"]
         return stages
     stages = list(_QUALITY_FIRST_STAGES)
-    if translation_mode != "off":
+    if translation_mode != "off" and delivery.get("annotation_bundle", True):
         stages.insert(-1, "translation")
     return stages
 
@@ -123,10 +131,23 @@ def validate_pipeline_plan(plan: dict[str, Any]) -> None:
         raise ValueError(f"计划 schema 不符: {plan.get('schema')}")
     if plan.get("execution_policy") not in EXECUTION_POLICIES:
         raise ValueError(f"非法执行策略: {plan.get('execution_policy')}")
-    if plan.get("delivery", {}).get("translation_mode") not in TRANSLATION_MODES:
+    delivery = plan.get("delivery")
+    if not isinstance(delivery, dict) or set(delivery) != set((*DELIVERY_KEYS, "translation_mode")):
+        raise ValueError("delivery 字段不完整或包含未知键")
+    if any(not isinstance(delivery.get(key), bool) for key in DELIVERY_KEYS):
+        raise ValueError("delivery 交付开关必须为布尔值")
+    if delivery.get("translation_mode") not in TRANSLATION_MODES:
         raise ValueError("非法翻译模式")
     if plan.get("budget_mode") not in BUDGET_MODES:
         raise ValueError(f"非法预算模式: {plan.get('budget_mode')}")
+    stages = plan.get("stages")
+    if not isinstance(stages, list) or not stages or any(
+        not isinstance(stage, str) or stage not in ALL_STAGE_CONTRACTS for stage in stages
+    ) or len(set(stages)) != len(stages):
+        raise ValueError("stages 包含非法、重复或空阶段")
+    stage_versions = plan.get("stage_versions")
+    if not isinstance(stage_versions, dict) or set(stage_versions) != set(stages):
+        raise ValueError("stage_versions 与 stages 不一致")
     fingerprint = plan.get("plan_fingerprint")
     recomputed = hash_json("pipeline-plan",
                            {key: value for key, value in plan.items()
@@ -154,7 +175,13 @@ def load_pipeline_plan(out_dir) -> dict[str, Any] | None:
         plan = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    return plan if isinstance(plan, dict) else None
+    if not isinstance(plan, dict):
+        return None
+    try:
+        validate_pipeline_plan(plan)
+    except (TypeError, ValueError):
+        return None
+    return plan
 
 
 def routing_summary_for_plan(out_dir) -> dict[str, int] | None:

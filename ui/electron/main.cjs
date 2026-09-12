@@ -37,6 +37,12 @@ let llmSettings = null;
 let sessionApiKey = "";
 let startupAmbientCredential = null;
 let applicationResourcesCleanedUp = false;
+// Files explicitly selected through a native file chooser are the only files
+// the renderer may ask the main process to read.  Keep the canonical path so
+// a renderer cannot replace a relative/absolute path with an arbitrary one.
+const authorizedDocumentPaths = new Set();
+const authorizedOutputDirs = new Set();
+const MAX_AUTHORIZED_DOCUMENTS = 32;
 const API_STARTUP_ATTEMPTS = 3;
 const API_STARTUP_TIMEOUT_MS = 30000;
 const API_STARTUP_RETRY_DELAY_MS = 750;
@@ -125,7 +131,9 @@ ipcMain.handle("dialog:open-document", async () => {
     properties: ["openFile"],
     filters: [{ name: "Documents", extensions: ["docx", "xlsx", "pdf"] }],
   });
-  return result.canceled ? null : result.filePaths[0];
+  if (result.canceled || !result.filePaths.length) return null;
+  rememberAuthorizedDocument(result.filePaths[0]);
+  return result.filePaths[0];
 });
 
 ipcMain.handle("dialog:open-output", async () => {
@@ -136,6 +144,7 @@ ipcMain.handle("dialog:open-output", async () => {
     return null;
   }
   const outputDir = result.filePaths[0];
+  rememberAuthorizedOutputDir(outputDir);
   const classification = classifyOutputDir(outputDir);
   if (!["package_v1", "legacy"].includes(classification.kind)) {
     const reason = classification.kind === "invalid"
@@ -163,11 +172,13 @@ ipcMain.handle("dialog:select-output-dir", async () => {
   const result = await dialog.showOpenDialog(mainWindow, {
     properties: ["openDirectory", "createDirectory"],
   });
-  return result.canceled ? null : result.filePaths[0];
+  if (result.canceled || !result.filePaths.length) return null;
+  rememberAuthorizedOutputDir(result.filePaths[0]);
+  return result.filePaths[0];
 });
 
 ipcMain.handle("shell:open-path", async (_event, targetPath) => {
-  if (!targetPath || !apiSession || !isInside(apiSession.outputDir, targetPath)) {
+  if (!targetPath || !apiSession || !isAuthorizedReadPath(targetPath)) {
     return;
   }
   await shell.openPath(targetPath);
@@ -176,10 +187,13 @@ ipcMain.handle("shell:open-path", async (_event, targetPath) => {
 ipcMain.handle("fs:stat-deliverables", async (_event, input) => {
   const outDir = String(input?.outDir || "").trim();
   if (!outDir) return {};
-  if (apiSession && !isInside(apiSession.outputDir, outDir)) {
+  // Deliverable metadata is session-scoped.  Do not trust an outDir supplied
+  // by the renderer when there is no active API session or when it differs
+  // from the session that the main process started.
+  if (!isActiveOutputDir(outDir)) {
     return {};
   }
-  return resolveDeliverableFiles(outDir, input?.names || []);
+  return resolveDeliverableFiles(apiSession.outputDir, input?.names || []);
 });
 
 // S16：默认输出根目录跟随系统"文档"目录派生，绝不硬编码开发者机器路径
@@ -191,8 +205,17 @@ ipcMain.handle("app:get-default-output-root", async () => {
   }
 });
 ipcMain.handle("api:get-session", async () => apiSession);
-ipcMain.handle("api:start-session", async (_event, outDir) => startApiServer(outDir));
-ipcMain.handle("session:get-recent", async () => listRecentSessions(recentSessionsPath()));
+ipcMain.handle("api:start-session", async (_event, outDir) => {
+  if (!isAuthorizedOutputDir(outDir)) {
+    return null;
+  }
+  return startApiServer(outDir);
+});
+ipcMain.handle("session:get-recent", async () => {
+  const sessions = listRecentSessions(recentSessionsPath());
+  for (const session of sessions) rememberAuthorizedOutputDir(session.outputDir);
+  return sessions;
+});
 ipcMain.handle("llm:get-settings", async () => loadLlmSettings());
 ipcMain.handle("llm:save-settings", async (_event, input) => saveLlmSettings(input));
 ipcMain.handle("llm:test-connection", async (_event, input) => testLlmConnection(input));
@@ -313,7 +336,9 @@ ipcMain.handle("dialog:open-template", async () => {
     properties: ["openFile"],
     filters: [{ name: "需求列表模板", extensions: ["xlsx"] }],
   });
-  return result.canceled ? "" : result.filePaths[0];
+  if (result.canceled || !result.filePaths.length) return "";
+  rememberAuthorizedDocument(result.filePaths[0]);
+  return result.filePaths[0];
 });
 
 ipcMain.handle("task:export-annotation-html", async (_event, input) =>
@@ -350,6 +375,9 @@ ipcMain.handle("task:import-clarification-answers", async (_event, input) => {
 // 只读、不创建目录、不写盘——后端 result_package.governed_artifact_path 是路径权威。
 ipcMain.handle("task:read-artifact", async (_event, input) => {
   try {
+    if (!isActiveOutputDir(input && input.outDir)) {
+      return { ok: false, missing: true, path: null, reason: "unauthorized_output_dir" };
+    }
     return readGovernedArtifact(input && input.outDir, input && input.category, input && input.filename);
   } catch (err) {
     return {
@@ -359,13 +387,16 @@ ipcMain.handle("task:read-artifact", async (_event, input) => {
   }
 });
 
-// 渲染器真实读文件字节（PDF/DOCX/XLSX 原位渲染）。主进程负责路径校验与体量上限，
-// 避免渲染进程任意读取——只有绝对路径、真实文件、≤256MiB 才放行，其余如实拒绝。
+// 渲染器真实读文件字节（PDF/DOCX/XLSX 原位渲染）。主进程负责路径授权与体量上限，
+// 避免渲染进程任意读取——仅 native 选择的输入文件或活动结果包内文件、≤256MiB 才放行。
 ipcMain.handle("fs:read-bytes", async (_event, input) => {
   try {
     const target = input && input.path;
     if (!target || typeof target !== "string" || !path.isAbsolute(target)) {
       return { ok: false, reason: "invalid_path" };
+    }
+    if (!isAuthorizedReadPath(target)) {
+      return { ok: false, reason: "unauthorized_path" };
     }
     const stat = fs.statSync(target);
     if (!stat.isFile()) {
@@ -390,6 +421,7 @@ ipcMain.handle("fs:read-bytes", async (_event, input) => {
 let sessionStartQueue = Promise.resolve();
 
 function startApiServer(outputDir, options = {}) {
+  rememberAuthorizedOutputDir(outputDir);
   const run = sessionStartQueue.then(() => startApiServerExclusive(outputDir, options));
   // 链本身永不 reject（失败只影响本次调用方，后续排队照常进行）
   sessionStartQueue = run.catch(() => undefined);
@@ -698,6 +730,64 @@ function buildCurrentLlmEnvironment() {
 
 function logsDirPath() {
   return path.join(app.getPath("userData"), "logs");
+}
+
+function canonicalPath(filePath) {
+  try {
+    return fs.realpathSync.native(filePath);
+  } catch {
+    return path.resolve(String(filePath || ""));
+  }
+}
+
+function normalizeFsPath(filePath) {
+  return path.normalize(String(filePath || "")).replace(/[\\/]+$/, "").toLowerCase();
+}
+
+function rememberAuthorizedDocument(filePath) {
+  const canonical = canonicalPath(filePath);
+  if (!canonical || !path.isAbsolute(canonical)) return;
+  authorizedDocumentPaths.add(normalizeFsPath(canonical));
+  while (authorizedDocumentPaths.size > MAX_AUTHORIZED_DOCUMENTS) {
+    authorizedDocumentPaths.delete(authorizedDocumentPaths.values().next().value);
+  }
+}
+
+function rememberAuthorizedOutputDir(dirPath) {
+  const canonical = canonicalPath(dirPath);
+  if (!canonical || !path.isAbsolute(canonical)) return;
+  authorizedOutputDirs.add(normalizeFsPath(canonical));
+  while (authorizedOutputDirs.size > MAX_AUTHORIZED_DOCUMENTS) {
+    authorizedOutputDirs.delete(authorizedOutputDirs.values().next().value);
+  }
+}
+
+function isAuthorizedOutputDir(candidate) {
+  if (!candidate) return false;
+  const target = canonicalPath(candidate);
+  if (!target || !path.isAbsolute(target)) return false;
+  if (apiSession?.outputDir) {
+    const root = canonicalPath(apiSession.outputDir);
+    if (normalizeFsPath(root) === normalizeFsPath(target)) return true;
+  }
+  return authorizedOutputDirs.has(normalizeFsPath(target));
+}
+
+function isActiveOutputDir(candidate) {
+  if (!apiSession?.outputDir || !candidate) return false;
+  const root = canonicalPath(apiSession.outputDir);
+  const target = canonicalPath(candidate);
+  return Boolean(target && path.isAbsolute(target)
+    && normalizeFsPath(root) === normalizeFsPath(target));
+}
+
+function isAuthorizedReadPath(targetPath) {
+  const canonicalTarget = canonicalPath(targetPath);
+  if (!canonicalTarget || !path.isAbsolute(canonicalTarget)) return false;
+  if (authorizedDocumentPaths.has(normalizeFsPath(canonicalTarget))) return true;
+  if (!apiSession?.outputDir) return false;
+  // Generated previews are readable only from the active result package.
+  return isInside(canonicalPath(apiSession.outputDir), canonicalTarget);
 }
 
 function llmSettingsPath() {

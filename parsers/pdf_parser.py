@@ -1359,9 +1359,39 @@ def extract_pdf(
     modern = parse_pdf_modern(input_path)
     if modern.is_ok:
         route = f"modern:{modern.provenance.get('parser', 'unknown')}"
-        blocks, table_items, table_cell_items = _materialize_modern_pdf(
+        modern_blocks, table_items, table_cell_items = _materialize_modern_pdf(
             modern, input_path, knowledge_bases
         )
+        # The modern adapter currently normalizes table structure only.  Keep
+        # the handwritten parser as the prose authority so enabling the
+        # switch cannot silently turn a document into tables-only output.
+        handwritten_result = _extract_pdf_handwritten(
+            input_path, knowledge_bases, document_profile
+        )
+        # Keep compatibility with injected/test handwritten adapters that only
+        # return a block list; the modern path still must not fail while adding
+        # prose preservation.
+        if isinstance(handwritten_result, tuple) and len(handwritten_result) == 3:
+            handwritten_blocks = handwritten_result[0]
+        else:
+            handwritten_blocks = handwritten_result if isinstance(handwritten_result, list) else []
+        prose_blocks = [block for block in handwritten_blocks if block.get("type") != "table"]
+        blocks = prose_blocks + modern_blocks
+        # Keep block references in table_items/table_cell_items consistent after
+        # combining the prose and modern table streams.  Re-number the modern
+        # blocks into the combined stream and rewrite their foreign keys.
+        remap: dict[str, str] = {}
+        for order, block in enumerate(blocks, 1):
+            old_id = str(block.get("block_id") or "")
+            new_id = f"BLK-{order:06d}"
+            if old_id:
+                remap[old_id] = new_id
+            block["order"] = order
+            block["block_id"] = new_id
+        for row in (*table_items, *table_cell_items):
+            old_id = str(row.get("block_id") or "")
+            if old_id in remap:
+                row["block_id"] = remap[old_id]
         _stamp_parser_provenance(
             blocks,
             route=route,

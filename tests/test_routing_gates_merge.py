@@ -214,6 +214,19 @@ class QualityGateTests(unittest.TestCase):
                              GATE_NEEDS_REVIEW)
             self.assertEqual(report["gates"]["table_cell_closure"]["pending_count"], 1)
 
+    def test_incomplete_disposition_cell_set_is_needs_work(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            (out_dir / "table_cell_items.jsonl").write_text(
+                "{\"cell_id\": \"T1\"}\n{\"cell_id\": \"T2\"}\n",
+                encoding="utf-8")
+            (out_dir / "table_cell_dispositions.jsonl").write_text(
+                "{\"cell_id\": \"T1\", \"structure_review_status\": \"ready\"}\n",
+                encoding="utf-8")
+            report = evaluate_document_gates(out_dir)
+            self.assertEqual(report["gates"]["table_cell_closure"]["status"],
+                             GATE_NEEDS_WORK)
+
     def test_review_routing_decisions_are_retry_local(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             out_dir = Path(tmp)

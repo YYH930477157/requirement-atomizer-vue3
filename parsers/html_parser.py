@@ -44,9 +44,12 @@ def _parse_table(
 ) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
     """把 <table> 节点转成三件套。"""
     rows: list[list[str]] = []
-    for tr in table_node.findall(".//tr"):
+    # Only consume rows/cells belonging directly to this table.  ``.//``
+    # also finds rows in nested tables, and concatenating ``td`` then ``th``
+    # changes the source column order when a row mixes cell kinds.
+    for tr in table_node.xpath("./thead/tr | ./tbody/tr | ./tfoot/tr | ./tr"):
         row_cells: list[str] = []
-        for cell in tr.findall(".//td") + tr.findall(".//th"):
+        for cell in tr.xpath("./th | ./td"):
             row_cells.append(_node_text(cell))
         if any(row_cells):
             rows.append(row_cells)
@@ -85,7 +88,21 @@ def extract_html(
     def section_path() -> list[str]:
         return [sections[level] for level in sorted(sections)]
 
-    for node in doc.iter():
+    # Walk the document structurally.  A table is an atomic content node:
+    # its paragraphs and nested tables belong to the table artifact and must
+    # not be emitted a second time as ordinary document blocks.
+    def walk(node: Any):
+        tag = str(node.tag).lower()
+        if tag == "table":
+            yield node
+            return
+        yield node
+        if tag in ("script", "style", "noscript"):
+            return
+        for child in node:
+            yield from walk(child)
+
+    for node in walk(doc):
         tag = str(node.tag).lower()
         if tag in ("script", "style", "noscript"):
             continue

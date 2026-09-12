@@ -1562,12 +1562,44 @@ def _table_blocks_missing_dispositions(
     )
     if not path.is_file():
         return set(table_block_ids)
-    covered: set[str] = set()
+    # A table is delegable only when every canonical non-empty cell has exactly
+    # one disposition.  Merely seeing one row for a table used to drop the
+    # remaining cells from the preservation baseline.
+    cells_path = governed_artifact_path(
+        out_dir, "table_cell_items.jsonl", category="pipeline", for_write=False)
+    if not cells_path.is_file():
+        # Legacy packages predate table_cell_items; retain the prior
+        # block-level check until a canonical cell artifact is available.
+        covered: set[str] = set()
+        for row in read_jsonl(path):
+            bid = str(row.get("table_block_id") or "")
+            if bid:
+                covered.add(bid)
+        return set(table_block_ids) - covered
+    expected: dict[str, set[str]] = {bid: set() for bid in table_block_ids}
+    for row in read_jsonl(cells_path):
+        bid = str(row.get("table_block_id") or "")
+        cid = str(row.get("cell_id") or "")
+        if bid in expected and cid:
+            expected[bid].add(cid)
+    seen: dict[str, list[str]] = {bid: [] for bid in table_block_ids}
+    invalid_rows: set[str] = set()
     for row in read_jsonl(path):
         bid = str(row.get("table_block_id") or "")
-        if bid:
-            covered.add(bid)
-    return set(table_block_ids) - covered
+        cid = str(row.get("cell_id") or "")
+        if bid in seen:
+            if cid:
+                seen[bid].append(cid)
+            else:
+                invalid_rows.add(bid)
+    missing: set[str] = set()
+    for bid in table_block_ids:
+        cells = expected.get(bid, set())
+        disp = seen.get(bid, [])
+        if (not cells or bid in invalid_rows or set(disp) != cells
+                or len(disp) != len(set(disp))):
+            missing.add(bid)
+    return missing
 
 
 def _conservation_blocks_by_id(
@@ -3091,9 +3123,23 @@ def _routing_decision_rows_for(
 
     decisions = load_routing_decisions(out_dir)
     versions = {str(row.get("router_version") or "") for row in decisions}
-    unit_ids = {str(unit.get("unit_id") or "") for unit in units}
-    decision_ids = {str(row.get("unit_id") or "") for row in decisions}
-    if decisions and unit_ids == decision_ids and versions == {UNIT_ROUTER_VERSION}:
+    unit_map = {str(unit.get("unit_id") or ""): unit for unit in units}
+    unit_ids = set(unit_map)
+    decision_ids = [str(row.get("unit_id") or "") for row in decisions]
+    # Validate content lineage as well as IDs/version. Duplicate rows and stale
+    # hashes must never be reused for changed extraction units.
+    unique_ids = set(decision_ids)
+    lineage_ok = len(decision_ids) == len(unique_ids) and all(
+        uid in unit_map
+        and bool(str(row.get("source_text_hash") or ""))
+        and bool(str(unit_map[uid].get("source_text_hash") or ""))
+        and str(row.get("source_text_hash") or "") == str(unit_map[uid].get("source_text_hash") or "")
+        and bool(str(row.get("planner_version") or ""))
+        and bool(str(unit_map[uid].get("planner_version") or ""))
+        and str(row.get("planner_version") or "") == str(unit_map[uid].get("planner_version") or "")
+        for uid, row in ((str(row.get("unit_id") or ""), row) for row in decisions)
+    )
+    if decisions and unit_ids == unique_ids and versions == {UNIT_ROUTER_VERSION} and lineage_ok:
         return list(decisions), False
     recomputed, _summary = route_units(units)
     return list(recomputed), True
