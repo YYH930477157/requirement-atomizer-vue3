@@ -40,6 +40,7 @@ from requirement_kb import KnowledgeRepository
 from requirement_kb.matching import TEXT_REPLACEMENTS, compile_term_pattern, find_matched_terms, normalize_match_term
 from source_spans import source_alignment_fields
 from result_package import governed_artifact_path
+from config import get_env
 from table_dispositions import (
     TABLE_DISPOSITION_RULE_VERSION,
     build_table_cell_dispositions,
@@ -2927,7 +2928,7 @@ def run_atomizer_pipeline(
     # 语义预审是独立的假设层：显式开关才运行，并在语义分段前生成，
     # 这样 LLM 的上下文关系才会真正参与边界判断。
     pre_review_enabled = (
-        os.environ.get("RATOMIZER_SEMANTIC_PRE_REVIEW", "0").strip().lower() in {"1", "true", "yes", "on"}
+        get_env("RATOMIZER_SEMANTIC_PRE_REVIEW").strip().lower() in {"1", "true", "yes", "on"}
         or segmentation.semantic_mode == "llm"
     )
     semantic_pre_review = None

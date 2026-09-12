@@ -91,6 +91,9 @@ PROMPT_REGISTRY: list[dict[str, str]] = [
     {"id": "semantic-segmentation", "version": "semantic-segmentation-prompt-v3-contextual-boundaries",
      "owner_module": "semantic_segmentation",
      "purpose": "Semantic paragraph boundary adjudication prompt (LLM mode only)"},
+    {"id": "semantic-pre-review", "version": "semantic-pre-review-prompt-v1",
+     "owner_module": "semantic_pre_review",
+     "purpose": "Pre-review semantic structure adjudication prompt"},
 
     # partial export（2026-09-01，用户拍板政策反转）：守恒待核行级标记算法身份。
     # 登记 + 进 requirements-analysis/template-write 的 stage producer 与指纹
