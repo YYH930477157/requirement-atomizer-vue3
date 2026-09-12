@@ -2852,7 +2852,7 @@ def run_atomizer_pipeline(
     chunk_chars: int = 3500,
     kb_paths: list[Path] | None = None,
     domain_pack_dir: Path | None = None,
-    include_atomic_candidates: bool = True,
+    include_atomic_candidates: bool = False,
     segmentation=None,
     declare_track: bool = True,
 ) -> dict[str, Any]:

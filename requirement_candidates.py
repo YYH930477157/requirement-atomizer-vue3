@@ -31,7 +31,9 @@ def classify_semantic_units(units: Sequence[dict[str, Any]]) -> dict[str, Any]:
             current_role = "informational"
         elif re.search(r"\bintroduction\b", text, re.I):
             current_role = "informational"
-        elif re.match(r"^\s*\d+(?:\.\d+)*\s+(?:scope|terms|definitions|requirements|functional)", text, re.I):
+        elif re.match(r"^\s*\d+(?:\.\d+)*\s+(?:terms(?: and definitions)?|definitions?)\b", text, re.I):
+            current_role = "informational"
+        elif re.match(r"^\s*\d+(?:\.\d+)*\s+(?:scope|requirements|functional)\b", text, re.I):
             current_role = "normative_body"
         elif region_role == "informational":
             current_role = "informational"
@@ -77,8 +79,11 @@ def build_full_coverage_audit(units: Sequence[dict[str, Any]], candidates: dict[
             continue
         # Numeric thresholds, modal verbs in non-English forms, and imperative
         # language are useful recall signals even when shall/must is absent.
+        region_role = next((row.get("region_role") for row in (candidates.get("units") or []) if str(row.get("semantic_unit_id")) == uid), "normative_body")
+        if region_role == "informational":
+            continue
         if re.search(r"\b(?:at least|at most|minimum|maximum|within|before|after|only if|shall be|应|不得|必须)\b|\d+\s*(?:V|A|Hz|%|days?|years?)\b", text, re.I):
-            suspicious.append({"semantic_unit_id": uid, "text": text, "source_block_ids": list(unit.get("source_block_ids") or []), "reason": "excluded_context_has_constraint_signal"})
+            suspicious.append({"semantic_unit_id": uid, "text": text, "source_block_ids": list(unit.get("source_block_ids") or []), "region_role": region_role, "reason": "excluded_context_has_constraint_signal"})
     return {
         "schema": "requirement-candidate-coverage/v1",
         "source_units": len(units),
