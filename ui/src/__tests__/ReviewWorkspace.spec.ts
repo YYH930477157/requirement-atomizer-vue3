@@ -1167,9 +1167,6 @@ describe("review workspace shell", () => {
         llmRoute: undefined,
         reviewScope: undefined,
         chunkChars: 3500,
-        kbPaths: [
-          "knowledge_bases/compiled_from_obsidian.json",
-        ],
         domainPackDir: "domain_packs/dlms_cosem",
         paragraphMode: "layout",
         paragraphFallback: "keep_for_review",
@@ -1716,9 +1713,6 @@ describe("review workspace shell", () => {
         reviewScope: "targeted",
         llmReviewLimit: 50,
         chunkChars: 3500,
-        kbPaths: [
-          "knowledge_bases/compiled_from_obsidian.json",
-        ],
         domainPackDir: "domain_packs/dlms_cosem",
         paragraphMode: "layout",
         paragraphFallback: "keep_for_review",
