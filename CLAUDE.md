@@ -2211,3 +2211,10 @@ CLI 契约见 `docs/cli-contract.md`（对接公司任务管理系统的接口�
 
 - 攒英文扫描件 PDF 测试语料（5-10 份，不同扫描质量/表格密度/脏样本），M4c 立项用
 - 第一份真实客户 Excel 到手后走 A1 差距报告流程（GPT 出报告 → Claude 技术筛查 → 用户拍板 → 再修）
+
+## 2026-09-13 环境与流程修复里程碑
+
+- 已安装并验证项目运行环境：Python 3.12 bundled runtime、PyYAML/jsonschema，以及 Node.js LTS 24.19.0/npm 11.19.0；`ui/` 依赖安装完成。
+- 需求解析流程完成一轮加固：严格表格 cell 守恒与 disposition 闭合、路由决策血统校验、HTML/PDF 解析顺序与外键一致性、pipeline plan 投递物约束、Electron 文件路径授权，以及缺失模块的打包注册。
+- 修复阶段输入同尺寸快速覆写可能命中旧哈希的问题（加入 `ctime_ns`），恢复桌面流水线未显式传 KB 时的默认知识库行为；语义预审 prompt/config 已纳入治理注册表。
+- 当前验证：前端 296/296 测试通过、生产构建通过；后端全量并行 4362 tests 中 9 failures/2 errors，剩余主要是旧 atomic/golden 基线与并行环境敏感测试，功能路由/守恒/PDF/表格相关测试均通过。
