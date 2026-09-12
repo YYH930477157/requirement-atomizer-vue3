@@ -443,6 +443,26 @@ class SynthesizedConsumerValidationTests(unittest.TestCase):
             with self.assertRaises(FunctionalConservationError):
                 run_requirements_analysis(out, route="stub")
 
+    def test_failed_functional_extract_does_not_fall_back_to_stale_atoms(self) -> None:
+        """失败的直抽载荷不能因遗留 ai_requirements.jsonl 而继续成文。"""
+        from functional_extract import FunctionalExtractionIncompleteError
+        from requirements_analysis import run_requirements_analysis
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            row = {"ai_req_id": "AIR-1", "title": "旧条目", "module": "计量",
+                   "description": "The meter shall measure.",
+                   "source_quote": "The meter shall measure.", "source_block_ids": ["B1"]}
+            (out / "ai_requirements.jsonl").write_text(
+                json.dumps(row, ensure_ascii=False) + "\n", encoding="utf-8")
+            (out / "functional_requirements.json").write_text(json.dumps({
+                "producer": "functional-extract-v1",
+                "execution_status": "failed",
+                "items": [dict(row, functional_requirement_id="FRE-1")],
+            }, ensure_ascii=False), encoding="utf-8")
+            with self.assertRaises(FunctionalExtractionIncompleteError):
+                run_requirements_analysis(out, route="stub")
+
 
 class SemanticGateDenominatorTests(unittest.TestCase):
     """C6（0710 评审）：语义门用例缺 functional_count 必须响亮失败（自引分母恒真）。"""

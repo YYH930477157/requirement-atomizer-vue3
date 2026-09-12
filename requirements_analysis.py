@@ -410,8 +410,14 @@ def run_requirements_analysis(
                     LOGGER.warning("functional_requirements.json producer 异常（%s），回退逐原子输入", producer or "缺失")
                     requirements = None
                 elif producer.startswith("functional-extract"):
-                    _raise_if_functional_extract_unconserved(
-                        synthesized_payload, allow_unclosed=allow_unclosed)
+                    # Reuse the shared direct-basis gate here as well. When a
+                    # stale legacy ``ai_requirements.jsonl`` coexists with a
+                    # failed direct-extract payload, checking only the
+                    # conservation block would otherwise let failed items flow
+                    # into analysis.
+                    direct_basis = _functional_direct_basis(
+                        out_dir, allow_unclosed=allow_unclosed)
+                    requirements = direct_basis if direct_basis is not None else None
                     if allow_unclosed and isinstance(requirements, list):
                         conservation = synthesized_payload.get("conservation")
                         if isinstance(conservation, dict) and not conservation.get("ok", True):
