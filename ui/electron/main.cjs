@@ -306,7 +306,7 @@ ipcMain.handle("task:assemble", async (_event, input) => runAndRememberOutput([
 ipcMain.handle("task:compose", async (_event, input) =>
   runAndRememberOutput(["compose", "--out", input.outDir], input.outDir));
 
-ipcMain.handle("task:requirements-analysis", async (_event, input) => runAndRememberOutput([
+ipcMain.handle("task:requirements-analysis", async (_event, input) => runAndRefreshOutput([
   "requirements-analysis",
   "--out",
   input.outDir,
@@ -323,7 +323,7 @@ ipcMain.handle("task:clarification-report", async (_event, input) =>
   runAndRememberOutput(["clarification-report", "--out", input.outDir], input.outDir));
 
 // 成文：analyze 结果按公司标准化需求列表格式追加进对应模块 sheet（确定性零 LLM）
-ipcMain.handle("task:template-write", async (_event, input) => runAndRememberOutput([
+ipcMain.handle("task:template-write", async (_event, input) => runAndRefreshOutput([
   "template-write",
   "--out",
   input.outDir,
@@ -499,6 +499,22 @@ async function runAndRememberOutput(args, fallbackOutDir) {
   const payload = await runDesktopTaskProcess(args);
   const outputDir = String(payload?.out_dir || payload?.outDir || fallbackOutDir || "");
   rememberRecentSession(outputDir);
+  return payload;
+}
+
+// Direct stage bridges can be invoked outside the normal chain command. Once
+// a stage writes governed artifacts, restart the local API so renderer reads
+// observe the new publication immediately; the task result remains usable if
+// the API restart itself is unavailable.
+async function runAndRefreshOutput(args, fallbackOutDir) {
+  const payload = await runAndRememberOutput(args, fallbackOutDir);
+  const outputDir = String(payload?.out_dir || payload?.outDir || fallbackOutDir || "");
+  if (!outputDir) return payload;
+  try {
+    await startApiServer(outputDir, { forceRestart: true });
+  } catch (error) {
+    payload.api_warning = `本地 API 刷新失败，输出目录成果已保留：${error.message}`;
+  }
   return payload;
 }
 

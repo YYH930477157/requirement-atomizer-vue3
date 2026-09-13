@@ -82,6 +82,11 @@ def read_ai_input_completeness(out_dir: Path | str) -> dict[str, Any]:
                     continue
                 if not str(item.get("functional_requirement_id") or item.get("id") or "").strip():
                     reasons.append(f"functional_item_id_missing:{index}")
+                if not any(
+                    str(item.get(key) or "").strip()
+                    for key in ("objective", "description", "requirement", "source_quote")
+                ):
+                    reasons.append(f"functional_item_text_missing:{index}")
         status = str(functional_payload.get("execution_status") or "ok").strip()
         if status not in {"ok"}:
             reasons.append(f"functional_execution_{status or 'unknown'}")
