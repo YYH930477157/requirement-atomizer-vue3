@@ -600,10 +600,6 @@
                 <span><strong>澄清清单</strong><small>生成 clarification_questions.xlsx。<em>依赖功能抽取</em>。</small></span>
               </label>
               <label class="settings-toggle">
-                <input v-model="runStages.compose" type="checkbox" data-testid="stage-compose" />
-                <span><strong>组装工程需求</strong><small>装配实现规格（对象表事实 / DLMS 对象），不是把碎原子拼成需求。</small></span>
-              </label>
-              <label class="settings-toggle">
                 <input v-model="runStages.annotationHtml" type="checkbox" data-testid="stage-annotation-html" />
                 <span><strong>导出批注 HTML</strong><small>生成 document_annotation.html，用于专家离线阅读、批注和导出裁决 JSON。</small></span>
               </label>
@@ -623,6 +619,10 @@
               <label class="settings-toggle">
                 <input v-model="runStages.assemble" type="checkbox" data-testid="stage-assemble" />
                 <span><strong>装配实现规格</strong><small>P1-P3 装配《DLMS/COSEM 实现规格》JSON + Word/MD/Excel。</small></span>
+              </label>
+              <label class="settings-toggle">
+                <input v-model="runStages.compose" type="checkbox" data-testid="stage-compose" />
+                <span><strong>组装工程需求</strong><small>兼容旧版工程模板输出，仅在需要 DLMS/COSEM 实现规格时启用。</small></span>
               </label>
               <label class="settings-toggle">
                 <input v-model="showAtomDiagnostics" type="checkbox" data-testid="settings-show-atom-diagnostics" />
