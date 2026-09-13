@@ -100,6 +100,7 @@ describe("review workspace shell", () => {
       expect(wrapper.find(`[data-testid="nav-${label}"]`).exists()).toBe(true)
     }
     expect(wrapper.find('[data-testid="nav-more-toggle"]').exists()).toBe(true)
+    expect(wrapper.findAll('[data-testid="nav-more-toggle"]')).toHaveLength(1)
     expect(wrapper.find('[data-testid="nav-文档渲染"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="nav-实现规格"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="nav-澄清清单"]').exists()).toBe(false)
