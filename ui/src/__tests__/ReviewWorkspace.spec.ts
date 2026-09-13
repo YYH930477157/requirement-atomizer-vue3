@@ -143,9 +143,9 @@ describe("review workspace shell", () => {
     expect(wrapper.find('[data-testid="run-paths-panel"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="run-stage-board"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="run-stage-atomize"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="run-stage-ai-extract"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="run-stage-llm-review"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="run-stage-ai-extract"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="run-stage-functional-synthesis"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="run-stage-functional-synthesis"]').exists()).toBe(false)
 
     await wrapper.find('[data-testid="action-open-document"]').trigger("click")
     await wrapper.find('[data-testid="nav-运行"]').trigger("click")
@@ -160,7 +160,7 @@ describe("review workspace shell", () => {
     expect(wrapper.find('[data-testid="run-stage-llm-review"]').attributes("aria-current")).toBe("step")
     expect(wrapper.find('[data-testid="run-stage-llm-review"] .stage-signal').exists()).toBe(true)
     expect(wrapper.find('[data-testid="run-relay-atomize"]').classes()).toContain("relay-handoff")
-    expect(wrapper.find('[data-testid="run-relay-llm-review"]').classes()).toContain("relay-bypass")
+    expect(wrapper.find('[data-testid="run-relay-llm-review"]').exists()).toBe(false)
 
     progressHandler({ stage: "llm_review", completed: 2, total: 2, percent: 100 })
     await flushPromises()
@@ -183,7 +183,7 @@ describe("review workspace shell", () => {
     const atomize = wrapper.find('[data-testid="run-stage-atomize"]')
     expect(atomize.classes()).toContain("stage-running")
     expect(atomize.find(".stage-bar").classes()).toContain("is-indeterminate")
-    expect(wrapper.find('[data-testid="run-progress"]').text()).toContain("动效演示 1/9")
+    expect(wrapper.find('[data-testid="run-progress"]').text()).toContain("动效演示 1/2")
     expect(wrapper.find('[data-testid="run-progress"]').text()).toContain("0%")
     expect(getApiSession).not.toHaveBeenCalled()
     expect(getLlmSettings).not.toHaveBeenCalled()
@@ -2031,7 +2031,7 @@ describe("review workspace shell", () => {
     })
   })
 
-  it("marks functional synthesis disabled when LLM and analysis are off", async () => {
+  it("hides compatibility synthesis when the current functional track is selected", async () => {
     localStorage.setItem("ratomizer.runStages.v4",
       JSON.stringify({ aiExtract: true, assemble: false, analyze: false, compose: false, annotationHtml: false }))
     Object.defineProperty(window, "ratomizerDesktop", {
@@ -2048,9 +2048,7 @@ describe("review workspace shell", () => {
     await wrapper.find('[data-testid="action-run-pipeline"]').trigger("click")
 
     await vi.waitFor(() => {
-      const card = wrapper.find('[data-testid="run-stage-functional-synthesis"]').text()
-      expect(card).toContain("未启用")
-      expect(card).not.toContain("待完成")
+      expect(wrapper.find('[data-testid="run-stage-functional-synthesis"]').exists()).toBe(false)
     })
   })
 
@@ -2199,7 +2197,7 @@ describe("review workspace shell", () => {
       await flushPromises()
       expect(wrapper.find('[data-testid="run-stage-ai-extract"]').text()).toContain("已用时")
       expect(wrapper.find('[data-testid="run-stall-ai-extract"]').text()).toContain("无新进度")
-      expect(wrapper.find('[data-testid="run-stall-hint"]').text()).toContain("功能需求抽取")
+      expect(wrapper.find('[data-testid="run-stall-hint"]').text()).toContain("功能需求直抽")
 
       progressHandler({ stage: "ai_extract", completed: 12, total: 46, percent: 26 })
       await flushPromises()

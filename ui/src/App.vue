@@ -136,8 +136,8 @@
 
           <div class="flow-card">
             <div class="board-head">
-              <h4>交付物流水线</h4>
-              <span>run_manifest 台账 · 中断可续跑
+              <h4>功能需求交付流程</h4>
+              <span>结果包台账 · 中断可续跑 · 质量门控
                 <em class="path-hint" data-testid="selected-input-path" :title="currentInputPath || undefined">{{ currentInputPath || "尚未选择文档" }}</em>
               </span>
               <strong class="pchip plain" data-testid="result-package-status">{{ resultPackageStatusLabel }}</strong>
@@ -153,7 +153,7 @@
                 <div class="run-meter-fill" :style="{ width: `${runProgress}%` }"></div>
               </div>
             </div>
-            <div class="run-stage-board" data-testid="run-stage-board" role="list" aria-label="交付物流水线阶段">
+            <div class="run-stage-board" data-testid="run-stage-board" role="list" aria-label="功能需求交付流程阶段">
               <div
                 v-for="card in runStageCards"
                 :key="card.key"
@@ -1150,17 +1150,17 @@ type RunStageStatus = "pending" | "running" | "ok" | "skipped" | "failed" | "dis
 type RunStageState = { status: RunStageStatus; percent: number; detail: string }
 type RelayConnectorStatus = "idle" | "ready" | "handoff" | "complete" | "bypass" | "blocked"
 const RUN_STAGE_DEFS = [
-  // Internal key retained for backward-compatible manifests; the daily
-  // product presents this as document parsing/content planning.
-  { key: "atomize", label: "文档解析" },
-  { key: "llm-review", label: "LLM审核" },
-  { key: "ai-extract", label: "功能需求抽取" },
-  { key: "functional-synthesis", label: "兼容重组（旧）" },
-  { key: "assemble", label: "组装功能" },
+  // Internal keys remain stable for manifests and progress events. The board
+  // renders only the stages selected by the current product flow.
+  { key: "atomize", label: "文档解析与分段" },
+  { key: "llm-review", label: "原子诊断（可选）" },
+  { key: "ai-extract", label: "功能需求直抽" },
+  { key: "functional-synthesis", label: "兼容重组（旧轨）" },
+  { key: "assemble", label: "实现规格富化（可选）" },
   { key: "clarification-report", label: "澄清清单" },
-  { key: "full-translation", label: "全文翻译" },
-  { key: "compose", label: "工程组装" },
-  { key: "export-annotation-html", label: "HTML导出" },
+  { key: "full-translation", label: "翻译交付（可选）" },
+  { key: "compose", label: "工程模板组装（可选）" },
+  { key: "export-annotation-html", label: "文档批注导出" },
 ] as const
 type RunStageKey = typeof RUN_STAGE_DEFS[number]["key"]
 
@@ -1202,9 +1202,27 @@ function relayConnectorStatus(current: RunStageState, next: RunStageState): Rela
   return "idle"
 }
 
-const runStageCards = computed(() => RUN_STAGE_DEFS.map((item, index) => {
+const visibleRunStageDefs = computed(() => RUN_STAGE_DEFS.filter((item) => {
   const state = runStageStates.value[item.key]
-  const nextDefinition = RUN_STAGE_DEFS[index + 1]
+  const active = state.status !== "pending" && state.status !== "disabled"
+  if (item.key === "atomize") return true
+  if (item.key === "ai-extract") return runStages.value.aiExtract || active
+  if (item.key === "llm-review") return runStages.value.llmReview || active
+  if (item.key === "assemble") return runStages.value.assemble || active
+  if (item.key === "clarification-report") return (runStages.value.analyze && llmMode.value) || active
+  if (item.key === "full-translation") return (llmMode.value && translationMode.value === "full") || active
+  if (item.key === "compose") return runStages.value.compose || active
+  // functional-synthesis is replaced by functional-extract in the default
+  // track; expose it only when an actual legacy event/manifest reports it.
+  if (item.key === "functional-synthesis") {
+    return active && runStageStates.value[item.key].detail !== "由功能需求直抽替代"
+  }
+  return runStages.value.annotationHtml || active
+}))
+
+const runStageCards = computed(() => visibleRunStageDefs.value.map((item, index) => {
+  const state = runStageStates.value[item.key]
+  const nextDefinition = visibleRunStageDefs.value[index + 1]
   const nextState = nextDefinition ? runStageStates.value[nextDefinition.key] : null
   const startedAt = stageStartedAt.value[item.key] || 0
   const elapsedS = state.status === "running" && startedAt
@@ -1314,11 +1332,12 @@ function startProgressDemo() {
   runProgressDetail.value = "仅预览界面动效，不调用后端"
   isRunning.value = true
 
+  const demoStages = visibleRunStageDefs.value
   let stageIndex = 0
   let stagePercent = 0
-  const firstStage = RUN_STAGE_DEFS[stageIndex]
+  const firstStage = demoStages[stageIndex] || RUN_STAGE_DEFS[0]
   setRunStageState(firstStage.key, { status: "running", percent: 0, detail: "演示进度" })
-  runStage.value = `动效演示 1/${RUN_STAGE_DEFS.length}：${firstStage.label}`
+  runStage.value = `动效演示 1/${demoStages.length}：${firstStage.label}`
 
   const reducedMotion = typeof window.matchMedia === "function"
     && window.matchMedia("(prefers-reduced-motion: reduce)").matches
@@ -1326,18 +1345,18 @@ function startProgressDemo() {
   const step = reducedMotion ? 100 : DEMO_PROGRESS_STEP
 
   progressDemoTimer = window.setInterval(() => {
-    const current = RUN_STAGE_DEFS[stageIndex]
+    const current = demoStages[stageIndex]
     stagePercent = Math.min(100, stagePercent + step)
     setRunStageState(current.key, {
       status: stagePercent >= 100 ? "ok" : "running",
       percent: stagePercent,
       detail: stagePercent >= 100 ? "演示完成" : "演示进度",
     })
-    runProgress.value = Math.round(((stageIndex + stagePercent / 100) / RUN_STAGE_DEFS.length) * 100)
+    runProgress.value = Math.round(((stageIndex + stagePercent / 100) / demoStages.length) * 100)
 
     if (stagePercent < 100) return
     stageIndex += 1
-    if (stageIndex >= RUN_STAGE_DEFS.length) {
+    if (stageIndex >= demoStages.length) {
       stopProgressDemo()
       isRunning.value = false
       runStage.value = "动效演示完成"
@@ -1346,9 +1365,9 @@ function startProgressDemo() {
     }
 
     stagePercent = 0
-    const next = RUN_STAGE_DEFS[stageIndex]
+    const next = demoStages[stageIndex]
     setRunStageState(next.key, { status: "running", percent: 0, detail: "演示进度" })
-    runStage.value = `动效演示 ${stageIndex + 1}/${RUN_STAGE_DEFS.length}：${next.label}`
+    runStage.value = `动效演示 ${stageIndex + 1}/${demoStages.length}：${next.label}`
   }, tickMs)
 }
 
@@ -1364,7 +1383,10 @@ function applyRunManifestSummary(summary: Record<string, unknown> | null) {
   const stages = objectValue(manifest?.stages)
   if (!stages) return
   for (const item of RUN_STAGE_DEFS) {
-    const entry = objectValue(stages[item.key])
+    // functional-extract is the authoritative current stage; the UI keeps
+    // the ai-extract key only as a compatibility alias for old manifests.
+    const manifestKey = item.key === "ai-extract" ? "functional-extract" : item.key
+    const entry = objectValue(stages[manifestKey] ?? stages[item.key])
     if (!entry) continue
     const status = String(entry.status || "")
     const lastAction = String(entry.last_action || "")
