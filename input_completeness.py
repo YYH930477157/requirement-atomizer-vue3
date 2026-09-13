@@ -93,7 +93,11 @@ def read_ai_input_completeness(out_dir: Path | str) -> dict[str, Any]:
         conservation = functional_payload.get("conservation")
         if isinstance(conservation, dict) and conservation.get("ok") is False:
             reasons.append("functional_conservation_failed")
-        requirements_sha256 = file_sha256(functional_path)
+        try:
+            requirements_sha256 = file_sha256(functional_path)
+        except OSError:
+            requirements_sha256 = None
+            reasons.append("functional_payload_unreadable")
     elif requirements_path.is_file():
         try:
             requirements_sha256 = file_sha256(requirements_path)
