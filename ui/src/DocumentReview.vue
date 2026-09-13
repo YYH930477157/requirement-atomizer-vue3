@@ -1816,11 +1816,17 @@ onMounted(() => {
       <div class="doc-toolbar-actions">
         <div class="layout-controls" data-testid="layout-controls" title="拖动列头可重新排序，拖动列边缘可调整宽度">
           <span class="layout-controls-label">布局</span>
-          <button v-for="key in panelOrder" :key="key" type="button" class="layout-chip"
-                  :class="{ active: panelVisible[key] }" :data-testid="`layout-toggle-${key}`"
-                  :aria-pressed="panelVisible[key]" @click="togglePanel(key)">
-            {{ PANEL_LABELS[key] }}
-          </button>
+          <div v-for="key in panelOrder" :key="key" class="layout-item">
+            <button type="button" class="layout-chip"
+                    :class="{ active: panelVisible[key] }" :data-testid="`layout-toggle-${key}`"
+                    :aria-pressed="panelVisible[key]" @click="togglePanel(key)">
+              {{ PANEL_LABELS[key] }}
+            </button>
+            <span class="layout-order-buttons" aria-label="调整列顺序">
+              <button type="button" :disabled="panelOrder.indexOf(key) === 0" :data-testid="`layout-move-up-${key}`" title="列前移" @click="movePanel(key, -1)">↑</button>
+              <button type="button" :disabled="panelOrder.indexOf(key) === panelOrder.length - 1" :data-testid="`layout-move-down-${key}`" title="列后移" @click="movePanel(key, 1)">↓</button>
+            </span>
+          </div>
           <button type="button" class="layout-reset" data-testid="layout-reset" title="恢复三列默认布局" @click="resetPanelLayout">重置</button>
         </div>
         <div v-if="internalCheckGroups.length && props.client?.applyClarificationCheckBatch"
@@ -1854,7 +1860,7 @@ onMounted(() => {
     <div class="doc-body" :style="panelLayoutStyle" data-testid="doc-body">
       <article v-if="viewMode === 'pdf'" class="doc-paper pdf-paper" :style="panelStyle('source')" data-testid="pdf-paper" v-show="panelVisible.source"
                @dragover.prevent @drop="panelDrop('source', $event)">
-        <div class="doc-column-head panel-drag-head" draggable="true" @dragstart="panelDragStart('source', $event)" @dragend="panelDragEnd">
+        <div class="doc-column-head panel-drag-head" draggable="true" @dragstart="panelDragStart('source', $event)" @dragover.prevent @drop="panelDrop('source', $event)" @dragend="panelDragEnd">
           <span>原文</span><small>原版页面与证据标记 · 可拖动排序</small><button type="button" class="panel-resize-handle" aria-label="调整原文列宽" title="拖动调整原文列宽" @pointerdown.stop="beginPanelResize('source', $event)" />
         </div>
         <div v-if="loading || pdfLoading" class="doc-detail-empty" data-testid="pdf-loading">影印数据加载中…</div>
@@ -1904,7 +1910,7 @@ onMounted(() => {
       </article>
       <article v-else class="doc-paper" :style="panelStyle('source')" data-testid="doc-paper" v-show="panelVisible.source"
                @dragover.prevent @drop="panelDrop('source', $event)">
-        <div class="doc-column-head panel-drag-head" draggable="true" @dragstart="panelDragStart('source', $event)" @dragend="panelDragEnd">
+        <div class="doc-column-head panel-drag-head" draggable="true" @dragstart="panelDragStart('source', $event)" @dragover.prevent @drop="panelDrop('source', $event)" @dragend="panelDragEnd">
           <span>原文</span><small>可点击段落、表格行和批注编号 · 可拖动排序</small><button type="button" class="panel-resize-handle" aria-label="调整原文列宽" title="拖动调整原文列宽" @pointerdown.stop="beginPanelResize('source', $event)" />
         </div>
         <template v-for="(b, bi) in visibleBlocks" :key="b.block_id">
@@ -2088,7 +2094,7 @@ onMounted(() => {
 
       <aside class="doc-translation" :style="panelStyle('translation')" v-show="panelVisible.translation" data-testid="doc-translation"
              @dragover.prevent @drop="panelDrop('translation', $event)">
-        <div class="translation-head panel-drag-head" draggable="true" @dragstart="panelDragStart('translation', $event)" @dragend="panelDragEnd">
+        <div class="translation-head panel-drag-head" draggable="true" @dragstart="panelDragStart('translation', $event)" @dragover.prevent @drop="panelDrop('translation', $event)" @dragend="panelDragEnd">
           <div>
             <span class="translation-kicker">LANGUAGE</span>
             <h2>翻译</h2>
@@ -2119,7 +2125,7 @@ onMounted(() => {
       </aside>
       <aside class="doc-detail" :style="panelStyle('analysis')" v-show="panelVisible.analysis" data-testid="doc-detail"
              @dragover.prevent @drop="panelDrop('analysis', $event)">
-        <div class="doc-analysis-head panel-drag-head" draggable="true" @dragstart="panelDragStart('analysis', $event)" @dragend="panelDragEnd">
+        <div class="doc-analysis-head panel-drag-head" draggable="true" @dragstart="panelDragStart('analysis', $event)" @dragover.prevent @drop="panelDrop('analysis', $event)" @dragend="panelDragEnd">
           需求分析 <small>可拖动排序</small><button type="button" class="panel-resize-handle" aria-label="调整需求分析列宽" title="拖动调整需求分析列宽" @pointerdown.stop="beginPanelResize('analysis', $event)" />
         </div>
         <div v-if="!selectedReq && !selectedBlock && !selectedRow && !selectedClaim && !selectedCell" class="doc-detail-empty"><MessageSquareText :size="26" :stroke-width="1.6" aria-hidden="true" /><span>点击原文段落或页边编号查看解析结果</span></div>
@@ -2719,6 +2725,11 @@ td.cell-sel, th.cell-sel { outline: 2px solid #5978f7; outline-offset: -2px; }
   background: rgba(255,255,255,.58);
 }
 .layout-controls-label { padding: 0 4px; color: var(--doc-tertiary); font-size: 10px; font-weight: 700; }
+.layout-item { display: inline-flex; align-items: center; gap: 1px; }
+.layout-order-buttons { display: inline-flex; gap: 1px; }
+.layout-order-buttons button { width: 15px; height: 20px; padding: 0; border: 0; border-radius: 4px; color: var(--doc-tertiary); background: transparent; font-size: 10px; line-height: 1; cursor: pointer; }
+.layout-order-buttons button:hover:not(:disabled) { color: var(--doc-blue-strong); background: rgba(10,132,255,.09); }
+.layout-order-buttons button:disabled { opacity: .22; cursor: default; }
 .layout-chip, .layout-reset {
   border: 0; border-radius: 7px; padding: 5px 7px; color: var(--doc-secondary); background: transparent;
   font-size: 11px; font-weight: 650; cursor: pointer; transition: color 160ms ease, background 160ms ease, transform 180ms var(--doc-motion);
@@ -2824,14 +2835,14 @@ td.cell-sel, th.cell-sel { outline: 2px solid #5978f7; outline-offset: -2px; }
   grid-template-columns: minmax(0, 1fr) minmax(285px, 0.62fr) clamp(390px, 30vw, 470px);
 }
 .doc-body > article, .doc-body > aside { position: relative; min-width: 0; transition: width 220ms var(--doc-motion), opacity 180ms ease, transform 220ms var(--doc-motion); }
-.panel-drag-head { cursor: grab; user-select: none; }
+.panel-drag-head { cursor: grab; user-select: none; padding-right: 32px; }
 .panel-drag-head:active { cursor: grabbing; }
 .panel-drag-head small { color: var(--doc-tertiary); font-size: 10px; font-weight: 500; }
 .panel-resize-handle {
-  position: absolute; z-index: 3; top: 8px; right: -7px; width: 14px; height: 30px; padding: 0;
+  position: absolute; z-index: 3; top: 5px; right: 3px; width: 22px; height: 36px; padding: 0;
   border: 0; border-radius: 8px; cursor: col-resize; background: transparent;
 }
-.panel-resize-handle::after { content: ""; position: absolute; top: 8px; bottom: 8px; left: 6px; width: 2px; border-radius: 2px; background: rgba(60,60,67,.16); transition: background 160ms ease, transform 160ms ease; }
+.panel-resize-handle::after { content: ""; position: absolute; top: 8px; bottom: 8px; left: 10px; width: 3px; border-radius: 3px; background: rgba(60,60,67,.2); transition: background 160ms ease, transform 160ms ease; }
 .panel-resize-handle:hover::after, .panel-resize-handle:focus-visible::after { background: var(--doc-blue); transform: scaleX(1.45); }
 
 .doc-paper {
