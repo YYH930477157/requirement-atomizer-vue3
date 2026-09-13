@@ -66,7 +66,13 @@ try {
 
     $SmokeDocx = Join-Path $SmokeOut "sample.docx"
     $SmokeRunOut = Join-Path $SmokeOut "run"
-    python -c "from docx import Document; import sys; doc=Document(); doc.add_heading('Scope', level=1); doc.add_paragraph('The meter shall expose active energy import total through OBIS 1-0:1.8.0.255.'); doc.save(sys.argv[1])" $SmokeDocx
+    # Use the selected packaging interpreter here as well.  Calling bare
+    # `python` made the smoke test fail on machines where only the project
+    # venv is configured (the build itself had already succeeded).
+    & $Python -c "from docx import Document; import sys; doc=Document(); doc.add_heading('Scope', level=1); doc.add_paragraph('The meter shall expose active energy import total through OBIS 1-0:1.8.0.255.'); doc.save(sys.argv[1])" $SmokeDocx
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to create backend smoke input document"
+    }
     Push-Location $env:TEMP
     try {
         Invoke-BackendJson @("run", "--input", $SmokeDocx, "--out", $SmokeRunOut)
