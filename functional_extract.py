@@ -3744,6 +3744,14 @@ def run_functional_extract(
             quality_gate["reason"] = (
                 "limited section smoke cannot establish full-document quality"
             )
+    elif limit_sections is not None:
+        # A limited run is never a complete quality claim, even when no truth set
+        # was supplied.  Keep the explicit reason in the product so downstream
+        # consumers cannot mistake an otherwise successful smoke run for a gate.
+        quality_gate["status"] = "NO_GATE"
+        quality_gate["reason"] = (
+            "limited section smoke cannot establish full-document quality"
+        )
 
     payload = {
         "schema_version": 1,

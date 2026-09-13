@@ -29,10 +29,18 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
         return []
     rows: list[dict[str, Any]] = []
     with path.open(encoding="utf-8-sig") as f:
-        for line in f:
+        for line_number, line in enumerate(f, start=1):
             line = line.strip()
             if line:
-                rows.append(json.loads(line))
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    raise ValueError(f"invalid JSONL at {path}:{line_number}: {exc.msg}") from exc
+                if not isinstance(row, dict):
+                    raise ValueError(
+                        f"JSONL row must be an object: {path}:{line_number}"
+                    )
+                rows.append(row)
     return rows
 
 

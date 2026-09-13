@@ -12,7 +12,12 @@ INPUT_COMPLETENESS_VERSION = "ai-input-completeness-v1"
 
 
 def read_ai_input_completeness(out_dir: Path | str) -> dict[str, Any]:
-    """Validate the current B-track publication and report partial inputs honestly."""
+    """Validate the current extraction publication and report partial inputs honestly.
+
+    Both the legacy root layout and ``package_v1`` are supported.  A functional-extract
+    package is a valid source on its own and therefore does not require the legacy
+    ``ai_requirements`` JSONL/metadata pair.
+    """
     from ai_extract import (
         AI_REQUIREMENTS,
         AI_REQUIREMENTS_META,
@@ -21,30 +26,67 @@ def read_ai_input_completeness(out_dir: Path | str) -> dict[str, Any]:
     )
 
     root = Path(out_dir).expanduser().resolve()
-    requirements_path = root / AI_REQUIREMENTS
-    metadata_path = root / AI_REQUIREMENTS_META
+    from result_package import governed_artifact_path
+
+    def _artifact(name: str) -> Path:
+        return governed_artifact_path(root, name, category="pipeline", for_write=False)
+
+    requirements_path = _artifact(AI_REQUIREMENTS)
+    metadata_path = _artifact(AI_REQUIREMENTS_META)
     reasons: list[str] = []
     metadata: dict[str, Any] = {}
     requirements_sha256: str | None = None
 
-    if requirements_path.is_file():
+    functional_path = _artifact("functional_requirements.json")
+    functional_payload: dict[str, Any] | None = None
+    if not requirements_path.is_file() and functional_path.is_file():
+        try:
+            candidate = json.loads(functional_path.read_text(encoding="utf-8"))
+            if isinstance(candidate, dict):
+                functional_payload = candidate
+            else:
+                reasons.append("functional_payload_not_object")
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            reasons.append("functional_payload_invalid")
+
+    if functional_payload is not None:
+        items = functional_payload.get("items")
+        if not isinstance(items, list):
+            reasons.append("functional_items_missing")
+        else:
+            for index, item in enumerate(items, start=1):
+                if not isinstance(item, dict):
+                    reasons.append(f"functional_item_not_object:{index}")
+                    continue
+                if not str(item.get("functional_requirement_id") or item.get("id") or "").strip():
+                    reasons.append(f"functional_item_id_missing:{index}")
+        status = str(functional_payload.get("execution_status") or "ok").strip()
+        if status not in {"ok"}:
+            reasons.append(f"functional_execution_{status or 'unknown'}")
+        conservation = functional_payload.get("conservation")
+        if isinstance(conservation, dict) and conservation.get("ok") is False:
+            reasons.append("functional_conservation_failed")
+        requirements_sha256 = file_sha256(functional_path)
+    elif requirements_path.is_file():
         try:
             requirements_sha256 = file_sha256(requirements_path)
         except OSError:
             reasons.append("requirements_unreadable")
-    else:
+    elif not functional_path.is_file():
         reasons.append("requirements_missing")
 
-    try:
-        candidate = json.loads(metadata_path.read_text(encoding="utf-8"))
-        if isinstance(candidate, dict):
-            metadata = candidate
-        else:
-            reasons.append("metadata_not_object")
-    except FileNotFoundError:
-        reasons.append("metadata_missing")
-    except (OSError, UnicodeError, json.JSONDecodeError):
-        reasons.append("metadata_invalid")
+    # Functional-only products intentionally have no ai_extract metadata file.
+    if functional_payload is None:
+        try:
+            candidate = json.loads(metadata_path.read_text(encoding="utf-8"))
+            if isinstance(candidate, dict):
+                metadata = candidate
+            else:
+                reasons.append("metadata_not_object")
+        except FileNotFoundError:
+            reasons.append("metadata_missing")
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            reasons.append("metadata_invalid")
 
     if metadata:
         if metadata.get("schema") != "ai-requirements-final/v1":
@@ -84,8 +126,10 @@ def read_ai_input_completeness(out_dir: Path | str) -> dict[str, Any]:
         "failed_section_ids": failed_section_ids,
         "failed_section_block_ids": failed_section_block_ids,
         "requirements_sha256": requirements_sha256,
-        "metadata_file": AI_REQUIREMENTS_META,
-        "requirements_file": AI_REQUIREMENTS,
+        "metadata_file": AI_REQUIREMENTS_META if functional_payload is None else None,
+        "requirements_file": (
+            str(functional_path.name) if functional_payload is not None else str(requirements_path.name)
+        ),
     }
 
 

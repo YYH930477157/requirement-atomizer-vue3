@@ -111,7 +111,12 @@ def run_functional_synthesis(out_dir: Path, *, route: str | None = "stub",
         "eligible_requirements": len(eligible),
         "compliance_requirements": compliance_requirements,
         "functional_requirements": len(items),
-        "conservation": {"missing_source_ids": missing[:20], "duplicate_assignments": dup_assigned[:20]},
+        "conservation": {
+            "ok": not (missing or dup_assigned or len(eligible_ids) != len(set(eligible_ids))),
+            "missing_source_ids": missing[:20],
+            "duplicate_assignments": dup_assigned[:20],
+            "input_duplicate_ids": len(eligible_ids) - len(set(eligible_ids)),
+        },
         "items": items,
     }
     from input_completeness import attach_input_completeness

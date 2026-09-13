@@ -11,6 +11,39 @@ from input_completeness import attach_input_completeness, read_ai_input_complete
 
 
 class InputCompletenessTests(unittest.TestCase):
+    def test_functional_extract_product_is_valid_input_without_ai_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "functional_requirements.json").write_text(
+                json.dumps({
+                    "producer": "functional-extract-v1",
+                    "execution_status": "ok",
+                    "conservation": {"ok": True},
+                    "items": [{"functional_requirement_id": "FRE-1", "objective": "shall work"}],
+                }) + "\n",
+                encoding="utf-8",
+            )
+            result = read_ai_input_completeness(root)
+            self.assertFalse(result["incomplete_inputs"])
+            self.assertEqual(result["metadata_file"], None)
+            self.assertEqual(result["requirements_file"], "functional_requirements.json")
+
+    def test_functional_extract_failed_product_is_incomplete(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "functional_requirements.json").write_text(
+                json.dumps({
+                    "producer": "functional-extract-v1",
+                    "execution_status": "failed",
+                    "conservation": {"ok": False},
+                    "items": [],
+                }) + "\n",
+                encoding="utf-8",
+            )
+            result = read_ai_input_completeness(root)
+            self.assertTrue(result["incomplete_inputs"])
+            self.assertIn("functional_execution_failed", result["reasons"])
+            self.assertIn("functional_conservation_failed", result["reasons"])
     def _publish(
         self,
         root: Path,

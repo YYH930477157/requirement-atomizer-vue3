@@ -88,6 +88,8 @@ ANALYZE_ENRICH_CACHE_LOCK = "analyze_enrich_cache.lock"
 # （("ab","c") vs ("a","bc") 同键 → 一条需求的富化结果可被错用到另一上下文）,
 # v2 中间文件不得在 v3 格式号下续读（meta format 不匹配 → 读侧弃用/写侧世代翻转）。
 ENRICH_CACHE_FORMAT_VERSION = "analyze-enrich-cache-v3"
+# 内容指纹方案版本；变更字段集合或编码方式时强制绕过旧缓存。
+ENRICH_KEY_VERSION = "analyze-enrich-key-v4"
 # 写侧 PermissionError 重试：8 次 × 线性退避 0.02..0.14s——Windows AV/索引器/杀毒对目标
 # 句柄的短占常超单次预算（review_state._REPLACE_ATTEMPTS 同口径,repo 标准）。
 _ENRICH_SAVE_ATTEMPTS = 8
@@ -427,6 +429,26 @@ def run_requirements_analysis(
                         # v2：mixed 载荷的 stub 占位行挂 extract_degraded（与守恒独立）
                         pending_marks.update(_attach_extract_degraded_marks(
                             out_dir, requirements))
+                elif producer.startswith("functional-synthesis"):
+                    # Synthesis must cover every eligible source exactly once.  A
+                    # warning-only report could otherwise publish an incomplete
+                    # requirements-analysis workbook while silently dropping rows.
+                    conservation = synthesized_payload.get("conservation")
+                    if isinstance(conservation, dict):
+                        missing = conservation.get("missing_source_ids") or []
+                        duplicates = conservation.get("duplicate_assignments") or []
+                        duplicate_inputs = int(conservation.get("input_duplicate_ids") or 0)
+                        if (
+                            conservation.get("ok") is False
+                            or missing
+                            or duplicates
+                            or duplicate_inputs
+                        ):
+                            raise ValueError(
+                                "功能合成守恒未闭合，已阻断需求分析："
+                                f"missing={len(missing)}, duplicates={len(duplicates)}, "
+                                f"input_duplicate_ids={duplicate_inputs}"
+                            )
             if not isinstance(requirements, list):
                 requirements = raw_requirements
         else:
@@ -434,7 +456,10 @@ def run_requirements_analysis(
     # 容错读（坏行跳过）+ 最新覆盖，与裁决回流同一读取器——单条撕裂写不弄死整跑
     states = read_ai_review_states(out_dir)
     compliance_source: list[dict[str, Any]] = []
-    for requirement in raw_requirements:
+    # Compliance rows belong to the actual selected product.  In functional-only
+    # runs ``raw_requirements`` is empty, so deriving this from the legacy source
+    # would silently lose compliance deliverables.
+    for requirement in requirements:
         source_id = _source_requirement_id(requirement)
         state = states.get(source_id)
         if _is_rejected(state) or not is_compliance_requirement(requirement):
@@ -569,7 +594,10 @@ def run_requirements_analysis(
                    "answers": reviewed_req.get("clarification_answers_text") or "",
                    "doc_context": doc_context,
                    "section_context": _section_context(reviewed_req, blocks_by_id, blocks_by_section),
-                   "siblings": siblings_text}
+                   "siblings": siblings_text,
+                   # 路由配置参与缓存血统；仅记录非敏感标识，不落 API key。
+                   "route_fingerprint": ("" if model == "injected"
+                                         else f"{route}|{model}|{str(pipeline_path or '')}")}
             mode = "hardware" if item.get("ownership") == OWNERSHIP_HARDWARE else "software"
             enrich_jobs.append((item, reviewed_req, ctx, mode))
 
@@ -717,19 +745,28 @@ def _resolve_chat(route: str, chat: ChatFn | None, pipeline_path: Path | None) -
     return (lambda system, user: chat_json(config, system, user)), config.model
 
 
-def _enrich_key(req: dict[str, Any], model: str, template_refs: str = "") -> str:
-    """内容指纹缓存键：源内容 + 注入参考 + prompt 版本 + 模型。源/模板行不变则重跑免调用。"""
-    basis = "\n".join([
-        str(req.get("source_quote") or ""),
-        str(req.get("description") or ""),
-        str(req.get("requirement") or ""),
-        str(req.get("module") or ""),
-        template_refs,   # 模板行内容变 → 缓存失效（镜像 spec_enrich 折 entry hash 的做法）
-        ANALYZE_PROMPT_VERSION,
-        UNFOUNDED_RULE_VERSION,   # WP2：待澄清确定性后处理变更必须使缓存失效（防旧产物漏标）
-        ENRICH_CACHE_FORMAT_VERSION,   # 文件格式版本随行：旧形状键永不与新形状键碰撞
-        model,
-    ])
+def _enrich_key(req: dict[str, Any], model: str, template_refs: str = "",
+                *, route_fingerprint: str = "") -> str:
+    """构造无歧义的富化缓存键。
+
+    prompt 使用的条目字段不能遗漏（title/objective/behaviors 等变化必须失效），
+    且每段使用 canonical JSON 定界，避免换行拼接边界碰撞。route_fingerprint 只应
+    包含路由/模型/参数等非敏感配置，绝不传入 API key。
+    """
+    req_payload = {str(k): req[k] for k in sorted(req) if str(k) not in {
+        "enrich_slot",  # 合批位置不改变单条语义
+    }}
+    payload = {
+        "version": ENRICH_KEY_VERSION,
+        "request": req_payload,
+        "template_refs": template_refs or "",
+        "prompt": ANALYZE_PROMPT_VERSION,
+        "unfounded": UNFOUNDED_RULE_VERSION,
+        "cache_format": ENRICH_CACHE_FORMAT_VERSION,
+        "model": model or "",
+        "route": route_fingerprint or "",
+    }
+    basis = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
     return hashlib.sha1(basis.encode("utf-8")).hexdigest()
 
 
@@ -948,7 +985,9 @@ def _software_prompt_parts(
         [ctx.get("template_refs", ""), ctx.get("answers", ""), ctx.get("section_context", ""),
          serialized, frozen_ownership],
         ensure_ascii=True, separators=(",", ":"))
-    return slim_vocab, prompt_req, _enrich_key(source_req, model, context_basis)
+    return slim_vocab, prompt_req, _enrich_key(
+        source_req, model, context_basis,
+        route_fingerprint=str(ctx.get("route_fingerprint") or ""))
 
 
 def _mark_unfounded_field(item: dict[str, Any], field: str, reason: str) -> None:
@@ -1057,7 +1096,9 @@ def _replace_unfounded_adopted_fields(
         str(source_req.get(field) or "")
         for field in ("source_quote", "description", "requirement", "clarification_answers_text")
     ) + " " + str(ctx.get("section_context") or "")
-    context_ints = extract_ints(str(ctx.get("doc_context") or ""))
+    # doc_context 是整篇文档级软背景，不属于本条证据范围；只有 source/section/
+    # clarification answers（以及 guidance 的 template refs）可以支撑数字。
+    context_ints: set[int] = set()
     union_ints = extract_ints(union_text)
     guidance_basis_ints = extract_ints(f"{union_text} {ctx.get('template_refs') or ''}")
     issues: list[str] = []
@@ -1536,9 +1577,10 @@ def _run_enrichment(
             with lock:
                 flushed_keys.update(key for key, _value in new_items)
 
-    tasks: list = []
+    # (callable, jobs)；jobs 仅用于异常兜底时将失败精确归因到对应条目。
+    tasks: list[tuple[Callable[[], tuple[list, list]], list]] = []
     if batch_size <= 1:
-        tasks = [(lambda j=job: work_single(j)) for job in jobs]
+        tasks = [(lambda j=job: work_single(j), [job]) for job in jobs]
     else:
         software = [j for j in jobs if j[3] != "hardware"]
         hardware = [j for j in jobs if j[3] == "hardware"]
@@ -1549,27 +1591,50 @@ def _run_enrichment(
             for k in range(0, len(module_jobs), batch_size):
                 chunk = module_jobs[k:k + batch_size]
                 if len(chunk) == 1:
-                    tasks.append(lambda j=chunk[0]: work_single(j))
+                    tasks.append((lambda j=chunk[0]: work_single(j), [chunk[0]]))
                 else:
-                    tasks.append(lambda c=chunk: _llm_enrich_batch(
-                        c, vocabulary, chat, cache, model, lock, vocab_memo))
+                    tasks.append((lambda c=chunk: _llm_enrich_batch(
+                        c, vocabulary, chat, cache, model, lock, vocab_memo), chunk))
         hw_batch = min(8, batch_size * 2)
         for k in range(0, len(hardware), hw_batch):
             chunk = hardware[k:k + hw_batch]
             if len(chunk) == 1:
-                tasks.append(lambda j=chunk[0]: work_single(j))
+                tasks.append((lambda j=chunk[0]: work_single(j), [chunk[0]]))
             else:
-                tasks.append(lambda c=chunk: _llm_enrich_hardware_batch(c, chat, cache, model, lock))
+                tasks.append((lambda c=chunk: _llm_enrich_hardware_batch(c, chat, cache, model, lock), chunk))
+
+    def safe_task(task: Callable[[], tuple[list, list]], task_jobs: list) -> tuple[list, list]:
+        """将意外异常降级为逐条结果，避免一个 future 终止整批分析。"""
+        try:
+            return task()
+        except Exception as exc:  # 防御 prompt/映射/字段异常
+            LOGGER.exception("需求分析富化任务异常，逐条降级: %s", exc)
+            outcomes: list = []
+            for job in task_jobs:
+                item = job[0]
+                _mark_enrichment_rejected(item, "LLM 富化任务异常")
+                outcomes.append((item, False, [f"LLM 富化任务异常，已降级为确定性: {exc}"]))
+            return outcomes, []
 
     emit(0)
     with ThreadPoolExecutor(max_workers=resolve_concurrency(concurrency)) as executor:
         from context_submit import submit_with_context
 
-        futures = {submit_with_context(executor, task) for task in tasks}
+        futures = {
+            submit_with_context(executor, safe_task, task, task_jobs): (task, task_jobs)
+            for task, task_jobs in tasks
+        }
         while futures:
-            done_now, futures = wait(futures, return_when=FIRST_COMPLETED)
+            done_now, _pending = wait(tuple(futures), return_when=FIRST_COMPLETED)
             for future in done_now:
-                outcomes, retry_jobs = future.result()
+                # safe_task 已把异常转换为逐条降级结果；此处保留最后一道兜底，
+                # 防止 future 被取消/运行时异常时整跑中断。
+                try:
+                    outcomes, retry_jobs = future.result()
+                except Exception as exc:  # pragma: no cover - executor 极端故障
+                    _task, task_jobs = futures.get(future, (lambda: ([], []), []))
+                    outcomes, retry_jobs = safe_task(lambda: (_ for _ in ()).throw(exc), task_jobs)
+                futures.pop(future, None)
                 dones: list[int] = []
                 with lock:
                     for item, ok, item_issues in outcomes:
@@ -1589,7 +1654,9 @@ def _run_enrichment(
                     emit(done)
                 # 缺槽/整批失败重发：独立单条任务回同一线程池（不占批任务线程串行等待）
                 for job in retry_jobs:
-                    futures.add(submit_with_context(executor, work_single, job))
+                    single_task = lambda j=job: work_single(j)
+                    future = submit_with_context(executor, safe_task, single_task, [job])
+                    futures[future] = (single_task, [job])
     # 终局 flush（2026-08-15 P2）：循环内最后一次 flush 失败时,其后不再有任务完成事件,
     # 本 run 已付费键会全部丢失、下个 run 重付费——循环结束后（含重发单条路径）必须再
     # 补一次。已全部落盘时 new_items 为空,save 直接短路返回,零额外开销。
