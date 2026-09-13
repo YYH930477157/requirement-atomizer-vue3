@@ -163,6 +163,12 @@ describe("delivery settings (§20)", () => {
     await wrapper.find('[data-testid="settings-close"]').trigger("click")
     await flushPromises()
 
+    const more = wrapper.find('[data-testid="nav-more-toggle"]')
+    if (more.exists() && more.attributes("aria-expanded") !== "true") {
+      await more.trigger("click")
+      await flushPromises()
+    }
+
     expect(wrapper.find('[data-testid="nav-审查工作台"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="nav-审查工作台"]').text()).toContain("原子诊断")
     expect(localStorage.getItem("ratomizer.showAtomDiagnostics.v1")).toBe("1")

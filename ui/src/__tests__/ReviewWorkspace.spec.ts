@@ -16,6 +16,12 @@ async function enableAtomDiagnostics(wrapper: ReturnType<typeof mount>) {
   await wrapper.find('[data-testid="settings-show-atom-diagnostics"]').setValue(true)
   await wrapper.find('[data-testid="settings-close"]').trigger("click")
   await flushPromises()
+  // 低频工具收在「更多工具」下，启用原子诊断后显式展开才能进入旧视图。
+  const more = wrapper.find('[data-testid="nav-more-toggle"]')
+  if (more.exists() && more.attributes("aria-expanded") !== "true") {
+    await more.trigger("click")
+    await flushPromises()
+  }
 }
 
 async function openReview(wrapper: ReturnType<typeof mount>) {
@@ -90,9 +96,13 @@ describe("review workspace shell", () => {
     expect(navText).not.toContain("审查工作台")
     expect(navText).not.toContain("原子诊断")
     expect(wrapper.find('[data-testid="nav-审查工作台"]').exists()).toBe(false)
-    for (const label of ["运行", "功能需求", "文档批注", "覆盖审计", "文档渲染"]) {
+    for (const label of ["运行", "功能需求", "文档批注", "覆盖审计"]) {
       expect(wrapper.find(`[data-testid="nav-${label}"]`).exists()).toBe(true)
     }
+    expect(wrapper.find('[data-testid="nav-more-toggle"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="nav-文档渲染"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="nav-实现规格"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="nav-澄清清单"]').exists()).toBe(false)
   })
 
   it("keeps translate enabled when a requirement is selected (G9-10 sentinel cleanup)", async () => {
