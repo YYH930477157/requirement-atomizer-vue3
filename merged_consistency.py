@@ -14,7 +14,7 @@ from typing import Any
 
 from cosem_behavior_spec import extract_codes, extract_ints
 
-MERGED_CONSISTENCY_VERSION = "merged-consistency/v3-noise-tolerant-window"  # v3：引句多段窗口跳过噪声块（页码/水印夹缝不再掐死整句匹配）;v2:分诊严证据
+MERGED_CONSISTENCY_VERSION = "merged-consistency/v4-duplicate-aware-window"  # v4：重复引句同时返回 exact/embedded 命中；v3：引句多段窗口跳过噪声块
 _MIN_QUOTE_CHARS = 12  # 太短的引用片段（如"see 4.2"）不作重复判据，防误判
 _MIN_SOURCE_MATCH_CHARS = 12
 _MAX_SOURCE_WINDOW_BLOCKS = 12
@@ -97,14 +97,18 @@ def _match_compact_quote(
         str(block.get("block_id")) for block, text in normalized
         if len(text) >= _MIN_SOURCE_MATCH_CHARS and text == quote and not block.get("noise")
     ]
-    if exact:
-        return exact, "exact" if len(exact) == 1 else "multi_block"
+    # Do not stop at an exact match.  A quoted sentence can also be embedded in
+    # a larger JSON/example block (the exact prose block is often repeated in a
+    # generated example later in the document).  Returning only the first exact
+    # block makes a valid declared source look mis-bound.  Union exact and
+    # containing hits so callers can intersect with the declared source ids.
     containing = [
         str(block.get("block_id")) for block, text in normalized
         if len(text) >= _MIN_SOURCE_MATCH_CHARS and quote in text and not block.get("noise")
     ]
-    if containing:
-        return containing, "contains" if len(containing) == 1 else "multi_block"
+    if exact or containing:
+        matched = list(dict.fromkeys(exact + containing))
+        return matched, "exact" if len(matched) == 1 else "multi_block"
     # LLM 引句偶尔比单块多一个短前/后缀。只在该块覆盖引句主体时允许反向包含；否则
     # 长引句里的两个不相邻片段会被误认成一个 multi_block 来源。
     reverse_containing = [

@@ -257,6 +257,21 @@ class LLMRouteTests(unittest.TestCase):
 
 
 class ConservationTests(unittest.TestCase):
+    def test_atomic_json_metadata_numbers_are_not_preservation_losses(self) -> None:
+        from functional_extract import _preservation_findings
+
+        section = {
+            "section_path": ["4.4 atomic_requirements.jsonl"],
+            "text": ('{"req_id":"AREQ-000063","source_refs":["BLK-000608"],'
+                      '"requirement":"The object shall use access rights R-/R-/R-/R-.",'
+                      '"confidence":0.9}')
+        }
+        findings = _preservation_findings(
+            section,
+            "The object shall use access rights R-/R-/R-/R-.",
+        )
+        self.assertEqual(findings, [])
+
     def test_block_coverage_closes(self) -> None:
         sections = [
             _clause("5.1", ["B1", "B2"], "The meter shall log events."),

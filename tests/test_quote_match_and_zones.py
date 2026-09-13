@@ -16,6 +16,24 @@ from merged_consistency import match_source_quote_blocks
 
 
 class NoiseTolerantWindowTests(unittest.TestCase):
+    def test_exact_match_also_returns_embedded_duplicate(self) -> None:
+        """An exact prose block may be repeated inside a larger JSON/example block.
+
+        The matcher must retain both hits so callers can honor the declared source
+        block instead of treating the later exact copy as a mis-binding.
+        """
+        quote = "The attribute shall use access rights R-/R-/R-/R-."
+        blocks = [
+            {"block_id": "B_JSON", "order": 1,
+             "text": '{"requirement": "The attribute shall use access rights R-/R-/R-/R-.", "confidence": 0.9}'},
+            {"block_id": "B_EXACT", "order": 2, "text": quote},
+        ]
+
+        matched, method = match_source_quote_blocks(quote, blocks)
+
+        self.assertEqual(matched, ["B_EXACT", "B_JSON"])
+        self.assertEqual(method, "multi_block")
+
     def test_blob_quote_matches_across_noise_blocks(self) -> None:
         """整段引句（无换行分隔）跨越页码/水印噪声块时应命中两侧正文块——
         test7 实证：引句各片段都在，但窗口被页码 "6" 掐死整句掉到 fallback。"""
