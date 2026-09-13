@@ -24,15 +24,27 @@
             <span>{{ item.label }}</span>
           </button>
         </nav>
-        <nav class="nav-group">
-          <p class="nav-title">交付物</p>
-          <button class="nav-button" type="button" data-testid="nav-实现规格" @click="openDeliverable('dlms_cosem_spec_requirements.json')">
-            <Braces class="nav-icon" :size="17" :stroke-width="1.9" aria-hidden="true" /><span>实现规格</span>
-          </button>
-          <button class="nav-button" type="button" data-testid="nav-澄清清单" @click="openDeliverable('clarification_questions.xlsx')">
-            <CircleHelp class="nav-icon" :size="17" :stroke-width="1.9" aria-hidden="true" /><span>澄清清单</span>
-          </button>
-        </nav>
+        <button class="nav-more-toggle" type="button" data-testid="nav-more-toggle" :aria-expanded="moreNavExpanded" @click="moreNavExpanded = !moreNavExpanded">
+          <span class="nav-more-label"><MoreHorizontal class="nav-icon" :size="17" :stroke-width="1.9" aria-hidden="true" />更多工具</span>
+          <ChevronDown class="nav-more-chevron" :class="{ expanded: moreNavExpanded }" :size="15" aria-hidden="true" />
+        </button>
+        <div v-if="moreNavExpanded" class="nav-more-panel" data-testid="nav-more-panel">
+          <nav class="nav-group nav-group-secondary">
+            <p class="nav-title">专用工具</p>
+            <button v-for="item in morePhaseNavItems" :key="item.id" class="nav-button" :class="{ active: activeNav === item.id }" :data-testid="`nav-${item.navTestId}`" type="button" @click="handleNavAction(item.id)">
+              <component :is="item.icon" class="nav-icon" :size="17" :stroke-width="1.9" aria-hidden="true" /><span>{{ item.label }}</span>
+            </button>
+          </nav>
+          <nav class="nav-group nav-group-secondary">
+            <p class="nav-title">交付物</p>
+            <button class="nav-button" type="button" data-testid="nav-实现规格" @click="openDeliverable('dlms_cosem_spec_requirements.json')">
+              <Braces class="nav-icon" :size="17" :stroke-width="1.9" aria-hidden="true" /><span>实现规格</span>
+            </button>
+            <button class="nav-button" type="button" data-testid="nav-澄清清单" @click="openDeliverable('clarification_questions.xlsx')">
+              <CircleHelp class="nav-icon" :size="17" :stroke-width="1.9" aria-hidden="true" /><span>澄清清单</span>
+            </button>
+          </nav>
+        </div>
         <div class="nav-spacer"></div>
         <nav class="nav-group">
           <button
@@ -761,6 +773,7 @@ import {
   Braces,
   Check,
   CheckCheck,
+  ChevronDown,
   ChevronRight,
   CircleHelp,
   ClipboardCheck,
@@ -786,6 +799,7 @@ import {
   Sparkles,
   Upload,
   UserRound,
+  MoreHorizontal,
   X,
 } from "@lucide/vue"
 import { isNeedsReconfirmationError, RequirementApiClient, RequirementApiError } from "./api-client"
@@ -831,6 +845,8 @@ const phaseNavItems: PhaseNavItem[] = [
 ]
 
 const SHOW_ATOM_DIAGNOSTICS_KEY = "ratomizer.showAtomDiagnostics.v1"
+// 落地页默认「功能需求」评审视图；导航状态必须先于依赖它的 watch 初始化。
+const activeNav = ref<PhaseNavId>("functional")
 function loadShowAtomDiagnostics(): boolean {
   try {
     return (typeof localStorage !== "undefined" ? localStorage.getItem(SHOW_ATOM_DIAGNOSTICS_KEY) : null) === "1"
@@ -839,12 +855,15 @@ function loadShowAtomDiagnostics(): boolean {
   }
 }
 const showAtomDiagnostics = ref(loadShowAtomDiagnostics())
+// 低频工具默认收起，进入其中任一视图时自动展开，避免主流程被旧链路与导出入口挤占。
+const moreNavExpanded = ref(false)
 watch(showAtomDiagnostics, (value) => {
   try {
     localStorage?.setItem(SHOW_ATOM_DIAGNOSTICS_KEY, value ? "1" : "0")
   } catch {
     /* 持久化失败忽略 */
   }
+  if (value) moreNavExpanded.value = true
   if (!value && activeNav.value === "review") activeNav.value = "functional"
 })
 
@@ -852,9 +871,11 @@ watch(showAtomDiagnostics, (value) => {
 // 路由 review 与 testid nav-审查工作台保留，打开「显示原子诊断」后才出现。
 const navGroups = computed(() => {
   const order = ["运行", "评审", "原文与审计"]
+  const primaryIds = new Set<PhaseNavId>(["run", "functional", "document", "claim"])
   const map = new Map<string, PhaseNavItem[]>()
   for (const item of phaseNavItems) {
     if (item.id === "settings") continue
+    if (!primaryIds.has(item.id)) continue
     if (item.id === "review" && !showAtomDiagnostics.value) continue
     const list = map.get(item.group) ?? []
     list.push(item)
@@ -863,10 +884,15 @@ const navGroups = computed(() => {
   return order.filter((g) => map.has(g)).map((g) => ({ title: g, items: map.get(g)! }))
 })
 
-// 落地页默认「功能需求」评审视图（G9-4）：运行入口保留在 nav，用户点「运行」即进入。
-// 此前落地为「运行」，但功能需求评审是高频评审面；FunctionalReview 自带 functional 模式，
-// 默认落它不破运行入口（nav 仍可达，且 demoProgress URL 演示显式切回 run）。
-const activeNav = ref<PhaseNavId>("functional")
+const morePhaseNavItems = computed(() => {
+  const ids = new Set<PhaseNavId>(["renderer", "review"])
+  return phaseNavItems.filter((item) => ids.has(item.id) && (item.id !== "review" || showAtomDiagnostics.value))
+})
+
+// 运行入口保留在 nav，用户点「运行」即进入；功能需求评审是高频评审面。
+watch(activeNav, (value) => {
+  if (value === "renderer" || value === "review" || value === "settings") moreNavExpanded.value = true
+})
 // 运行页总览（样机 2026-07-09）：跑完链后填充,未知显示 —
 const runOverview = ref<{
   functionalReqs: number | null
@@ -5548,6 +5574,33 @@ tbody tr.virtual-spacer:hover td {
   opacity: 1;
   transform: translateY(-50%) scaleY(1);
 }
+
+.nav-more-toggle {
+  width: 100%;
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border: 0;
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: transparent;
+  color: var(--ios-secondary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  transition: color 180ms ease, background 180ms ease, transform 220ms var(--ios-motion);
+}
+.nav-more-toggle:hover { color: var(--ios-ink); background: rgba(255, 255, 255, 0.72); transform: translateX(2px); }
+.nav-more-toggle:active { transform: scale(0.975); }
+.nav-more-label { display: inline-flex; align-items: center; gap: 10px; }
+.nav-more-chevron { opacity: 0.7; transition: transform 220ms var(--ios-motion); }
+.nav-more-chevron.expanded { transform: rotate(180deg); }
+.nav-more-panel { display: flex; flex-direction: column; gap: 6px; animation: nav-panel-in 220ms var(--ios-motion); }
+.nav-group-secondary { margin-left: 4px; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+@keyframes nav-panel-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
 
 .nav-icon {
   width: 18px;
