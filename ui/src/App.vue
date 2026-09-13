@@ -5579,9 +5579,22 @@ tbody tr.virtual-spacer:hover td {
 .page-stage {
   min-width: 0;
   min-height: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   transform-origin: 50% 0;
   animation: page-stage-enter 420ms var(--ios-motion) both;
   will-change: opacity, transform;
+}
+
+.page-stage > .run-home,
+.page-stage > .workspace,
+.page-stage > .doc-review,
+.page-stage > .functional-review,
+.page-stage > .document-renderer {
+  flex: 1;
+  min-height: 0;
 }
 
 .app-bar {
