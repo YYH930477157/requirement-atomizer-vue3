@@ -11,6 +11,28 @@ INPUT_COMPLETENESS_SCHEMA = "ai-input-completeness/v1"
 INPUT_COMPLETENESS_VERSION = "ai-input-completeness-v1"
 
 
+def _validate_requirements_jsonl(path: Path, reasons: list[str]) -> None:
+    """Validate JSONL shape early so downstream errors include a physical line."""
+    try:
+        with path.open(encoding="utf-8-sig") as handle:
+            for line_number, raw in enumerate(handle, start=1):
+                text = raw.strip()
+                if not text:
+                    continue
+                try:
+                    row = json.loads(text)
+                except json.JSONDecodeError:
+                    reasons.append(f"requirements_invalid_json:{line_number}")
+                    continue
+                if not isinstance(row, dict):
+                    reasons.append(f"requirements_row_not_object:{line_number}")
+                    continue
+                if not str(row.get("ai_req_id") or row.get("id") or "").strip():
+                    reasons.append(f"requirements_id_missing:{line_number}")
+    except (OSError, UnicodeError):
+        reasons.append("requirements_unreadable")
+
+
 def read_ai_input_completeness(out_dir: Path | str) -> dict[str, Any]:
     """Validate the current extraction publication and report partial inputs honestly.
 
@@ -72,6 +94,8 @@ def read_ai_input_completeness(out_dir: Path | str) -> dict[str, Any]:
             requirements_sha256 = file_sha256(requirements_path)
         except OSError:
             reasons.append("requirements_unreadable")
+        else:
+            _validate_requirements_jsonl(requirements_path, reasons)
     elif not functional_path.is_file():
         reasons.append("requirements_missing")
 
