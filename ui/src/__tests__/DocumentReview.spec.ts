@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest"
 import { flushPromises, mount } from "@vue/test-utils"
+import { nextTick } from "vue"
 import { readFileSync } from "node:fs"
 import { resolve } from "node:path"
 import DocumentReview from "../DocumentReview.vue"
@@ -127,6 +128,95 @@ function makeClaimAnnotationClient() {
 }
 
 describe("DocumentReview", () => {
+  it("allows each document column to be hidden while keeping one visible", async () => {
+    localStorage.clear()
+    const wrapper = mount(DocumentReview, { props: { client: makeClient(), active: true } })
+    await flushPromises()
+
+    const sourceToggle = wrapper.find('[data-testid="layout-toggle-source"]')
+    const translationToggle = wrapper.find('[data-testid="layout-toggle-translation"]')
+    const analysisToggle = wrapper.find('[data-testid="layout-toggle-analysis"]')
+    expect(sourceToggle.attributes("aria-pressed")).toBe("true")
+    expect(translationToggle.attributes("aria-pressed")).toBe("true")
+    expect(analysisToggle.attributes("aria-pressed")).toBe("true")
+
+    await sourceToggle.trigger("click")
+    await translationToggle.trigger("click")
+    await nextTick()
+    expect(sourceToggle.attributes("aria-pressed")).toBe("false")
+    expect(translationToggle.attributes("aria-pressed")).toBe("false")
+    expect(analysisToggle.attributes("aria-pressed")).toBe("true")
+    expect(wrapper.find('[data-testid="doc-paper"]').attributes("style")).toContain("display: none")
+    expect(wrapper.find('[data-testid="doc-translation"]').attributes("style")).toContain("display: none")
+
+    // 最后一列不能被隐藏，避免空白工作区。
+    await analysisToggle.trigger("click")
+    expect(analysisToggle.attributes("aria-pressed")).toBe("true")
+
+    await wrapper.find('[data-testid="layout-reset"]').trigger("click")
+    expect(sourceToggle.attributes("aria-pressed")).toBe("true")
+    expect(translationToggle.attributes("aria-pressed")).toBe("true")
+    expect(analysisToggle.attributes("aria-pressed")).toBe("true")
+    wrapper.unmount()
+    localStorage.clear()
+  })
+
+  it("persists column visibility and restores it on the next workspace mount", async () => {
+    localStorage.clear()
+    const first = mount(DocumentReview, { props: { client: makeClient(), active: true } })
+    await flushPromises()
+    await first.find('[data-testid="layout-toggle-translation"]').trigger("click")
+    const saved = JSON.parse(localStorage.getItem("ratomizer.documentReview.layout.v1") || "{}")
+    expect(saved.visible.translation).toBe(false)
+    first.unmount()
+
+    const second = mount(DocumentReview, { props: { client: makeClient(), active: true } })
+    await flushPromises()
+    expect(second.find('[data-testid="layout-toggle-translation"]').attributes("aria-pressed")).toBe("false")
+    expect(second.find('[data-testid="doc-translation"]').attributes("style")).toContain("display: none")
+    second.unmount()
+    localStorage.clear()
+  })
+
+  it("reorders columns with drag and drop and resizes a column with its handle", async () => {
+    localStorage.clear()
+    const wrapper = mount(DocumentReview, { props: { client: makeClient(), active: true } })
+    await flushPromises()
+    const body = wrapper.find('[data-testid="doc-body"]')
+    const initialGrid = body.attributes("style")
+
+    const dataTransfer = { effectAllowed: "", setData: vi.fn(), getData: vi.fn().mockReturnValue("translation") }
+    await wrapper.find(".translation-head").trigger("dragstart", { dataTransfer })
+    await wrapper.find('[data-testid="doc-paper"]').trigger("drop", { dataTransfer })
+    await nextTick()
+    expect(wrapper.find('[data-testid="doc-translation"]').attributes("style")).toContain("order: 0")
+    expect(wrapper.find('[data-testid="doc-paper"]').attributes("style")).toContain("order: 1")
+
+    const handle = wrapper.find('[aria-label="调整翻译列宽"]')
+    expect(handle.exists()).toBe(true)
+    await handle.trigger("pointerdown", { clientX: 100, preventDefault: vi.fn() })
+    const move = new Event("pointermove")
+    Object.defineProperty(move, "clientX", { value: 260 })
+    window.dispatchEvent(move)
+    await nextTick()
+    expect(body.attributes("style")).not.toBe(initialGrid)
+    const up = new Event("pointerup")
+    window.dispatchEvent(up)
+    expect(JSON.parse(localStorage.getItem("ratomizer.documentReview.layout.v1") || "{}").widths.translation).not.toBe(.62)
+
+    // 将列拖到极窄后松开，列自动折叠（仍保留其它列）。
+    await wrapper.find('[data-testid="layout-reset"]').trigger("click")
+    await wrapper.find('[aria-label="调整翻译列宽"]').trigger("pointerdown", { clientX: 100, preventDefault: vi.fn() })
+    const collapseMove = new Event("pointermove")
+    Object.defineProperty(collapseMove, "clientX", { value: -1000 })
+    window.dispatchEvent(collapseMove)
+    window.dispatchEvent(new Event("pointerup"))
+    await nextTick()
+    expect(wrapper.find('[data-testid="layout-toggle-translation"]').attributes("aria-pressed")).toBe("false")
+    wrapper.unmount()
+    localStorage.clear()
+  })
+
   it("represents identical claim ids and resolutions in parsed-text and PDF modes", async () => {
     const wrapper = mount(DocumentReview, {
       props: { client: makeClaimAnnotationClient(), active: true },

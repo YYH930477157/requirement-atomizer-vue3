@@ -66,6 +66,104 @@ const internalCheckSignal = ref("")
 const internalCheckSaving = ref(false)
 // D7 预备：文本模式删除开关（默认保留；后端 /health 下发）
 const textModeEnabled = ref(true)
+// 三列工作区布局：拖动列头可调整顺序，边缘手柄调整宽度，工具栏可隐藏/恢复列。
+type PanelKey = "source" | "translation" | "analysis"
+const PANEL_LABELS: Record<PanelKey, string> = { source: "原文", translation: "翻译", analysis: "需求分析" }
+const panelOrder = ref<PanelKey[]>(["source", "translation", "analysis"])
+const panelVisible = ref<Record<PanelKey, boolean>>({ source: true, translation: true, analysis: true })
+const panelWidths = ref<Record<PanelKey, number>>({ source: 1, translation: 0.62, analysis: 0.52 })
+const panelDragKey = ref<PanelKey | null>(null)
+const panelResizeState = ref<{ key: PanelKey; startX: number; startWidth: number } | null>(null)
+const panelLayoutStyle = computed(() => {
+  const visible = panelOrder.value.filter((key) => panelVisible.value[key])
+  if (!visible.length) return { gridTemplateColumns: "1fr" }
+  const total = visible.reduce((sum, key) => sum + Math.max(.2, panelWidths.value[key]), 0)
+  return { gridTemplateColumns: visible.map((key) => `${Math.max(.2, panelWidths.value[key] / total * visible.length)}fr`).join(" ") }
+})
+function panelStyle(key: PanelKey) {
+  return { order: panelOrder.value.indexOf(key), display: panelVisible.value[key] ? "" : "none" }
+}
+function togglePanel(key: PanelKey) {
+  const visibleCount = panelOrder.value.filter((item) => panelVisible.value[item]).length
+  if (panelVisible.value[key] && visibleCount <= 1) return
+  panelVisible.value[key] = !panelVisible.value[key]
+  persistPanelLayout()
+}
+function movePanel(key: PanelKey, delta: -1 | 1) {
+  const index = panelOrder.value.indexOf(key)
+  const next = index + delta
+  if (index < 0 || next < 0 || next >= panelOrder.value.length) return
+  const order = [...panelOrder.value]
+  ;[order[index], order[next]] = [order[next], order[index]]
+  panelOrder.value = order
+  persistPanelLayout()
+}
+function resetPanelLayout() {
+  panelOrder.value = ["source", "translation", "analysis"]
+  panelVisible.value = { source: true, translation: true, analysis: true }
+  panelWidths.value = { source: 1, translation: 0.62, analysis: 0.52 }
+  persistPanelLayout()
+}
+function panelDragStart(key: PanelKey, event: DragEvent) {
+  panelDragKey.value = key
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = "move"
+    event.dataTransfer.setData("text/plain", key)
+  }
+}
+function panelDrop(target: PanelKey, event: DragEvent) {
+  const source = panelDragKey.value || (event.dataTransfer?.getData("text/plain") as PanelKey)
+  panelDragKey.value = null
+  if (!source || source === target) return
+  const order = panelOrder.value.filter((key) => key !== source)
+  order.splice(Math.max(0, order.indexOf(target)), 0, source)
+  panelOrder.value = order
+  persistPanelLayout()
+}
+function panelDragEnd() { panelDragKey.value = null }
+function beginPanelResize(key: PanelKey, event: PointerEvent) {
+  event.preventDefault()
+  panelResizeState.value = { key, startX: event.clientX, startWidth: panelWidths.value[key] }
+  window.addEventListener("pointermove", onPanelResizeMove)
+  window.addEventListener("pointerup", endPanelResize, { once: true })
+}
+function onPanelResizeMove(event: PointerEvent) {
+  const state = panelResizeState.value
+  const body = rootEl.value?.querySelector<HTMLElement>(".doc-body")
+  if (!state || !body) return
+  const delta = (event.clientX - state.startX) / Math.max(420, body.clientWidth)
+  panelWidths.value[state.key] = Math.min(2.4, Math.max(.08, state.startWidth + delta * 3))
+}
+function endPanelResize() {
+  const state = panelResizeState.value
+  if (state && panelWidths.value[state.key] < .16) {
+    const visibleCount = panelOrder.value.filter((item) => panelVisible.value[item]).length
+    if (visibleCount > 1) panelVisible.value[state.key] = false
+    panelWidths.value[state.key] = Math.max(.22, state.startWidth)
+  }
+  panelResizeState.value = null
+  window.removeEventListener("pointermove", onPanelResizeMove)
+  persistPanelLayout()
+}
+function persistPanelLayout() {
+  try { localStorage.setItem("ratomizer.documentReview.layout.v1", JSON.stringify({ order: panelOrder.value, visible: panelVisible.value, widths: panelWidths.value })) } catch { /* private mode */ }
+}
+function restorePanelLayout() {
+  try {
+    const raw = localStorage.getItem("ratomizer.documentReview.layout.v1")
+    if (!raw) return
+    const saved = JSON.parse(raw) as { order?: PanelKey[]; visible?: Partial<Record<PanelKey, boolean>>; widths?: Partial<Record<PanelKey, number>> }
+    const keys: PanelKey[] = ["source", "translation", "analysis"]
+    if (Array.isArray(saved.order) && saved.order.length === 3 && keys.every((key) => saved.order?.includes(key))) panelOrder.value = saved.order
+    if (saved.visible) {
+      for (const key of keys) if (typeof saved.visible[key] === "boolean") panelVisible.value[key] = saved.visible[key] as boolean
+    }
+    if (saved.widths) {
+      for (const key of keys) if (Number.isFinite(saved.widths[key])) panelWidths.value[key] = Math.min(2.4, Math.max(.22, Number(saved.widths[key])))
+    }
+    if (!keys.some((key) => panelVisible.value[key])) panelVisible.value.source = true
+  } catch { /* ignore malformed preference */ }
+}
 type RequirementDraft = { comment: string; module: string; ownership: string }
 const requirementDrafts = new Map<string, RequirementDraft>()
 const omissionDrafts = new Map<string, string>()
@@ -556,6 +654,7 @@ watch(() => props.refreshToken, (token, previous) => {
 
 onUnmounted(() => {
   uninstallReviewShortcuts()
+  endPanelResize()
   if (incrementalRefreshTimer !== undefined) clearTimeout(incrementalRefreshTimer)
   if (focusRingTimer !== undefined) clearTimeout(focusRingTimer)
   pdfPageLoadsDisposed = true
@@ -1682,6 +1781,7 @@ async function loadTextModeSwitch() {
 }
 
 onMounted(() => {
+  restorePanelLayout()
   installReviewShortcuts()
   void loadTextModeSwitch()
 })
@@ -1714,6 +1814,15 @@ onMounted(() => {
         </button>
       </div>
       <div class="doc-toolbar-actions">
+        <div class="layout-controls" data-testid="layout-controls" title="拖动列头可重新排序，拖动列边缘可调整宽度">
+          <span class="layout-controls-label">布局</span>
+          <button v-for="key in panelOrder" :key="key" type="button" class="layout-chip"
+                  :class="{ active: panelVisible[key] }" :data-testid="`layout-toggle-${key}`"
+                  :aria-pressed="panelVisible[key]" @click="togglePanel(key)">
+            {{ PANEL_LABELS[key] }}
+          </button>
+          <button type="button" class="layout-reset" data-testid="layout-reset" title="恢复三列默认布局" @click="resetPanelLayout">重置</button>
+        </div>
         <div v-if="internalCheckGroups.length && props.client?.applyClarificationCheckBatch"
              class="internal-check-batch" data-testid="internal-check-batch">
           <select v-model="internalCheckSignal" aria-label="内部核对类别">
@@ -1742,9 +1851,12 @@ onMounted(() => {
 
     <div v-if="message" class="doc-message" data-testid="doc-message">{{ message }}</div>
 
-    <div class="doc-body">
-      <article v-if="viewMode === 'pdf'" class="doc-paper pdf-paper" data-testid="pdf-paper">
-        <div class="doc-column-head"><span>原文</span><small>原版页面与证据标记</small></div>
+    <div class="doc-body" :style="panelLayoutStyle" data-testid="doc-body">
+      <article v-if="viewMode === 'pdf'" class="doc-paper pdf-paper" :style="panelStyle('source')" data-testid="pdf-paper" v-show="panelVisible.source"
+               @dragover.prevent @drop="panelDrop('source', $event)">
+        <div class="doc-column-head panel-drag-head" draggable="true" @dragstart="panelDragStart('source', $event)" @dragend="panelDragEnd">
+          <span>原文</span><small>原版页面与证据标记 · 可拖动排序</small><button type="button" class="panel-resize-handle" aria-label="调整原文列宽" title="拖动调整原文列宽" @pointerdown.stop="beginPanelResize('source', $event)" />
+        </div>
         <div v-if="loading || pdfLoading" class="doc-detail-empty" data-testid="pdf-loading">影印数据加载中…</div>
         <div v-else-if="!pdfData || !pdfData.available" class="doc-detail-empty" data-testid="pdf-unavailable">
           {{ pdfData?.reason || "影印数据不可用" }}
@@ -1790,8 +1902,11 @@ onMounted(() => {
           </section>
         </template>
       </article>
-      <article v-else class="doc-paper" data-testid="doc-paper">
-        <div class="doc-column-head"><span>原文</span><small>可点击段落、表格行和批注编号</small></div>
+      <article v-else class="doc-paper" :style="panelStyle('source')" data-testid="doc-paper" v-show="panelVisible.source"
+               @dragover.prevent @drop="panelDrop('source', $event)">
+        <div class="doc-column-head panel-drag-head" draggable="true" @dragstart="panelDragStart('source', $event)" @dragend="panelDragEnd">
+          <span>原文</span><small>可点击段落、表格行和批注编号 · 可拖动排序</small><button type="button" class="panel-resize-handle" aria-label="调整原文列宽" title="拖动调整原文列宽" @pointerdown.stop="beginPanelResize('source', $event)" />
+        </div>
         <template v-for="(b, bi) in visibleBlocks" :key="b.block_id">
           <div v-if="pageBreakBefore(bi) !== null" class="page-break"><span>第 {{ pageBreakBefore(bi) }} 页</span></div>
           <div
@@ -1971,13 +2086,15 @@ onMounted(() => {
         </template>
       </article>
 
-      <aside class="doc-translation" data-testid="doc-translation">
-        <div class="translation-head">
+      <aside class="doc-translation" :style="panelStyle('translation')" v-show="panelVisible.translation" data-testid="doc-translation"
+             @dragover.prevent @drop="panelDrop('translation', $event)">
+        <div class="translation-head panel-drag-head" draggable="true" @dragstart="panelDragStart('translation', $event)" @dragend="panelDragEnd">
           <div>
             <span class="translation-kicker">LANGUAGE</span>
             <h2>翻译</h2>
           </div>
           <span v-if="translationEntries.length" class="translation-count">{{ translationEntries.length }} 段</span>
+          <button type="button" class="panel-resize-handle" aria-label="调整翻译列宽" title="拖动调整翻译列宽" @pointerdown.stop="beginPanelResize('translation', $event)" />
         </div>
         <div v-if="!translationEntries.length" class="translation-empty" data-testid="translation-empty">
           <Image :size="25" :stroke-width="1.6" aria-hidden="true" />
@@ -2000,8 +2117,11 @@ onMounted(() => {
           </section>
         </div>
       </aside>
-      <aside class="doc-detail" data-testid="doc-detail">
-        <div class="doc-analysis-head">需求分析</div>
+      <aside class="doc-detail" :style="panelStyle('analysis')" v-show="panelVisible.analysis" data-testid="doc-detail"
+             @dragover.prevent @drop="panelDrop('analysis', $event)">
+        <div class="doc-analysis-head panel-drag-head" draggable="true" @dragstart="panelDragStart('analysis', $event)" @dragend="panelDragEnd">
+          需求分析 <small>可拖动排序</small><button type="button" class="panel-resize-handle" aria-label="调整需求分析列宽" title="拖动调整需求分析列宽" @pointerdown.stop="beginPanelResize('analysis', $event)" />
+        </div>
         <div v-if="!selectedReq && !selectedBlock && !selectedRow && !selectedClaim && !selectedCell" class="doc-detail-empty"><MessageSquareText :size="26" :stroke-width="1.6" aria-hidden="true" /><span>点击原文段落或页边编号查看解析结果</span></div>
         <div v-else-if="selectedClaim" class="doc-detail-card" data-testid="claim-card">
           <div class="dd-head">
@@ -2589,6 +2709,25 @@ td.cell-sel, th.cell-sel { outline: 2px solid #5978f7; outline-offset: -2px; }
   gap: 8px;
 }
 
+.layout-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 5px;
+  border: 1px solid rgba(60, 60, 67, .1);
+  border-radius: 10px;
+  background: rgba(255,255,255,.58);
+}
+.layout-controls-label { padding: 0 4px; color: var(--doc-tertiary); font-size: 10px; font-weight: 700; }
+.layout-chip, .layout-reset {
+  border: 0; border-radius: 7px; padding: 5px 7px; color: var(--doc-secondary); background: transparent;
+  font-size: 11px; font-weight: 650; cursor: pointer; transition: color 160ms ease, background 160ms ease, transform 180ms var(--doc-motion);
+}
+.layout-chip:hover, .layout-reset:hover { color: var(--doc-ink); background: rgba(10,132,255,.08); }
+.layout-chip.active { color: var(--doc-blue-strong); background: rgba(10,132,255,.1); }
+.layout-chip:active, .layout-reset:active { transform: scale(.96); }
+.layout-reset { margin-left: 2px; color: var(--doc-tertiary); }
+
 .mode-toggle {
   gap: 0;
   padding: 2px;
@@ -2684,6 +2823,16 @@ td.cell-sel, th.cell-sel { outline: 2px solid #5978f7; outline-offset: -2px; }
   padding: 10px 12px 12px;
   grid-template-columns: minmax(0, 1fr) minmax(285px, 0.62fr) clamp(390px, 30vw, 470px);
 }
+.doc-body > article, .doc-body > aside { position: relative; min-width: 0; transition: width 220ms var(--doc-motion), opacity 180ms ease, transform 220ms var(--doc-motion); }
+.panel-drag-head { cursor: grab; user-select: none; }
+.panel-drag-head:active { cursor: grabbing; }
+.panel-drag-head small { color: var(--doc-tertiary); font-size: 10px; font-weight: 500; }
+.panel-resize-handle {
+  position: absolute; z-index: 3; top: 8px; right: -7px; width: 14px; height: 30px; padding: 0;
+  border: 0; border-radius: 8px; cursor: col-resize; background: transparent;
+}
+.panel-resize-handle::after { content: ""; position: absolute; top: 8px; bottom: 8px; left: 6px; width: 2px; border-radius: 2px; background: rgba(60,60,67,.16); transition: background 160ms ease, transform 160ms ease; }
+.panel-resize-handle:hover::after, .panel-resize-handle:focus-visible::after { background: var(--doc-blue); transform: scaleX(1.45); }
 
 .doc-paper {
   min-width: 0;
