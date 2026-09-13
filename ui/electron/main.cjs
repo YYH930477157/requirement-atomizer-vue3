@@ -311,7 +311,7 @@ ipcMain.handle("task:requirements-analysis", async (_event, input) => runAndReme
   "--out",
   input.outDir,
   ...(input.llmRoute ? ["--llm-route", input.llmRoute] : []),
-  ...(input.templatePath ? ["--template", input.templatePath] : []),
+  ...(input.templatePath ? ["--template", assertAuthorizedTemplatePath(input.templatePath)] : []),
 ], input.outDir));
 
 // 交付物链单命令编排（编排在后端，UI 只发一条命令 + 渲染进度）
@@ -328,7 +328,7 @@ ipcMain.handle("task:template-write", async (_event, input) => runAndRememberOut
   "--out",
   input.outDir,
   "--template",
-  input.templatePath,
+  assertAuthorizedTemplatePath(input.templatePath),
 ], input.outDir));
 
 ipcMain.handle("dialog:open-template", async () => {
@@ -788,6 +788,30 @@ function isAuthorizedReadPath(targetPath) {
   if (!apiSession?.outputDir) return false;
   // Generated previews are readable only from the active result package.
   return isInside(canonicalPath(apiSession.outputDir), canonicalTarget);
+}
+
+// Templates are inputs selected through the native chooser.  Do not allow a
+// renderer supplied path to turn the desktop task bridge into an arbitrary
+// local file reader.  Keep this stricter than isAuthorizedReadPath (which also
+// permits generated files in the active output package).
+function assertAuthorizedTemplatePath(templatePath) {
+  const candidate = String(templatePath || "").trim();
+  if (!candidate || !path.isAbsolute(candidate)) {
+    throw new Error("模板文件路径无效，请先通过文件选择器选择模板");
+  }
+  const canonical = canonicalPath(candidate);
+  if (!authorizedDocumentPaths.has(normalizeFsPath(canonical))) {
+    throw new Error("模板文件未通过授权，请重新选择模板文件");
+  }
+  try {
+    if (!fs.statSync(canonical).isFile() || path.extname(canonical).toLowerCase() !== ".xlsx") {
+      throw new Error("模板文件必须是可读取的 .xlsx 文件");
+    }
+  } catch (error) {
+    if (error?.message?.includes("模板文件必须")) throw error;
+    throw new Error("模板文件不存在或不可读取");
+  }
+  return canonical;
 }
 
 function llmSettingsPath() {

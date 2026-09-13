@@ -793,7 +793,13 @@ function resolveDeliverableFiles(outDir, names, deps = {}) {
       result[name || String(raw || "")] = { exists: false, path: null };
       continue;
     }
-    const candidates = [path.join(root, name)];
+    // package_v1 keeps pipeline outputs under .ratomizer/pipeline while the
+    // legacy writer publishes them at the root.  Probe both locations so the
+    // desktop delivery panel can open analysis outputs from either layout.
+    const candidates = [
+      path.join(root, name),
+      path.join(root, ".ratomizer", "pipeline", name),
+    ];
     if (name === "run_manifest.json") {
       candidates.push(path.join(root, ".ratomizer", "stages", "run_manifest.json"));
     }

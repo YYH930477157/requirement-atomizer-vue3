@@ -1002,6 +1002,8 @@ describe("resolveDeliverableFiles", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "ratom-dl-"))
     try {
       writeFileSync(path.join(dir, "document_annotation.html"), "<html></html>")
+      mkdirSync(path.join(dir, ".ratomizer", "pipeline"), { recursive: true })
+      writeFileSync(path.join(dir, ".ratomizer", "pipeline", "software_requirements.xlsx"), "xlsx")
       mkdirSync(path.join(dir, ".ratomizer", "stages"), { recursive: true })
       writeFileSync(path.join(dir, ".ratomizer", "stages", "run_manifest.json"), "{}")
       const result = resolveDeliverableFiles(dir, [
@@ -1010,7 +1012,8 @@ describe("resolveDeliverableFiles", () => {
         "clarification_questions.xlsx",
         "run_manifest.json",
       ])
-      expect(result["software_requirements.xlsx"].exists).toBe(false)
+      expect(result["software_requirements.xlsx"].exists).toBe(true)
+      expect(result["software_requirements.xlsx"].path).toContain(`${path.sep}pipeline${path.sep}software_requirements.xlsx`)
       expect(result["clarification_questions.xlsx"].exists).toBe(false)
       expect(result["document_annotation.html"].exists).toBe(true)
       expect(result["run_manifest.json"].exists).toBe(true)

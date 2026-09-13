@@ -2150,6 +2150,7 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
   let packageRunId = ""
   let packageOutDir = ""
   let requestedPackageStages: string[] = []
+  let runIncomplete = false
   try {
     if (!currentInputPath.value) {
       apiMessage.value = "请先导入文档"
@@ -2288,6 +2289,14 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
         } catch (chainError) {
           throw new Error(`交付物链失败：${chainError instanceof Error ? chainError.message : chainError}`)
         }
+        const chainRecord = objectValue(chainPayload)
+        const chainStatus = String(
+          chainRecord?.execution_status ?? chainRecord?.status ?? "",
+        ).toLowerCase()
+        if (chainRecord?.ok === false || chainRecord?.partial_export === true
+          || chainRecord?.partial === true || ["partial", "failed", "incomplete"].includes(chainStatus)) {
+          runIncomplete = true
+        }
         const chainConsistency = objectValue(chainPayload?.consistency)
         if (chainConsistency) consistency = chainConsistency as ConsistencySummary
         latestTaskSummary.value = objectValue(chainPayload.summary) || latestTaskSummary.value
@@ -2352,6 +2361,14 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
           outDir: finalOutDir, stages, llmRoute: "openai_compatible",
           sampleRatio: TEST_AI_EXTRACT_SAMPLE_RATIO,
         })
+        const sampleRecord = objectValue(sample)
+        const sampleStatus = String(
+          sampleRecord?.execution_status ?? sampleRecord?.status ?? "",
+        ).toLowerCase()
+        if (sampleRecord?.ok === false || sampleRecord?.partial_export === true
+          || sampleRecord?.partial === true || ["partial", "failed", "incomplete"].includes(sampleStatus)) {
+          runIncomplete = true
+        }
         const info = objectValue(sample.sampled) as { sections?: number; total_sections?: number } | null
         const quality = objectValue(sample.quality) as { coverage_pct?: number } | null
         sampleNote = `；试抽样本 ${info?.sections ?? "?"}/${info?.total_sections ?? "?"} 章：` +
@@ -2379,16 +2396,19 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
       // 如实显示「分析未完成（部分阶段降级）」，不把运行记为失败，也不走 failResultPackage
       const completionRecord = objectValue(completedPackage)
       if (completionRecord?.ok === false && stringOr(completionRecord.code, "") === "requested_stage_partial") {
+        runIncomplete = true
         resultPackageStatus.value = "incomplete"
         const partialDetail = stringOr(completionRecord.message, "")
         packageNote = `；分析未完成（部分阶段降级）${partialDetail ? `：${partialDetail}` : ""}`
       }
     }
     runProgress.value = 100
-    runStage.value = "运行完成"
+    runStage.value = runIncomplete ? "运行未完成" : "运行完成"
     if (options.llmReviewLimit) {
-      runProgressDetail.value = `测试运行完成：最多 AI 审查 ${options.llmReviewLimit} 条${sampleNote}`
-      apiMessage.value = `测试运行完成${sampleNote}${packageNote}`
+      runProgressDetail.value = runIncomplete
+        ? `测试阶段结束，但存在失败或降级，请处理缺口后重跑`
+        : `测试运行完成：最多 AI 审查 ${options.llmReviewLimit} 条${sampleNote}`
+      apiMessage.value = `${runIncomplete ? "测试运行未完成" : "测试运行完成"}${sampleNote}${packageNote}`
     } else {
       const tail = ranStages.length ? `，随后 ${ranStages.join(" → ")}` : ""
       // 一致性闭环：跨章重复/OBIS 待核/覆盖缺口直接进跑完消息（详情看批注视图标记）
@@ -2401,8 +2421,11 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
       const apiWarn = apiReconnectWarning
         ? `；${apiReconnectWarning}`
         : ""
-      runProgressDetail.value = `全部阶段完成：抽取与审查${tail}`
-      apiMessage.value = `运行完成：抽取与审查${tail}${warn}${readinessNote}${apiWarn}${packageNote}` +
+      const outcome = runIncomplete ? "运行未完成" : "运行完成"
+      runProgressDetail.value = runIncomplete
+        ? `阶段已结束，但存在失败或降级，请处理缺口后重跑`
+        : `全部阶段完成：抽取与审查${tail}`
+      apiMessage.value = `${outcome}：抽取与审查${tail}${warn}${readinessNote}${apiWarn}${packageNote}` +
         (unitRoutingSummary.value ? `；${unitRoutingSummary.value}` : "")
     }
   } catch (error) {
