@@ -2481,6 +2481,7 @@ td.cell-sel, th.cell-sel { outline: 2px solid #5978f7; outline-offset: -2px; }
 .src-badge.quiet { color: #98a1b3; background: transparent; border-color: #e6e9f0; }
 .doc-detail { border-left: 1px solid #e6e9f0; overflow: auto; padding: 14px; background: #fafbfd; }
 .doc-analysis-head { position: sticky; top: -14px; z-index: 2; margin: -2px -2px 10px; padding: 2px 2px 8px; color: #1d1d1f; font-size: 13px; font-weight: 700; background: rgba(250,251,253,.94); backdrop-filter: blur(10px); }
+.doc-analysis-head::before { background: linear-gradient(90deg, #ff9f0a, #ff6b35); }
 .doc-detail-empty { color: #98a1b3; font-size: 13px; padding-top: 40px; text-align: center; }
 .dd-head { display: flex; justify-content: space-between; align-items: center; }
 /* 顺序过审导航：批注号 + 上一条/下一条 */
@@ -2535,7 +2536,10 @@ td.cell-sel, th.cell-sel { outline: 2px solid #5978f7; outline-offset: -2px; }
   --doc-border: rgba(60, 60, 67, 0.14);
   --doc-glass: rgba(255, 255, 255, 0.76);
   --doc-motion: cubic-bezier(0.22, 1, 0.36, 1);
-  background: #f1f3f7;
+  background:
+    radial-gradient(circle at 12% -8%, rgba(100, 112, 255, .12), transparent 31%),
+    radial-gradient(circle at 86% 0%, rgba(10, 132, 255, .08), transparent 26%),
+    #f1f3f7;
   color: var(--doc-ink);
 }
 
@@ -2566,6 +2570,15 @@ td.cell-sel, th.cell-sel { outline: 2px solid #5978f7; outline-offset: -2px; }
   padding: 0 12px;
   border-right: 1px solid var(--doc-border);
 }
+
+.doc-stats > span:not(.doc-role-hint) {
+  margin-left: 5px;
+  padding: 4px 9px;
+  border: 1px solid rgba(60,60,67,.1);
+  border-radius: 999px;
+  background: rgba(255,255,255,.58);
+}
+.doc-stats > span.partial-status { color: #a65f08; border-color: rgba(255,159,10,.24); background: linear-gradient(100deg, rgba(255,244,220,.9), rgba(255,231,211,.68)); }
 
 .doc-stats > span:first-child { padding-left: 0; }
 .doc-stats > span:last-child { border-right: 0; }
@@ -2667,12 +2680,18 @@ td.cell-sel, th.cell-sel { outline: 2px solid #5978f7; outline-offset: -2px; }
 }
 
 .doc-body {
+  gap: 10px;
+  padding: 10px 12px 12px;
   grid-template-columns: minmax(0, 1fr) minmax(285px, 0.62fr) clamp(390px, 30vw, 470px);
 }
 
 .doc-paper {
+  min-width: 0;
+  border: 1px solid rgba(60, 60, 67, .1);
+  border-radius: 16px;
   padding: 16px 22px;
   background: rgba(255, 255, 255, 0.72);
+  box-shadow: 0 10px 30px rgba(31, 35, 48, .05), inset 0 1px rgba(255,255,255,.75);
 }
 
 .doc-column-head {
@@ -2691,8 +2710,30 @@ td.cell-sel, th.cell-sel { outline: 2px solid #5978f7; outline-offset: -2px; }
   -webkit-backdrop-filter: blur(18px) saturate(145%);
 }
 
+.doc-column-head::before,
+.translation-head::before,
+.doc-analysis-head::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  bottom: -1px;
+  width: 42px;
+  height: 3px;
+  border-radius: 0 3px 3px 0;
+  background: linear-gradient(90deg, #0a84ff, #5e5ce6);
+}
+
 .doc-column-head span { font-size: 17px; font-weight: 700; }
 .doc-column-head small { color: var(--doc-tertiary); font-size: 10px; }
+
+/* 三栏各自使用独立 accent，帮助审核者快速建立阅读方向 */
+.doc-translation .translation-head::before {
+  background: linear-gradient(90deg, #5e5ce6, #bf5af2);
+}
+
+.doc-detail .doc-analysis-head::before {
+  background: linear-gradient(90deg, #ff9f0a, #ff375f);
+}
 
 .pdf-paper {
   background: #e8eaef;
@@ -2777,19 +2818,27 @@ td.cell-sel, th.cell-sel { outline: 2px solid #5978f7; outline-offset: -2px; }
 }
 
 .doc-detail {
-  border-left-color: var(--doc-border);
+  border: 1px solid var(--doc-border);
+  border-radius: 16px;
   padding: 16px;
   background: rgba(246, 247, 250, 0.78);
+  box-shadow: 0 10px 30px rgba(31, 35, 48, .05), inset 0 1px rgba(255,255,255,.72);
   backdrop-filter: blur(20px) saturate(150%);
   -webkit-backdrop-filter: blur(20px) saturate(150%);
+}
+
+.doc-detail .doc-analysis-head {
+  color: #2b2730;
 }
 
 .doc-translation {
   min-width: 0;
   overflow: auto;
   padding: 16px;
-  border-left: 1px solid var(--doc-border);
+  border: 1px solid var(--doc-border);
+  border-radius: 16px;
   background: rgba(251, 251, 253, 0.84);
+  box-shadow: 0 10px 30px rgba(31, 35, 48, .05), inset 0 1px rgba(255,255,255,.72);
   backdrop-filter: blur(18px) saturate(145%);
   -webkit-backdrop-filter: blur(18px) saturate(145%);
 }
@@ -2817,7 +2866,8 @@ td.cell-sel, th.cell-sel { outline: 2px solid #5978f7; outline-offset: -2px; }
 .translation-empty strong { color: var(--doc-secondary); font-size: 13px; }
 .translation-empty span { max-width: 210px; font-size: 11px; line-height: 1.5; }
 .translation-list { display: grid; gap: 10px; }
-.translation-card { padding: 11px 12px 10px; border: 1px solid var(--doc-border); border-radius: 11px; background: rgba(255, 255, 255, .78); box-shadow: 0 4px 14px rgba(31, 35, 48, .045); animation: detail-enter 260ms var(--doc-motion) both; }
+.translation-card { padding: 11px 12px 10px; border: 1px solid var(--doc-border); border-radius: 11px; background: linear-gradient(145deg, rgba(255,255,255,.94), rgba(246,248,255,.8)); box-shadow: 0 4px 14px rgba(31, 35, 48, .045); animation: detail-enter 260ms var(--doc-motion) both; transition: transform 220ms var(--doc-motion), box-shadow 220ms ease, border-color 180ms ease; }
+.translation-card:hover { transform: translateY(-2px); border-color: rgba(10,132,255,.24); box-shadow: 0 10px 22px rgba(31,35,48,.09); }
 .translation-card-head { display: flex; justify-content: space-between; gap: 7px; margin-bottom: 8px; color: var(--doc-tertiary); font-size: 10px; }
 .translation-source-id { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
 .translation-text { color: var(--doc-ink); font-size: 14px; line-height: 1.68; white-space: pre-wrap; overflow-wrap: anywhere; }
