@@ -847,6 +847,54 @@ const selectedRow = computed(() => {
     section: (block.section_path || []).filter(Boolean).pop() || block.table_title || "",
   }
 })
+
+// 中列翻译与左侧证据严格同源：需求引用多块时按原文顺序合并，
+// 行/单元格/背景段则展示当前选中对象的翻译；没有选择时显示工作区引导。
+type TranslationEntry = { id: string; text: string; translation: string; note: string; section: string }
+const translationEntries = computed<TranslationEntry[]>(() => {
+  if (selectedRow.value) {
+    const row = selectedRow.value
+    return [{ id: row.key, text: row.text, translation: row.translation, note: row.translationNote, section: row.section }]
+  }
+  if (selectedCell.value) {
+    const cell = selectedCell.value
+    const block = cell.block
+    const rowKey = cell.entry.data_row_index != null
+      ? `${cell.entry.block_id}#R${cell.entry.data_row_index}`
+      : ""
+    const rowTranslation = rowKey ? pdfData.value?.row_context?.[rowKey] : null
+    return [{
+      id: cell.entry.cell_id,
+      text: cell.entry.text || "",
+      translation: rowTranslation?.translation || "",
+      note: rowTranslation?.translation_note || (block ? "该单元格暂无独立翻译，请按行核对" : ""),
+      section: block?.table_title || "表格单元格",
+    }]
+  }
+  if (selectedReq.value) {
+    const req = selectedReq.value
+    const ids = [...new Set([...(req.quote_block_ids || []), ...(req.source_block_ids || [])].filter(Boolean))]
+    const rows = ids.map((id) => blocks.value.find((block) => block.block_id === id)).filter(Boolean) as DocumentBlock[]
+    return rows.map((block) => ({
+      id: block.block_id,
+      text: block.text || "",
+      translation: block.translation || "",
+      note: block.translation_note || "",
+      section: (block.section_path || []).filter(Boolean).pop() || "原文证据",
+    }))
+  }
+  if (selectedBlock.value) {
+    const block = selectedBlock.value
+    return [{
+      id: block.block_id,
+      text: block.text || "",
+      translation: block.translation || "",
+      note: block.translation_note || "",
+      section: (block.section_path || []).filter(Boolean).pop() || "原文段落",
+    }]
+  }
+  return []
+})
 function pdfZoneClick(z: PdfBlockZone) {
   if (z.kind === "req" && z.req_id) {
     if ((z.req_ids || []).length > 1) {
@@ -1696,6 +1744,7 @@ onMounted(() => {
 
     <div class="doc-body">
       <article v-if="viewMode === 'pdf'" class="doc-paper pdf-paper" data-testid="pdf-paper">
+        <div class="doc-column-head"><span>原文</span><small>原版页面与证据标记</small></div>
         <div v-if="loading || pdfLoading" class="doc-detail-empty" data-testid="pdf-loading">影印数据加载中…</div>
         <div v-else-if="!pdfData || !pdfData.available" class="doc-detail-empty" data-testid="pdf-unavailable">
           {{ pdfData?.reason || "影印数据不可用" }}
@@ -1742,6 +1791,7 @@ onMounted(() => {
         </template>
       </article>
       <article v-else class="doc-paper" data-testid="doc-paper">
+        <div class="doc-column-head"><span>原文</span><small>可点击段落、表格行和批注编号</small></div>
         <template v-for="(b, bi) in visibleBlocks" :key="b.block_id">
           <div v-if="pageBreakBefore(bi) !== null" class="page-break"><span>第 {{ pageBreakBefore(bi) }} 页</span></div>
           <div
@@ -1921,7 +1971,37 @@ onMounted(() => {
         </template>
       </article>
 
+      <aside class="doc-translation" data-testid="doc-translation">
+        <div class="translation-head">
+          <div>
+            <span class="translation-kicker">LANGUAGE</span>
+            <h2>翻译</h2>
+          </div>
+          <span v-if="translationEntries.length" class="translation-count">{{ translationEntries.length }} 段</span>
+        </div>
+        <div v-if="!translationEntries.length" class="translation-empty" data-testid="translation-empty">
+          <Image :size="25" :stroke-width="1.6" aria-hidden="true" />
+          <strong>选择左侧原文</strong>
+          <span>点击段落、表格行或需求编号，在这里查看同源翻译。</span>
+        </div>
+        <div v-else class="translation-list">
+          <section v-for="entry in translationEntries" :key="entry.id" class="translation-card">
+            <div class="translation-card-head">
+              <span>{{ entry.section }}</span>
+              <span class="translation-source-id">{{ entry.id }}</span>
+            </div>
+            <div v-if="entry.translation" class="translation-text" data-testid="translation-text">{{ entry.translation }}</div>
+            <div v-else-if="entry.note" class="translation-empty-line" data-testid="translation-note">{{ entry.note }}</div>
+            <div v-else class="translation-empty-line" data-testid="translation-missing">暂无翻译，保留原文供核对</div>
+            <details class="translation-source">
+              <summary>查看对应原文</summary>
+              <p>{{ entry.text }}</p>
+            </details>
+          </section>
+        </div>
+      </aside>
       <aside class="doc-detail" data-testid="doc-detail">
+        <div class="doc-analysis-head">需求分析</div>
         <div v-if="!selectedReq && !selectedBlock && !selectedRow && !selectedClaim && !selectedCell" class="doc-detail-empty"><MessageSquareText :size="26" :stroke-width="1.6" aria-hidden="true" /><span>点击原文段落或页边编号查看解析结果</span></div>
         <div v-else-if="selectedClaim" class="doc-detail-card" data-testid="claim-card">
           <div class="dd-head">
@@ -2400,6 +2480,7 @@ td.cell-sel, th.cell-sel { outline: 2px solid #5978f7; outline-offset: -2px; }
   border: 1px solid #dbe3fb; border-radius: 8px; padding: 0 6px; margin-left: 4px; }
 .src-badge.quiet { color: #98a1b3; background: transparent; border-color: #e6e9f0; }
 .doc-detail { border-left: 1px solid #e6e9f0; overflow: auto; padding: 14px; background: #fafbfd; }
+.doc-analysis-head { position: sticky; top: -14px; z-index: 2; margin: -2px -2px 10px; padding: 2px 2px 8px; color: #1d1d1f; font-size: 13px; font-weight: 700; background: rgba(250,251,253,.94); backdrop-filter: blur(10px); }
 .doc-detail-empty { color: #98a1b3; font-size: 13px; padding-top: 40px; text-align: center; }
 .dd-head { display: flex; justify-content: space-between; align-items: center; }
 /* 顺序过审导航：批注号 + 上一条/下一条 */
@@ -2586,13 +2667,32 @@ td.cell-sel, th.cell-sel { outline: 2px solid #5978f7; outline-offset: -2px; }
 }
 
 .doc-body {
-  grid-template-columns: minmax(0, 1fr) clamp(390px, 32vw, 480px);
+  grid-template-columns: minmax(0, 1fr) minmax(285px, 0.62fr) clamp(390px, 30vw, 470px);
 }
 
 .doc-paper {
   padding: 16px 22px;
   background: rgba(255, 255, 255, 0.72);
 }
+
+.doc-column-head {
+  position: sticky;
+  top: -16px;
+  z-index: 2;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: -16px -22px 12px;
+  padding: 14px 22px 10px;
+  border-bottom: 1px solid var(--doc-border);
+  color: var(--doc-ink);
+  background: rgba(255, 255, 255, .9);
+  backdrop-filter: blur(18px) saturate(145%);
+  -webkit-backdrop-filter: blur(18px) saturate(145%);
+}
+
+.doc-column-head span { font-size: 17px; font-weight: 700; }
+.doc-column-head small { color: var(--doc-tertiary); font-size: 10px; }
 
 .pdf-paper {
   background: #e8eaef;
@@ -2683,6 +2783,48 @@ td.cell-sel, th.cell-sel { outline: 2px solid #5978f7; outline-offset: -2px; }
   backdrop-filter: blur(20px) saturate(150%);
   -webkit-backdrop-filter: blur(20px) saturate(150%);
 }
+
+.doc-translation {
+  min-width: 0;
+  overflow: auto;
+  padding: 16px;
+  border-left: 1px solid var(--doc-border);
+  background: rgba(251, 251, 253, 0.84);
+  backdrop-filter: blur(18px) saturate(145%);
+  -webkit-backdrop-filter: blur(18px) saturate(145%);
+}
+
+.translation-head {
+  position: sticky;
+  top: -16px;
+  z-index: 2;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 8px;
+  margin: -16px -16px 12px;
+  padding: 14px 16px 11px;
+  border-bottom: 1px solid var(--doc-border);
+  background: rgba(251, 251, 253, 0.9);
+  backdrop-filter: blur(18px) saturate(145%);
+  -webkit-backdrop-filter: blur(18px) saturate(145%);
+}
+
+.translation-kicker { display: block; margin-bottom: 2px; color: var(--doc-tertiary); font-size: 9px; font-weight: 700; letter-spacing: .12em; }
+.translation-head h2 { margin: 0; color: var(--doc-ink); font-size: 17px; line-height: 1.2; }
+.translation-count { color: var(--doc-tertiary); font-size: 11px; font-variant-numeric: tabular-nums; }
+.translation-empty { min-height: 220px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 24px 14px; color: var(--doc-tertiary); text-align: center; }
+.translation-empty strong { color: var(--doc-secondary); font-size: 13px; }
+.translation-empty span { max-width: 210px; font-size: 11px; line-height: 1.5; }
+.translation-list { display: grid; gap: 10px; }
+.translation-card { padding: 11px 12px 10px; border: 1px solid var(--doc-border); border-radius: 11px; background: rgba(255, 255, 255, .78); box-shadow: 0 4px 14px rgba(31, 35, 48, .045); animation: detail-enter 260ms var(--doc-motion) both; }
+.translation-card-head { display: flex; justify-content: space-between; gap: 7px; margin-bottom: 8px; color: var(--doc-tertiary); font-size: 10px; }
+.translation-source-id { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+.translation-text { color: var(--doc-ink); font-size: 14px; line-height: 1.68; white-space: pre-wrap; overflow-wrap: anywhere; }
+.translation-empty-line { color: var(--doc-tertiary); font-size: 12px; line-height: 1.55; }
+.translation-source { margin-top: 10px; border-top: 1px solid rgba(60, 60, 67, .08); padding-top: 8px; }
+.translation-source summary { color: var(--doc-secondary); cursor: pointer; font-size: 10px; }
+.translation-source p { margin: 7px 0 0; color: #5c6675; font-size: 11px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
 
 .doc-detail-empty {
   min-height: 220px;
@@ -2832,8 +2974,9 @@ td.cell-sel, th.cell-sel { outline: 2px solid #5978f7; outline-offset: -2px; }
 }
 
 @media (max-width: 1080px) {
-  .doc-body { grid-template-columns: minmax(0, 1fr) 340px; }
+  .doc-body { grid-template-columns: minmax(0, 1fr) minmax(250px, .58fr) 340px; }
   .doc-paper { padding-inline: 14px; }
+  .doc-column-head { margin-inline: -14px; padding-inline: 14px; }
   .doc-paper.pdf-paper { padding: 14px 44px 14px 12px; }
 }
 
@@ -2841,6 +2984,7 @@ td.cell-sel, th.cell-sel { outline: 2px solid #5978f7; outline-offset: -2px; }
   .doc-toolbar { align-items: flex-start; gap: 8px; flex-wrap: wrap; }
   .doc-body { grid-template-columns: minmax(0, 1fr); overflow: auto; }
   .doc-paper { min-height: 58vh; overflow: visible; }
+  .doc-translation { min-height: 36vh; max-height: 42vh; border-left: 0; border-top: 1px solid var(--doc-border); }
   .doc-detail { max-height: 42vh; border-left: 0; border-top: 1px solid var(--doc-border); }
   .doc-stats > span { padding-inline: 7px; }
 }
