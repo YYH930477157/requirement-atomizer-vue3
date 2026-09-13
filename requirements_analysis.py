@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -1098,7 +1099,10 @@ def _replace_unfounded_adopted_fields(
     ) + " " + str(ctx.get("section_context") or "")
     # doc_context 是整篇文档级软背景，不属于本条证据范围；只有 source/section/
     # clarification answers（以及 guidance 的 template refs）可以支撑数字。
-    context_ints: set[int] = set()
+    context_text = str(ctx.get("doc_context") or "")
+    standard_context = " ".join(re.findall(
+        r"(?i)(?:EN|IEC|ISO|DLMS)\s*[-:]?\s*\d+(?:[.\-]\d+)*", context_text))
+    context_ints = extract_ints(standard_context) if standard_context else set()
     union_ints = extract_ints(union_text)
     guidance_basis_ints = extract_ints(f"{union_text} {ctx.get('template_refs') or ''}")
     issues: list[str] = []

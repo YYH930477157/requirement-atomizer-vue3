@@ -1,4 +1,5 @@
 import json
+import re
 from typing import Any
 
 
@@ -154,7 +155,13 @@ def validate_llm_item(item: dict[str, Any], source: dict[str, Any],
          if str(source.get(field) or "").strip()),
         "",
     )
-    context_ints = extract_ints(context_text) if context_text else set()
+    # 文档级背景只用于术语/模块一致性，不能成为本条需求数字的证据。
+    # 条款级证据已经在 union_text（section_context）中按本条绑定注入；把整篇
+    # doc_context 的数字放进豁免集合会让模型借用其它章节的参数。
+    # 仅保留标准标识中的数字（EN/IEC/ISO 等），不把背景章节的参数值当证据。
+    standard_context = " ".join(re.findall(
+        r"(?i)(?:EN|IEC|ISO|DLMS)\s*[-:]?\s*\d+(?:[.\-]\d+)*", context_text or ""))
+    context_ints = extract_ints(standard_context) if standard_context else set()
     analysis_text = " ".join(
         str(item.get(field, ""))
         for field in ("requirement", "software_requirement_text", "hardware_dependency", "ownership_reason")
@@ -193,6 +200,10 @@ def validate_llm_item(item: dict[str, Any], source: dict[str, Any],
     # 不是"数值")。这与"分母永不扩"防稀释纪律不冲突:不引入外部文本,只剥排版/引用数字。
     from text_normalize import join_digit_groups, strip_enum_markers, strip_reference_numbers
     missing_basis = join_digit_groups(strip_reference_numbers(strip_enum_markers(priority_text)))
+    # 空洞确认语/短片段不是可交付的软件需求正文，必须走既有降级/待澄清通道。
+    text = str(item.get("software_requirement_text") or "").strip()
+    if text in {"好的", "收到", "明白", "可以", "ok", "OK", "N/A", "无"} or len(text) <= 2:
+        issues.append("software requirement text is empty or non-substantive")
     for number in sorted(extract_ints(missing_basis) - extract_ints(join_digit_groups(analysis_text))):
         issues.append(f"source number {number} missing from analysis text")
     return issues
