@@ -2219,3 +2219,9 @@ CLI 契约见 `docs/cli-contract.md`（对接公司任务管理系统的接口�
 - 修复阶段输入同尺寸快速覆写可能命中旧哈希的问题（加入 `ctime_ns`），恢复桌面流水线未显式传 KB 时的默认知识库行为；语义预审 prompt/config 已纳入治理注册表。
 - 需求分析消费端补充失败直抽载荷门禁：即使遗留 `ai_requirements.jsonl` 与失败的 `functional_requirements.json` 同时存在，也不会回退并继续成文。
 - 当前验证：前端 296/296 测试通过、生产构建通过；后端全量并行 4362 tests 中 9 failures/2 errors，剩余主要是旧 atomic/golden 基线与并行环境敏感测试，功能路由/守恒/PDF/表格相关测试均通过。
+
+## 2026-09-13 需求分析加固里程碑
+
+- LLM 富化增加空洞正文与背景数字护栏，富化缓存键改为 canonical JSON 并纳入完整需求字段、路由血统和版本，单个并发任务异常改为逐条降级。
+- functional-only 与 package_v1 输入纳入 completeness 校验；功能合成守恒失败、limited smoke 质量门未通过时不再伪装为完整分析；输入 JSONL 和功能条目增加对象、ID、证据文本校验并报告行号。
+- Electron 需求分析/成文桥接只接受原生选择器授权的 xlsx；交付物解析支持 `.ratomizer/pipeline`，部分/失败运行不再显示为“运行完成”。
