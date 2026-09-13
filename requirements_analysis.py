@@ -1148,9 +1148,16 @@ def _apply_llm_item(
     drift = validate_llm_item(llm_item, source_req, template_text=ctx.get("template_refs", ""),
                               section_context=ctx.get("section_context", ""),
                               context_text=ctx.get("doc_context", ""))
+    # 空洞/确认语正文即使伴随其它列表字段，也不能作为软件需求交付；只将正文
+    # 标为待澄清，允许其它有据字段继续采纳并保留审计痕迹。
+    semantic_drift = [d for d in drift if d == "software requirement text is empty or non-substantive"]
+    if semantic_drift:
+        _mark_unfounded_field(item, "software_requirement_text", semantic_drift[0])
     fabricated_codes = [d for d in drift if d.startswith("fabricated code")]
     blocked_fields: dict[str, list[str]] = (
         _fabricated_code_fields(llm_item, source_req, ctx) if fabricated_codes else {})
+    if semantic_drift:
+        blocked_fields.setdefault("software_requirement_text", [])
     fabricated_issues: list[str] = []
     if fabricated_codes:
         _mark_rejected_enrichment_fields(item, set(blocked_fields), _FABRICATED_REJECT_REASON)
