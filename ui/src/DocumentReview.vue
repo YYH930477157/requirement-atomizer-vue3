@@ -1030,6 +1030,7 @@ const omissionCount = computed(
 const stats = computed(() => ({
   reqs: requirements.value.length,
   anchored: requirements.value.filter((r) => (r.source_block_ids || []).length).length,
+  reviewRequired: requirements.value.filter((r) => r.review_required === true).length,
   omissions: omissionCount.value,
 }))
 const internalCheckGroups = computed(() => internalChecks.value?.groups || [])
@@ -1643,8 +1644,12 @@ onMounted(() => {
     <header class="doc-toolbar">
       <div class="doc-stats">
         <span class="doc-role-hint" data-testid="doc-role-hint">对照原文，不是第二张需求表</span>
-        <span>锚定 <strong data-testid="doc-stat-reqs">{{ stats.reqs }}</strong></span>
+        <span>已抽取 <strong data-testid="doc-stat-reqs">{{ stats.reqs }}</strong></span>
         <span>已挂载 <strong>{{ stats.anchored }}</strong></span>
+        <span v-if="stats.reviewRequired" class="partial-status" data-testid="doc-stat-review-required"
+              title="来源单元被判定为 needs_review/context，尚未确认是真实研发需求">
+          待确认 <strong>{{ stats.reviewRequired }}</strong>
+        </span>
         <span v-if="extractionStatus?.run_id && extractionStatus.failed"
               class="partial-status failed" data-testid="partial-status">
           抽取不完整 <strong>{{ extractionStatus.completed }}/{{ extractionStatus.total }}</strong>

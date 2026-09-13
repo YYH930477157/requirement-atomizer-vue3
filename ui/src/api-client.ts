@@ -659,6 +659,11 @@ export type AiRequirement = Record<string, unknown> & {
   labels?: string[]
   suspicion_reasons?: string[]
   consistency_flags?: string[]
+  // 功能直抽候选级风险：needs_review/context 不能被误认为已确认需求。
+  semantic_category?: string
+  candidate_categories?: string[]
+  review_required?: boolean
+  review_reason?: string
   threshold_table?: { columns?: string[]; rows?: unknown[][] } | null
   sub_items?: Array<{ label?: string; text?: string }>
   self_check_added?: boolean
