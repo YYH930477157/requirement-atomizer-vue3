@@ -95,6 +95,7 @@
                   @click.stop="apiMessage = ''"><X :size="14" aria-hidden="true" /></button>
         </div>
 
+        <div :key="activeNav" class="page-stage" :data-page="activeNav">
         <section v-if="activeNav === 'run'" class="run-home" data-testid="run-paths-panel">
           <div class="ov-stats">
             <div class="ov-stat" :class="{ 'is-empty': runOverview.functionalReqs == null }" data-testid="ov-functional">
@@ -521,6 +522,7 @@
                           :is-scanned="rendererScanned" :scanned-source="rendererScannedSource"
                           :annotations="rendererAnnotations" :load-bytes="loadBytesForRenderer"
                           @fallback="onRendererFallback" />
+        </div>
 
         <footer class="status-bar">
           <span :title="currentOutputDir || undefined">输出目录：{{ currentOutputDir ? tailPath(currentOutputDir) : "尚未选择输出目录" }}</span>
@@ -5499,6 +5501,7 @@ tbody tr.virtual-spacer:hover td {
 }
 
 .nav-button {
+  position: relative;
   min-height: 40px;
   gap: 10px;
   border-radius: 8px;
@@ -5507,6 +5510,20 @@ tbody tr.virtual-spacer:hover td {
   font-size: 13px;
   font-weight: 560;
   transition: color 180ms ease, background 180ms ease, box-shadow 180ms ease, transform 240ms var(--ios-motion);
+}
+
+.nav-button::before {
+  content: "";
+  position: absolute;
+  left: 2px;
+  top: 50%;
+  width: 3px;
+  height: 0;
+  border-radius: 999px;
+  background: var(--ios-blue);
+  opacity: 0;
+  transform: translateY(-50%) scaleY(0.5);
+  transition: height 240ms var(--ios-motion), opacity 180ms ease, transform 240ms var(--ios-motion);
 }
 
 .nav-button:hover {
@@ -5524,6 +5541,12 @@ tbody tr.virtual-spacer:hover td {
   background: rgba(10, 132, 255, 0.11);
   box-shadow: inset 0 0 0 1px rgba(10, 132, 255, 0.08);
   font-weight: 650;
+}
+
+.nav-button.active::before {
+  height: 20px;
+  opacity: 1;
+  transform: translateY(-50%) scaleY(1);
 }
 
 .nav-icon {
@@ -5551,6 +5574,14 @@ tbody tr.virtual-spacer:hover td {
 
 .main {
   background: #f1f3f7;
+}
+
+.page-stage {
+  min-width: 0;
+  min-height: 0;
+  transform-origin: 50% 0;
+  animation: page-stage-enter 420ms var(--ios-motion) both;
+  will-change: opacity, transform;
 }
 
 .app-bar {
@@ -5636,6 +5667,15 @@ tbody tr.virtual-spacer:hover td {
   border-color: var(--ios-blue-strong);
   background: var(--ios-blue-strong);
   box-shadow: 0 9px 20px rgba(10, 132, 255, 0.25);
+}
+
+.button:focus-visible,
+.nav-button:focus-visible,
+.link-button:focus-visible,
+.deliverable-open:focus-visible,
+.recent-item:focus-visible {
+  outline: 3px solid rgba(10, 132, 255, 0.24);
+  outline-offset: 2px;
 }
 
 .decision-accept { color: #167d4c; }
@@ -5746,6 +5786,21 @@ tbody tr.virtual-spacer:hover td {
   transition: width 420ms var(--ios-motion);
 }
 
+.run-meter-fill {
+  position: relative;
+  overflow: hidden;
+}
+
+.run-meter-fill::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: 36%;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.56), transparent);
+  transform: translateX(-130%);
+  animation: progress-sheen 1.6s ease-in-out infinite;
+}
+
 .run-stage-board {
   gap: 16px;
   padding: 8px 4px 10px;
@@ -5762,7 +5817,14 @@ tbody tr.virtual-spacer:hover td {
   background: rgba(118, 118, 128, 0.055);
   box-shadow: inset 0 0 0 1px rgba(60, 60, 67, 0.08);
   transition: background 180ms ease, transform 220ms var(--ios-motion), box-shadow 180ms ease;
+  animation: card-rise 460ms var(--ios-motion) both;
 }
+
+.run-stage-card:nth-child(2) { animation-delay: 45ms; }
+.run-stage-card:nth-child(3) { animation-delay: 90ms; }
+.run-stage-card:nth-child(4) { animation-delay: 135ms; }
+.run-stage-card:nth-child(5) { animation-delay: 180ms; }
+.run-stage-card:nth-child(6) { animation-delay: 225ms; }
 
 .run-stage-card:hover {
   background: rgba(255, 255, 255, 0.72);
@@ -6224,6 +6286,7 @@ tbody tr.selected td {
   box-shadow: 0 8px 24px rgba(10, 132, 255, 0.08);
   backdrop-filter: blur(18px) saturate(150%);
   -webkit-backdrop-filter: blur(18px) saturate(150%);
+  animation: toast-enter 360ms var(--ios-motion) both;
 }
 
 .global-message-close {
@@ -6316,6 +6379,27 @@ tbody tr.selected td {
 
 @keyframes view-enter {
   from { opacity: 0; transform: translateY(7px) scale(0.997); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes page-stage-enter {
+  from { opacity: 0; transform: translateY(10px) scale(0.994); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes card-rise {
+  from { opacity: 0; transform: translateY(8px) scale(0.985); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes progress-sheen {
+  0%, 24% { opacity: 0; transform: translateX(-130%); }
+  45% { opacity: 0.9; }
+  78%, 100% { opacity: 0; transform: translateX(290%); }
+}
+
+@keyframes toast-enter {
+  from { opacity: 0; transform: translateY(-6px) scale(0.985); }
   to { opacity: 1; transform: translateY(0) scale(1); }
 }
 
@@ -6420,5 +6504,186 @@ tbody tr.selected td {
     transform: none !important;
     animation: none !important;
   }
+}
+
+/* iOS 26 showcase polish: layered surfaces, tactile cards and calm motion. */
+.side-nav {
+  background:
+    radial-gradient(120% 48% at 0% 0%, rgba(10, 132, 255, 0.10), transparent 62%),
+    rgba(248, 249, 252, 0.80);
+}
+
+.brand-mark {
+  background: linear-gradient(145deg, #0a84ff 0%, #5e5ce6 100%);
+  border-radius: 11px;
+  box-shadow: 0 8px 18px rgba(10, 132, 255, 0.24), inset 0 1px rgba(255, 255, 255, 0.35);
+  transition: transform 260ms var(--ios-motion), box-shadow 260ms ease;
+}
+
+.side-brand:hover .brand-mark {
+  transform: rotate(-4deg) scale(1.05);
+  box-shadow: 0 11px 24px rgba(10, 132, 255, 0.32), inset 0 1px rgba(255, 255, 255, 0.42);
+}
+
+.nav-button {
+  position: relative;
+  overflow: hidden;
+}
+
+.nav-button.active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  border-radius: 0 4px 4px 0;
+  background: linear-gradient(180deg, #0a84ff, #5e5ce6);
+  box-shadow: 0 0 10px rgba(10, 132, 255, 0.38);
+}
+
+.app-bar {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.90), rgba(255, 255, 255, 0.74));
+}
+
+.page-title-area {
+  animation: page-title-in 420ms var(--ios-motion) both;
+}
+
+.doc-chip {
+  box-shadow: inset 0 1px rgba(255, 255, 255, 0.78), 0 1px 2px rgba(31, 35, 48, 0.04);
+}
+
+.global-message {
+  animation: message-rise 360ms var(--ios-motion) both;
+  border-radius: 12px;
+  box-shadow: 0 8px 22px rgba(31, 35, 48, 0.08), inset 0 1px rgba(255, 255, 255, 0.72);
+}
+
+.run-home {
+  background:
+    radial-gradient(75% 28% at 92% 0%, rgba(10, 132, 255, 0.09), transparent 70%),
+    radial-gradient(60% 24% at 4% 2%, rgba(94, 92, 230, 0.07), transparent 70%),
+    #f1f3f7;
+}
+
+.ov-stat,
+.flow-card,
+.panel-card,
+.stat-card {
+  border-radius: 16px;
+  box-shadow: 0 12px 34px rgba(31, 35, 48, 0.075), 0 2px 8px rgba(31, 35, 48, 0.035), inset 0 0 0 1px rgba(255, 255, 255, 0.74);
+}
+
+.ov-stat {
+  position: relative;
+  overflow: hidden;
+}
+
+.ov-stat::after {
+  content: "";
+  position: absolute;
+  right: -22px;
+  bottom: -30px;
+  width: 90px;
+  height: 90px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(10, 132, 255, 0.12), transparent 68%);
+  pointer-events: none;
+}
+
+.ov-stat:nth-child(2)::after { background: radial-gradient(circle, rgba(48, 164, 108, 0.14), transparent 68%); }
+.ov-stat:nth-child(3)::after { background: radial-gradient(circle, rgba(94, 92, 230, 0.13), transparent 68%); }
+.ov-stat:nth-child(4)::after { background: radial-gradient(circle, rgba(213, 138, 24, 0.13), transparent 68%); }
+
+.flow-card,
+.panel-card {
+  transition: transform 260ms var(--ios-motion), box-shadow 260ms ease;
+}
+
+.flow-card:hover,
+.panel-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 18px 42px rgba(31, 35, 48, 0.105), 0 3px 10px rgba(31, 35, 48, 0.04), inset 0 0 0 1px rgba(255, 255, 255, 0.80);
+}
+
+.run-meter {
+  box-shadow: inset 0 1px rgba(255, 255, 255, 0.72), 0 5px 14px rgba(10, 132, 255, 0.055);
+}
+
+.run-meter-fill {
+  position: relative;
+  overflow: hidden;
+}
+
+.run-meter-fill::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(100deg, transparent 20%, rgba(255, 255, 255, 0.48) 50%, transparent 80%);
+  animation: meter-sheen 2.2s ease-in-out infinite;
+}
+
+.run-stage-card {
+  border-radius: 13px;
+  box-shadow: inset 0 0 0 1px rgba(60, 60, 67, 0.075), 0 4px 12px rgba(31, 35, 48, 0.035);
+}
+
+.run-stage-card.stage-running {
+  box-shadow: inset 0 0 0 1px rgba(10, 132, 255, 0.16), 0 10px 24px rgba(10, 132, 255, 0.12);
+}
+
+.preview-empty {
+  min-height: 148px;
+  border: 1px dashed rgba(10, 132, 255, 0.22);
+  border-radius: 13px;
+  background: linear-gradient(145deg, rgba(10, 132, 255, 0.035), rgba(94, 92, 230, 0.025));
+}
+
+.preview-empty > svg {
+  color: var(--ios-blue);
+  padding: 10px;
+  width: 42px;
+  height: 42px;
+  border-radius: 13px;
+  background: rgba(10, 132, 255, 0.10);
+  box-sizing: content-box;
+}
+
+.dl-file {
+  margin: 4px 0;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  padding: 8px 9px;
+  transition: transform 220ms var(--ios-motion), background 180ms ease, border-color 180ms ease;
+}
+
+.dl-file:hover:not(.is-missing) {
+  transform: translateX(3px);
+  border-color: rgba(10, 132, 255, 0.13);
+  background: rgba(10, 132, 255, 0.055);
+}
+
+.dl-file.is-missing { opacity: 0.56; }
+
+@keyframes page-title-in {
+  from { opacity: 0; transform: translateY(5px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes message-rise {
+  from { opacity: 0; transform: translateY(-6px) scale(0.99); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes meter-sheen {
+  from { transform: translateX(-120%); }
+  to { transform: translateX(140%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .page-title-area,
+  .global-message,
+  .run-meter-fill::after { animation: none !important; }
 }
 </style>
