@@ -35,7 +35,13 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
                 try:
                     row = json.loads(line)
                 except json.JSONDecodeError as exc:
-                    raise ValueError(f"invalid JSONL at {path}:{line_number}: {exc.msg}") from exc
+                    # Preserve JSONDecodeError compatibility while adding the
+                    # physical file location required for actionable diagnosis.
+                    raise json.JSONDecodeError(
+                        f"invalid JSONL at {path}:{line_number}: {exc.msg}",
+                        exc.doc,
+                        exc.pos,
+                    ) from exc
                 if not isinstance(row, dict):
                     raise ValueError(
                         f"JSONL row must be an object: {path}:{line_number}"
