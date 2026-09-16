@@ -80,7 +80,8 @@ PROMPT_REGISTRY: list[dict[str, str]] = [
     # 声明条款基线文本内判疑似误报豁免（covered_clause_text_dup_exemptions 审计，
     # 不影响 ok）；任一被覆盖句不在声明条款内照旧 blocking。
     # v9：重复豁免保留数值小数点、正负号、运算符和词界。
-    {"id": "functional-extract-conservation", "version": "functional-conservation-obligation-evidence-v9",
+    # v10：atomic_requirements.jsonl 只比对嵌入的 requirement 正文。
+    {"id": "functional-extract-conservation", "version": "functional-conservation-obligation-evidence-v10",
      "owner_module": "functional_extract",
      "purpose": "Functional extract obligation/evidence conservation model version"},
 

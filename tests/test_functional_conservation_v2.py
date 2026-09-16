@@ -818,10 +818,10 @@ class ConservationV7QuoteLocalAnchorTests(unittest.TestCase):
             1,
         )
 
-    def test_conservation_model_version_is_v9(self) -> None:
+    def test_conservation_model_version_is_v10(self) -> None:
         self.assertEqual(
             fe.FUNCTIONAL_CONSERVATION_MODEL_VERSION,
-            "functional-conservation-obligation-evidence-v9",
+            "functional-conservation-obligation-evidence-v10",
         )
         import prompt_registry
         registered = {

@@ -217,6 +217,98 @@ describe("DocumentReview", () => {
     localStorage.clear()
   })
 
+  it("does not pin multi-column grid when the stacked media query matches", async () => {
+    const originalMatchMedia = window.matchMedia
+    window.matchMedia = vi.fn().mockImplementation((query: string) => ({
+      matches: String(query).includes("max-width: 820px"),
+      media: query,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+      onchange: null,
+    }))
+    localStorage.clear()
+    const wrapper = mount(DocumentReview, { props: { client: makeClient(), active: true } })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="doc-body"]').attributes("style") || "").not.toMatch(/grid-template-columns/)
+    wrapper.unmount()
+    window.matchMedia = originalMatchMedia
+    localStorage.clear()
+  })
+
+  it("marks review-required requirements on the chip and analysis card", async () => {
+    const client = makeClient({
+      loadAiRequirements: vi.fn().mockResolvedValue([
+        {
+          ai_req_id: "AIR-1", title: "体积计量", description: "应计量体积", module: "计量",
+          module_effective: "计量", type: "functional", priority: "P1", status: "draft",
+          source_section: "4", source_quote: "The meter shall measure volume.",
+          source_block_ids: ["B2"], quote_block_ids: ["B2"],
+          acceptance_criteria: ["按 4.2 测试"],
+          dev_guidance: ["实现体积累计计量与本地存储"], labels: ["计量"],
+          suspicion_reasons: [], ownership: "software", ownership_effective: "software",
+          source_fingerprint: "source-v1", review_subject_fingerprint: "subject-v1",
+          target_fingerprint: "sha256:target-v1",
+          target_publication_revision: "sha256:publication-v1",
+          target_authority_write_revision: "sha256:authority-v1",
+          review_required: true,
+          semantic_category: "needs_review",
+          review_reason: "source_unit_candidate_requires_human_confirmation",
+        },
+      ]),
+    })
+    const wrapper = mount(DocumentReview, { props: { client, active: true } })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="doc-stat-review-required"]').text()).toContain("1")
+    const chip = wrapper.find('[data-testid="anno-AIR-1"]')
+    expect(chip.classes()).toContain("review-required")
+    await chip.trigger("click")
+    await nextTick()
+    expect(wrapper.find('[data-testid="dd-review-required"]').text()).toContain("尚未确认是真实研发需求")
+    expect(wrapper.find('[data-testid="dd-review-required-status"]').text()).toBe("待确认")
+    wrapper.unmount()
+  })
+
+  it("merges requirement translations in document order and fills missing notes", async () => {
+    const client = makeClient({
+      loadDocument: vi.fn().mockResolvedValue({
+        count: 2,
+        blocks: [
+          { block_id: "B1", order: 1, type: "paragraph", text: "The meter shall measure volume.",
+            section_path: ["4 Requirements"], requirement_like: true, noise: false,
+            translation: "电表应计量体积。" },
+          { block_id: "B2", order: 2, type: "paragraph", text: "The meter shall store the volume.",
+            section_path: ["4 Requirements"], requirement_like: true, noise: false },
+        ],
+      }),
+      loadAiRequirements: vi.fn().mockResolvedValue([
+        {
+          ai_req_id: "AIR-1", title: "体积计量", description: "应计量体积", module: "计量",
+          module_effective: "计量", type: "functional", priority: "P1", status: "draft",
+          source_section: "4", source_quote: "The meter shall measure volume.",
+          source_block_ids: ["B2", "B1"], quote_block_ids: ["B2", "B1"],
+          acceptance_criteria: [], dev_guidance: [], labels: ["计量"],
+          suspicion_reasons: [], ownership: "software", ownership_effective: "software",
+          source_fingerprint: "source-v1", review_subject_fingerprint: "subject-v1",
+          target_fingerprint: "sha256:target-v1",
+          target_publication_revision: "sha256:publication-v1",
+          target_authority_write_revision: "sha256:authority-v1",
+        },
+      ]),
+    })
+    const wrapper = mount(DocumentReview, { props: { client, active: true } })
+    await flushPromises()
+    await wrapper.find('[data-testid="anno-AIR-1"]').trigger("click")
+    await nextTick()
+    expect(wrapper.find('[data-testid="translation-text"]').text()).toBe("电表应计量体积。")
+    expect(wrapper.find('[data-testid="translation-missing"]').text()).toContain("暂无翻译")
+    const sourceIds = wrapper.findAll(".translation-source-id").map((node) => node.text())
+    expect(sourceIds).toEqual(["B1", "B2"])
+    wrapper.unmount()
+  })
+
   it("represents identical claim ids and resolutions in parsed-text and PDF modes", async () => {
     const wrapper = mount(DocumentReview, {
       props: { client: makeClaimAnnotationClient(), active: true },

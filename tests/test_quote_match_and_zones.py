@@ -12,25 +12,65 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from merged_consistency import match_source_quote_blocks
+from merged_consistency import covered_block_ids, match_source_quote_blocks
 
 
 class NoiseTolerantWindowTests(unittest.TestCase):
-    def test_exact_match_also_returns_embedded_duplicate(self) -> None:
-        """An exact prose block may be repeated inside a larger JSON/example block.
-
-        The matcher must retain both hits so callers can honor the declared source
-        block instead of treating the later exact copy as a mis-binding.
-        """
+    def test_assignment_mapping_stays_exact_when_json_wrapper_exists(self) -> None:
+        """赋值/覆盖保持 exact 短路；JSON 包装块不得成为来源或覆盖。"""
         quote = "The attribute shall use access rights R-/R-/R-/R-."
+        json_text = (
+            '{"requirement": "The attribute shall use access rights R-/R-/R-/R-.",'
+            ' "confidence": 0.9}'
+        )
         blocks = [
-            {"block_id": "B_JSON", "order": 1,
-             "text": '{"requirement": "The attribute shall use access rights R-/R-/R-/R-.", "confidence": 0.9}'},
+            {"block_id": "B_JSON", "order": 1, "text": json_text},
             {"block_id": "B_EXACT", "order": 2, "text": quote},
         ]
 
         matched, method = match_source_quote_blocks(quote, blocks)
+        self.assertEqual(matched, ["B_EXACT"])
+        self.assertEqual(method, "exact")
 
+        covered = covered_block_ids(
+            [{"source_quote": quote, "source_block_ids": ["B_EXACT"],
+              "source_mapping": "exact"}],
+            blocks,
+        )
+        self.assertEqual(covered, {"B_EXACT"})
+
+        import ai_extract
+        req = {"source_quote": quote}
+        ai_extract._map_requirement_source(req, {
+            "block_ids": ["B_JSON", "B_EXACT"],
+            "source_blocks": blocks,
+        })
+        self.assertEqual(req["source_block_ids"], ["B_EXACT"])
+        self.assertEqual(req["source_mapping"], "exact")
+
+    def test_containment_only_returns_contains(self) -> None:
+        quote = "The attribute shall use access rights R-/R-/R-/R-."
+        blocks = [{
+            "block_id": "B_JSON", "order": 1,
+            "text": '{"requirement": "The attribute shall use access rights R-/R-/R-/R-."}',
+        }]
+        matched, method = match_source_quote_blocks(quote, blocks)
+        self.assertEqual(matched, ["B_JSON"])
+        self.assertEqual(method, "contains")
+
+    def test_embedded_union_is_opt_in_for_declared_id_intersection(self) -> None:
+        quote = "The attribute shall use access rights R-/R-/R-/R-."
+        json_text = (
+            '{"requirement": "The attribute shall use access rights R-/R-/R-/R-.",'
+            ' "confidence": 0.9}'
+        )
+        blocks = [
+            {"block_id": "B_JSON", "order": 1, "text": json_text},
+            {"block_id": "B_EXACT", "order": 2, "text": quote},
+        ]
+        matched, method = match_source_quote_blocks(
+            quote, blocks, include_embedded=True,
+        )
         self.assertEqual(matched, ["B_EXACT", "B_JSON"])
         self.assertEqual(method, "multi_block")
 

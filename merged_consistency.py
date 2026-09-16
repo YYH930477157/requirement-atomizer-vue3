@@ -14,7 +14,7 @@ from typing import Any
 
 from cosem_behavior_spec import extract_codes, extract_ints
 
-MERGED_CONSISTENCY_VERSION = "merged-consistency/v4-duplicate-aware-window"  # v4：重复引句同时返回 exact/embedded 命中；v3：引句多段窗口跳过噪声块
+MERGED_CONSISTENCY_VERSION = "merged-consistency/v3-noise-tolerant-window"  # v3：引句多段窗口跳过噪声块（页码/水印夹缝不再掐死整句匹配）;v2:分诊严证据
 _MIN_QUOTE_CHARS = 12  # 太短的引用片段（如"see 4.2"）不作重复判据，防误判
 _MIN_SOURCE_MATCH_CHARS = 12
 _MAX_SOURCE_WINDOW_BLOCKS = 12
@@ -89,6 +89,8 @@ def _source_texts(requirement: dict[str, Any]) -> list[str]:
 def _match_compact_quote(
     quote: str,
     normalized: list[tuple[dict[str, Any], str]],
+    *,
+    include_embedded: bool = False,
 ) -> tuple[list[str], str]:
     # 噪声块（页码/水印）永不成来源（2026-07-26 test8 实证：LLM 把 "Machine Translated
     # by Google" 抄进引句，水印块经 containing 路径混进 source_block_ids）——各命中
@@ -97,18 +99,23 @@ def _match_compact_quote(
         str(block.get("block_id")) for block, text in normalized
         if len(text) >= _MIN_SOURCE_MATCH_CHARS and text == quote and not block.get("noise")
     ]
-    # Do not stop at an exact match.  A quoted sentence can also be embedded in
-    # a larger JSON/example block (the exact prose block is often repeated in a
-    # generated example later in the document).  Returning only the first exact
-    # block makes a valid declared source look mis-bound.  Union exact and
-    # containing hits so callers can intersect with the declared source ids.
     containing = [
         str(block.get("block_id")) for block, text in normalized
         if len(text) >= _MIN_SOURCE_MATCH_CHARS and quote in text and not block.get("noise")
     ]
-    if exact or containing:
+    # include_embedded：守恒侧与声明 block 求交时才并入包含命中。赋值/覆盖
+    # 仍 exact 优先，避免 JSON/示例包装块成为来源或压掉遗漏。
+    if include_embedded and (exact or containing):
         matched = list(dict.fromkeys(exact + containing))
-        return matched, "exact" if len(matched) == 1 else "multi_block"
+        if exact and set(matched) <= set(exact):
+            return matched, "exact" if len(matched) == 1 else "multi_block"
+        if not exact:
+            return matched, "contains" if len(matched) == 1 else "multi_block"
+        return matched, "multi_block"
+    if exact:
+        return exact, "exact" if len(exact) == 1 else "multi_block"
+    if containing:
+        return containing, "contains" if len(containing) == 1 else "multi_block"
     # LLM 引句偶尔比单块多一个短前/后缀。只在该块覆盖引句主体时允许反向包含；否则
     # 长引句里的两个不相邻片段会被误认成一个 multi_block 来源。
     reverse_containing = [
@@ -162,12 +169,20 @@ def _matches_only_noise(excerpt: str, normalized: list[tuple[dict[str, Any], str
     return False
 
 
-def match_source_quote_blocks(source_quote: Any, blocks: Any) -> tuple[list[str], str]:
+def match_source_quote_blocks(
+    source_quote: Any,
+    blocks: Any,
+    *,
+    include_embedded: bool = False,
+) -> tuple[list[str], str]:
     """把逐字引句映射到一个或多个原文块。
 
     Google 机翻 PDF 会在词内插入真实空格，因此匹配时只忽略空白；标点、数字和编码仍需
     原样一致。过短块不参与反向包含，避免页码 ``2`` 被当成整段合规引句的来源。换行或
     省略号明确分隔的多段摘录分别匹配，不能用一个短页码替代整条长引句的来源。
+
+    ``include_embedded=True`` 只给守恒声明块求交：同时返回 exact 与 containing。
+    赋值/覆盖必须保持默认（exact 短路），不得把包装块标成来源。
     """
     ordered = _ordered_source_blocks(blocks)
     normalized: list[tuple[dict[str, Any], str]] = [
@@ -182,7 +197,9 @@ def match_source_quote_blocks(source_quote: Any, blocks: Any) -> tuple[list[str]
     if len(excerpts) > 1:
         excerpt_matches: list[str] = []
         for excerpt in excerpts:
-            matched, _method = _match_compact_quote(excerpt, normalized)
+            matched, _method = _match_compact_quote(
+                excerpt, normalized, include_embedded=include_embedded,
+            )
             if not matched:
                 # 只命中噪声块的片段按噪声内容跳过（水印混入引句——test8 实证），
                 # 不因此否决整条引句；正文内容匹配不到仍整体否决（多段摘录纪律）
@@ -199,7 +216,7 @@ def match_source_quote_blocks(source_quote: Any, blocks: Any) -> tuple[list[str]
     quote = compact_source_text(raw_quote)
     if len(quote) < _MIN_SOURCE_MATCH_CHARS:
         return [], ""
-    return _match_compact_quote(quote, normalized)
+    return _match_compact_quote(quote, normalized, include_embedded=include_embedded)
 
 
 def reliable_echo_block_ids(requirement: dict[str, Any], blocks: Any) -> list[str]:

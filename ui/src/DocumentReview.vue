@@ -74,7 +74,34 @@ const panelVisible = ref<Record<PanelKey, boolean>>({ source: true, translation:
 const panelWidths = ref<Record<PanelKey, number>>({ source: 1, translation: 0.62, analysis: 0.52 })
 const panelDragKey = ref<PanelKey | null>(null)
 const panelResizeState = ref<{ key: PanelKey; startX: number; startWidth: number } | null>(null)
+const STACKED_LAYOUT_QUERY = "(max-width: 820px)"
+const stackedLayout = ref(false)
+let stackedLayoutMql: MediaQueryList | null = null
+function onStackedLayoutChange(event: { matches: boolean }) {
+  stackedLayout.value = Boolean(event.matches)
+}
+function installStackedLayoutWatcher() {
+  if (typeof window.matchMedia !== "function") return
+  stackedLayoutMql = window.matchMedia(STACKED_LAYOUT_QUERY)
+  stackedLayout.value = stackedLayoutMql.matches
+  if (typeof stackedLayoutMql.addEventListener === "function") {
+    stackedLayoutMql.addEventListener("change", onStackedLayoutChange)
+  } else if (typeof stackedLayoutMql.addListener === "function") {
+    stackedLayoutMql.addListener(onStackedLayoutChange)
+  }
+}
+function uninstallStackedLayoutWatcher() {
+  if (!stackedLayoutMql) return
+  if (typeof stackedLayoutMql.removeEventListener === "function") {
+    stackedLayoutMql.removeEventListener("change", onStackedLayoutChange)
+  } else if (typeof stackedLayoutMql.removeListener === "function") {
+    stackedLayoutMql.removeListener(onStackedLayoutChange)
+  }
+  stackedLayoutMql = null
+}
 const panelLayoutStyle = computed(() => {
+  // 窄窗交给 CSS 单列 media query；内联 grid 会压过 820px 堆叠规则。
+  if (stackedLayout.value) return {}
   const visible = panelOrder.value.filter((key) => panelVisible.value[key])
   if (!visible.length) return { gridTemplateColumns: "1fr" }
   const total = visible.reduce((sum, key) => sum + Math.max(.2, panelWidths.value[key]), 0)
@@ -653,6 +680,7 @@ watch(() => props.refreshToken, (token, previous) => {
 })
 
 onUnmounted(() => {
+  uninstallStackedLayoutWatcher()
   uninstallReviewShortcuts()
   endPanelResize()
   if (incrementalRefreshTimer !== undefined) clearTimeout(incrementalRefreshTimer)
@@ -973,7 +1001,10 @@ const translationEntries = computed<TranslationEntry[]>(() => {
   if (selectedReq.value) {
     const req = selectedReq.value
     const ids = [...new Set([...(req.quote_block_ids || []), ...(req.source_block_ids || [])].filter(Boolean))]
-    const rows = ids.map((id) => blocks.value.find((block) => block.block_id === id)).filter(Boolean) as DocumentBlock[]
+    const rows = ids
+      .map((id) => blocks.value.find((block) => block.block_id === id))
+      .filter(Boolean) as DocumentBlock[]
+    rows.sort((a, b) => (Number(a.order) || 0) - (Number(b.order) || 0) || String(a.block_id).localeCompare(String(b.block_id)))
     return rows.map((block) => ({
       id: block.block_id,
       text: block.text || "",
@@ -1782,6 +1813,7 @@ async function loadTextModeSwitch() {
 
 onMounted(() => {
   restorePanelLayout()
+  installStackedLayoutWatcher()
   installReviewShortcuts()
   void loadTextModeSwitch()
 })
@@ -1933,10 +1965,10 @@ onMounted(() => {
                 v-for="r in (anchorByBlock.get(b.block_id) || [])"
                 :key="r.ai_req_id"
                 class="anno-chip"
-                :class="['st-' + statusOf(r), { sel: r.ai_req_id === selectedId }]"
+                :class="['st-' + statusOf(r), { sel: r.ai_req_id === selectedId, 'review-required': r.review_required }]"
                 type="button"
                 :data-testid="`anno-${r.ai_req_id}`"
-                :title="`${moduleOf(r)} · ${r.title}`"
+                :title="`${moduleOf(r)} · ${r.title}${r.review_required ? ' · 待确认' : ''}`"
                 @click.stop="select(r)"
               >{{ reqNumber(r) }} · {{ moduleOf(r) }}</button>
             </div>
@@ -2312,6 +2344,7 @@ onMounted(() => {
           <div class="dd-head">
             <span class="dd-module" data-testid="dd-module">{{ moduleOf(selectedReq) }}</span>
             <span class="dd-status" :class="'st-' + statusOf(selectedReq)">{{ STATUS_LABELS[statusOf(selectedReq)] || statusOf(selectedReq) }}</span>
+            <span v-if="selectedReq.review_required" class="dd-status st-review-required" data-testid="dd-review-required-status">待确认</span>
           </div>
           <div class="dd-nav">
             <span class="dd-anno-no" data-testid="dd-anno-no">批注 {{ reqNumber(selectedReq) }}<template v-if="selectedReqIndex >= 0"> · {{ selectedReqIndex + 1 }}/{{ orderedReqs.length }}</template></span>
@@ -2322,6 +2355,9 @@ onMounted(() => {
           </div>
           <h3 class="dd-title">{{ selectedReq.title }}</h3>
           <div class="dd-meta">{{ selectedReq.type }} · {{ selectedReq.priority }} · {{ selectedReq.source_section }}</div>
+          <div v-if="selectedReq.review_required" class="dd-suspicion" data-testid="dd-review-required">
+            待确认：来源单元被判定为 needs_review/context，尚未确认是真实研发需求
+          </div>
           <div v-if="(selectedReq.suspicion_reasons || []).length" class="dd-suspicion" data-testid="dd-suspicion">
             ⚠ 建议优先复核：{{ (selectedReq.suspicion_reasons || []).join("、") }}
           </div>
@@ -2563,6 +2599,7 @@ onMounted(() => {
 .anno-chip.st-accepted { border-color: #1d8a5c; color: #1d8a5c; }
 .anno-chip.st-rejected { border-color: #d63a40; color: #d63a40; }
 .anno-chip.st-needs_discussion { border-color: #b06f12; color: #b06f12; }
+.anno-chip.review-required { border-color: #b06f12; color: #8a5a10; }
 .omission-tag { display: inline-flex; margin-left: 6px; padding: 0 2px 1px; border: 0;
   border-bottom: 1px dotted #cbd5e1; border-radius: 0; background: transparent; color: #98a1b3;
   font-size: 9px; line-height: 1; cursor: pointer; vertical-align: super; }
@@ -2621,6 +2658,7 @@ td.cell-sel, th.cell-sel { outline: 2px solid #5978f7; outline-offset: -2px; }
 .dd-status { font-size: 12px; padding: 1px 8px; border-radius: 8px; background: #e6e9f0; }
 .dd-status.st-accepted { background: #e6f6ef; color: #1d8a5c; }
 .dd-status.st-rejected { background: #fdecec; color: #991b1b; }
+.dd-status.st-review-required { background: #fff4dc; color: #8a5a10; }
 .dd-title { margin: 8px 0 2px; font-size: 15px; }
 .dd-meta { font-size: 12px; color: #7a8496; margin-bottom: 8px; }
 .dd-suspicion { font-size: 12px; color: #b06f12; background: #fdf3e3; border-radius: 6px; padding: 4px 8px; margin-bottom: 8px; }

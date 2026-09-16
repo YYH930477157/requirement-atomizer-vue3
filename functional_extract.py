@@ -72,7 +72,7 @@ FUNCTIONAL_EXTRACT_PROMPT_VERSION = "functional-extract-prompt-v5"  # v5（2026-
 # 摘录（跨语种确认身份绑定义务文本）——守恒载荷内容变化，bump v4 → v5 使存量
 # 缓存失效，否则旧缓存恢复的 cross_script_review 无哈希，绕过确认失效机制。
 # v6 → v7：证据诊断覆盖完整叙述字段，并在同条款合并后重新计算。
-FUNCTIONAL_EXTRACT_GUARDS_VERSION = "functional-extract-guards-v8"
+FUNCTIONAL_EXTRACT_GUARDS_VERSION = "functional-extract-guards-v7"
 # §3.1 新守恒模型版本戳（进 conservation 报告与抽取指纹；模型演进时 bump）。
 # M1（2026-08-16 修复方案 §3.4）：obligation 覆盖从全局叙述并集改为声明局部绑定
 # （eligible-only 边；source_quote 只作锚）——产物语义变化，v1 → v2。
@@ -93,6 +93,7 @@ FUNCTIONAL_EXTRACT_GUARDS_VERSION = "functional-extract-guards-v8"
 # 任一被覆盖句不在声明条款内 → 照旧 blocking（真借位）。豁免口径与
 # tools/binding_attribution.py 的 covered_clause_text_in_home 信号（b 类）同源。
 # v8 → v9：重复文本归一保留数值小数点、正负号、运算符和词界，避免数值语义碰撞。
+# v9 → v10：atomic_requirements.jsonl 只比对嵌入的 requirement 正文，JSON 元数据数字不进 preservation 基线。
 FUNCTIONAL_CONSERVATION_MODEL_VERSION = "functional-conservation-obligation-evidence-v10"
 # v6 → v7（2026-08-31，绑定检查 reason 1 本地锚）：声明条款含义务单元却建不成
 # lexical/cross_script/source_quote 边时，若引句（剥表格标记后）逐字落在该声明条款
@@ -1357,12 +1358,7 @@ def _preservation_findings(
     """
     # 表格标记（[TBL-NNNNNN] …）是管线定位符：其数字不是文档内容，剥离后再建基线（guards-v6）
     source_text = _strip_table_markers(str(section.get("text") or ""))
-    # ``atomic_requirements.jsonl`` embeds the business sentence in a JSON
-    # record together with ids, source references and confidence metadata.  The
-    # latter are provenance fields, not business constraints; counting their
-    # numbers as mandatory preservation tokens creates false blocking losses.
-    # For preservation, compare the embedded ``requirement`` values only while
-    # leaving source anchors and the published JSON artifact untouched.
+    # JSON 元数据数字不是保真令牌；只比对嵌入的 requirement 正文。
     if any("atomic_requirements.jsonl" in str(part)
            for part in (section.get("section_path") or [])):
         embedded_requirements: list[str] = []
@@ -1754,10 +1750,9 @@ def conservation_report(
 ) -> dict[str, Any]:
     """obligation/evidence 守恒报告（§3.1 多对多模型，五项分项检查）。
 
-    取证复用 ``merged_consistency.match_source_quote_blocks``（与
-    ``review_tools.coverage_check`` 同源匹配器）校验每条 item 的 source_quote 是否命中
-    其声明的 source_block_ids。下钻条款递归守恒保留：``drilled_subatoms`` 的子原子
-    block_ids 并集必须等于父条款 block_ids。
+    取证复用 ``merged_consistency.match_source_quote_blocks(..., include_embedded=True)``
+    （与声明 block 求交，含 JSON/示例包装块；赋值/覆盖仍走默认 exact 短路）。下钻条款
+    递归守恒保留：``drilled_subatoms`` 的子原子 block_ids 并集必须等于父条款 block_ids。
 
     报告同时保留旧字段镜像（missing/extra/duplicate_assignments/evidence_mismatches），
     但语义随模型升级：``duplicate_assignments`` 现在指"重复需求组涉及的块"（多消费合法，
@@ -1881,7 +1876,9 @@ def conservation_report(
             # 表格标题前缀是渲染产物不是原文——剥离后再匹配（guards-v6）
             quote = _strip_table_markers(str(item.get("source_quote") or ""))
             if quote.strip():
-                hit_block_ids, _method = match_source_quote_blocks(quote, list(blocks))
+                hit_block_ids, _method = match_source_quote_blocks(
+                    quote, list(blocks), include_embedded=True,
+                )
                 if not hit_block_ids:
                     # 引句在全文零命中 = 无效证据（审查 P1：旧逻辑零命中直接放行）
                     evidence_mismatches.append({
@@ -3594,13 +3591,7 @@ def functional_direct_basis(
 def _annotate_candidate_review_state(
     items: list[dict[str, Any]], out_dir: Path,
 ) -> None:
-    """Carry deterministic candidate risk into every functional item.
-
-    LLM extraction may intentionally inspect ``needs_review`` units, but that
-    category must remain visible to reviewers; otherwise a short label or
-    context fragment is indistinguishable from a confirmed requirement.
-    This annotation is additive and does not silently delete model output.
-    """
+    """把候选风险标到功能条目上。needs_review/context 不得被当成已确认需求。"""
     try:
         from result_package import governed_artifact_path
         path = governed_artifact_path(
@@ -3631,11 +3622,9 @@ def _annotate_candidate_review_state(
             item["semantic_category"] = strongest
             item["review_required"] = strongest in {"needs_review", "context"}
             if item["review_required"]:
-                item["review_status"] = "pending"
                 item["review_reason"] = "source_unit_candidate_requires_human_confirmation"
     except (OSError, TypeError, ValueError, json.JSONDecodeError):
-        # Candidate annotations are review metadata; a malformed optional file
-        # must not turn a previously valid extraction into a fake failure.
+        # 候选标注是复核元数据；坏文件不得把已成功的抽取改成失败。
         return
 
 
@@ -3869,9 +3858,7 @@ def _finalize_payload(
     write: bool = False,
 ) -> dict[str, Any]:
     """原子写盘（仅 write=True）并返回 result 摘要。"""
-    # Apply review-risk metadata on both fresh and cached payloads.  Cache hits
-    # must not silently lose the candidate category that qualifies an item for
-    # human confirmation.
+    # 候选风险现算：缓存命中也要补待确认标记，不进抽取指纹。
     cached_items = payload.get("items")
     if isinstance(cached_items, list):
         _annotate_candidate_review_state(cached_items, out_dir)

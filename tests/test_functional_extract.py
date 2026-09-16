@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import unittest
+from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
@@ -271,6 +272,27 @@ class ConservationTests(unittest.TestCase):
             "The object shall use access rights R-/R-/R-/R-.",
         )
         self.assertEqual(findings, [])
+
+    def test_declared_json_wrapper_is_valid_quote_evidence(self) -> None:
+        quote = "The attribute shall use access rights R-/R-/R-/R-."
+        json_text = (
+            '{"requirement": "The attribute shall use access rights R-/R-/R-/R-.",'
+            ' "confidence": 0.9}'
+        )
+        sections = [_clause("4.4", ["B_JSON"], json_text)]
+        items = [{
+            "source_block_ids": ["B_JSON"],
+            "source_quote": quote,
+            "objective": quote,
+            "functional_requirement_id": "F1",
+        }]
+        blocks = [
+            {"block_id": "B_JSON", "order": 1, "text": json_text},
+            {"block_id": "B_EXACT", "order": 2, "text": quote},
+        ]
+        report = fe.conservation_report(sections, items, blocks=blocks)
+        mismatches = report["checks"]["evidence_presence"]["evidence_mismatches"]
+        self.assertEqual(mismatches, [])
 
     def test_block_coverage_closes(self) -> None:
         sections = [
@@ -873,6 +895,78 @@ class SemanticSectionLoaderTests(unittest.TestCase):
             after = desktop_tasks.stage_producer("functional-extract")
         self.assertNotEqual(before, after)
         self.assertIn("semantic-section-loader-next", after)
+
+
+class CandidateReviewAnnotationTests(unittest.TestCase):
+    def _write_candidates(self, root: Path, units: list[dict]) -> None:
+        (root / "requirement_candidates.json").write_text(
+            json.dumps({"units": units}), encoding="utf-8",
+        )
+
+    def test_needs_review_only_is_review_required(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_candidates(root, [
+                {"category": "needs_review", "source_block_ids": ["B1"]},
+            ])
+            items = [{"source_block_ids": ["B1"], "functional_requirement_id": "F1"}]
+            fe._annotate_candidate_review_state(items, root)
+        self.assertTrue(items[0]["review_required"])
+        self.assertEqual(items[0]["semantic_category"], "needs_review")
+        self.assertNotIn("review_status", items[0])
+        self.assertEqual(
+            items[0]["review_reason"],
+            "source_unit_candidate_requires_human_confirmation",
+        )
+
+    def test_requirement_candidate_is_not_review_required(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_candidates(root, [
+                {"category": "requirement_candidate", "source_block_ids": ["B1"]},
+            ])
+            items = [{"source_block_ids": ["B1"], "functional_requirement_id": "F1"}]
+            fe._annotate_candidate_review_state(items, root)
+        self.assertFalse(items[0].get("review_required"))
+        self.assertEqual(items[0]["semantic_category"], "requirement_candidate")
+
+    def test_mixed_categories_keep_requirement_candidate_as_strongest(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_candidates(root, [
+                {"category": "needs_review", "source_block_ids": ["B1"]},
+                {"category": "requirement_candidate", "source_block_ids": ["B1"]},
+            ])
+            items = [{"source_block_ids": ["B1"], "functional_requirement_id": "F1"}]
+            fe._annotate_candidate_review_state(items, root)
+        self.assertEqual(items[0]["semantic_category"], "requirement_candidate")
+        self.assertFalse(items[0].get("review_required"))
+        self.assertEqual(
+            items[0]["candidate_categories"],
+            ["needs_review", "requirement_candidate"],
+        )
+
+    def test_missing_candidates_file_is_a_noop(self) -> None:
+        with TemporaryDirectory() as tmp:
+            items = [{"source_block_ids": ["B1"], "functional_requirement_id": "F1"}]
+            fe._annotate_candidate_review_state(items, Path(tmp))
+        self.assertEqual(
+            items,
+            [{"source_block_ids": ["B1"], "functional_requirement_id": "F1"}],
+        )
+
+    def test_finalize_payload_rewrites_cache_hit_annotation(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_candidates(root, [
+                {"category": "needs_review", "source_block_ids": ["B1"]},
+            ])
+            payload = {
+                "items": [{"source_block_ids": ["B1"], "functional_requirement_id": "F1"}],
+                "route": "stub",
+            }
+            fe._finalize_payload(payload, root, "stub", write=False)
+            self.assertTrue(payload["items"][0]["review_required"])
 
 
 if __name__ == "__main__":  # pragma: no cover
