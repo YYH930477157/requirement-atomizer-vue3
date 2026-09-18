@@ -217,6 +217,19 @@ describe("DocumentReview", () => {
     localStorage.clear()
   })
 
+  it("ignores invalid external drag payloads", async () => {
+    localStorage.clear()
+    const wrapper = mount(DocumentReview, { props: { client: makeClient(), active: true } })
+    await flushPromises()
+    await wrapper.find('[data-testid="doc-paper"]').trigger("drop", {
+      dataTransfer: { getData: () => "arbitrary document text" },
+    })
+    const saved = JSON.parse(localStorage.getItem("ratomizer.documentReview.layout.v1") || "{}")
+    expect(saved.order).toBeUndefined()
+    wrapper.unmount()
+    localStorage.clear()
+  })
+
   it("does not pin multi-column grid when the stacked media query matches", async () => {
     const originalMatchMedia = window.matchMedia
     window.matchMedia = vi.fn().mockImplementation((query: string) => ({
@@ -331,6 +344,39 @@ describe("DocumentReview", () => {
       { id: "CLM-TABLE", resolution: "claim-excluded" },
       { id: "CLM-TEXT", resolution: "claim-covered" },
     ])
+  })
+
+  it("shows the selected claim source translation in the middle column", async () => {
+    const client = makeClaimAnnotationClient()
+    client.loadDocument = vi.fn().mockResolvedValue({
+      count: 1,
+      blocks: [{ block_id: "C1", order: 1, type: "paragraph", text: "The indicator channel can be configured.",
+        translation: "指示通道可以配置。", section_path: ["4 Interfaces"], requirement_like: false, noise: false }],
+    })
+    const wrapper = mount(DocumentReview, { props: { client, active: true } })
+    await flushPromises()
+    await wrapper.find('[data-testid="mode-text"]').trigger("click")
+    await wrapper.find('[data-testid="claim-span-CLM-TEXT"]').trigger("click")
+    expect(wrapper.find('[data-testid="doc-translation"]').text()).toContain("指示通道可以配置。")
+    wrapper.unmount()
+  })
+
+  it("removes the pending candidate marker after an effective expert decision", async () => {
+    const client = makeClient({
+      loadAiRequirements: vi.fn().mockResolvedValue([{
+        ai_req_id: "AIR-1", title: "体积计量", description: "应计量体积", module: "计量",
+        module_effective: "计量", type: "functional", priority: "P1", status: "accepted",
+        source_section: "4", source_quote: "The meter shall measure volume.", source_block_ids: ["B2"],
+        quote_block_ids: ["B2"], review_required: true, semantic_category: "needs_review",
+        review_state: { status: "accepted", level: "functional" }, needs_reconfirmation: false,
+      }]),
+    })
+    const wrapper = mount(DocumentReview, { props: { client, active: true } })
+    await flushPromises()
+    await wrapper.find('[data-testid="anno-AIR-1"]').trigger("click")
+    expect(wrapper.find('[data-testid="doc-stat-review-required"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="dd-review-required"]').exists()).toBe(false)
+    wrapper.unmount()
   })
 
   it("opens the shared claim card from a parsed-text claim span", async () => {

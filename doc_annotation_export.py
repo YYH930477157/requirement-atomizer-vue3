@@ -3765,7 +3765,7 @@ function ownershipReasonHtml(r) {{
 }}
 
 function requirementSummaryHtml(r) {{
-  const summary = String(r.description || "").trim();
+  const summary = String(r.functional_objective_zh || r.description || "").trim();
   return '<div class="dd-section dd-result-primary"><div class="dd-label">抽取需求</div>'+
          '<div class="dd-body'+(summary ? '' : ' dd-empty')+'">'+
          (summary ? esc(summary) : '未生成需求摘要')+'</div></div>';
@@ -4217,15 +4217,15 @@ function functionalMembershipHtml(r) {{
   if (!r.functional_requirement_id) return "";
   const mergeBadge = functionalMergeBadge(r);
   const mergeClass = Number(r.functional_merge_confidence == null ? 1 : r.functional_merge_confidence) < 0.9 ? "dd-suspicion" : "dd-consistency";
-  const behaviors = (r.functional_behaviors||[]).map(value => '<li>'+esc(value)+'</li>').join("");
-  const preconditions = (r.functional_preconditions||[]).map(value => '<li>'+esc(value)+'</li>').join("");
-  const constraints = (r.functional_data_constraints||[]).map(value => '<li>'+esc(value)+'</li>').join("");
+  const behaviors = (r.functional_behaviors_zh||r.functional_behaviors||[]).map(value => '<li>'+esc(value)+'</li>').join("");
+  const preconditions = (r.functional_preconditions_zh||r.functional_preconditions||[]).map(value => '<li>'+esc(value)+'</li>').join("");
+  const constraints = (r.functional_data_constraints_zh||r.functional_data_constraints||[]).map(value => '<li>'+esc(value)+'</li>').join("");
   const variants = (r.functional_variants||[]).map(value => '<li><strong>'+esc(value.name||"变体")+'</strong>：'+esc(value.behavior||"")+'</li>').join("");
   const conflicts = (r.functional_conflict_flags||[]).map(value => '<li>'+esc(value)+'</li>').join("");
   return '<div class="dd-section"><div class="dd-label">所属研发功能</div>'+
-    '<div class="dd-body"><strong>'+esc(r.functional_title||r.functional_requirement_id)+'</strong></div>'+
+    '<div class="dd-body"><strong>'+esc(r.functional_title_zh || r.functional_title || r.functional_requirement_id)+'</strong></div>'+
     (mergeBadge ? '<div class="'+mergeClass+'">⧉ '+esc(mergeBadge)+'</div>' : '')+
-    (r.functional_objective ? '<div class="dd-body">'+esc(r.functional_objective)+'</div>' : '')+
+    (r.functional_objective_zh || r.functional_objective ? '<div class="dd-body">'+esc(r.functional_objective_zh || r.functional_objective)+'</div>' : '')+
     (behaviors ? '<div class="dd-label">功能行为</div><ul class="dd-list">'+behaviors+'</ul>' : '')+
     (preconditions ? '<div class="dd-label">前置条件</div><ul class="dd-list">'+preconditions+'</ul>' : '')+
     (constraints ? '<div class="dd-label">数据约束</div><ul class="dd-list">'+constraints+'</ul>' : '')+

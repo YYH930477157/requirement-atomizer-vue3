@@ -273,6 +273,20 @@ class ConservationTests(unittest.TestCase):
         )
         self.assertEqual(findings, [])
 
+    def test_atomic_json_business_numbers_are_preservation_losses(self) -> None:
+        from functional_extract import _preservation_findings
+
+        section = {
+            "section_path": ["4.4 atomic_requirements.jsonl"],
+            "text": ('{"req_id":"AREQ-000063","requirement":"Store event records.",'
+                      '"retention_days":90,"confidence":0.9}')
+        }
+        findings = _preservation_findings(section, "Store event records.")
+        self.assertIn(
+            {"kind": "number", "token": "90", "severity": "blocking"},
+            findings,
+        )
+
     def test_declared_json_wrapper_is_valid_quote_evidence(self) -> None:
         quote = "The attribute shall use access rights R-/R-/R-/R-."
         json_text = (
@@ -694,6 +708,48 @@ class NegativeExemplarTests(unittest.TestCase):
 
 
 class ExtractProgressTests(unittest.TestCase):
+    def test_parallel_packages_preserve_order_context_and_local_failure(self) -> None:
+        from contextvars import ContextVar
+        from threading import Barrier, Lock
+
+        sections = [
+            _clause("4.1", ["B1"], "The meter shall log events."),
+            _clause("4.2", ["B2"], "The meter shall alarm."),
+            _clause("4.3", ["B3"], "The meter shall display readings."),
+        ]
+        barrier = Barrier(2, timeout=5)
+        context = ContextVar("test_extract_context", default="missing")
+        token = context.set("full-document")
+        observed = []
+        lock = Lock()
+        events = []
+
+        def chat(system: str, user: str) -> dict:
+            with lock:
+                observed.append(context.get())
+            if user in {"B1", "B2"}:
+                barrier.wait()  # Fails if execution becomes serial again.
+            if user == "B2":
+                raise RuntimeError("one package unavailable")
+            return {"items": [{"objective": "log events", "source_block_ids": [user]}]}
+
+        try:
+            with patch.dict(os.environ, {"RATOMIZER_LLM_CONCURRENCY": "2"}), patch.object(
+                fe, "_build_package_prompt", side_effect=lambda p: p["target"]["block_ids"][0]
+            ):
+                items, route = fe.extract_functional_requirements(
+                    sections, chat=chat, route="openai_compatible", strategy="clause_family",
+                    progress_callback=events.append,
+                )
+        finally:
+            context.reset(token)
+        self.assertEqual(route, "mixed")
+        self.assertEqual([item["source_block_ids"] for item in items], [["B1"], ["B2"], ["B3"]])
+        self.assertEqual(items[0]["objective"], "log events")
+        self.assertEqual(items[2]["objective"], "log events")
+        self.assertEqual(observed, ["full-document"] * 3)
+        self.assertEqual([event["completed"] for event in events], [0, 1, 2, 3])
+
     def test_clause_family_emits_initial_and_per_package(self) -> None:
         """每条款包回调一次——直抽不报进度时 GUI 会在 0% 停半小时。"""
         sections = [

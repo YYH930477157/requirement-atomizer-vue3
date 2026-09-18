@@ -1074,42 +1074,47 @@ def generate_annotation_translations(out_dir: Path, *, route: str | None,
         workers = 1
     # 并发批次 + 每批完成即追加日志落盘（分析富化 288 条串行数小时+零落盘的教训，同对策；
     # 追加而非整档重写：全档翻译的读-合-写累积成本是 O(N²)，且锁内序列化所有并发完成）
+    def translate_and_validate(batch):
+        batch_failure = ""
+        calls = 0
+        failed = 0
+        if optimized:
+            translations, calls, failed = _translate_batch_with_splits(
+                invoke, batch, split_rounds=_TRANSLATION_SPLIT_ROUNDS)
+            if not translations and failed:
+                batch_failure = "batch_unparseable"
+        else:
+            try:
+                translations, _parseable = _translate_marker_batch(invoke, batch)
+            except Exception as exc:
+                translations = {}
+                batch_failure = f"batch_call_failed: {str(exc)[:160]}"
+                failed = 1
+        entries = []
+        for index, (key, owner, text) in enumerate(batch, start=1):
+            translation = translations.get(index, "")
+            entry, metrics = _resolve_guarded_translation(
+                invoke, owner=owner, text=text, batch_translation=translation,
+                model=summary["model"], strategy_version=strategy_version,
+                strict=optimized,
+                batch_failure=batch_failure or ("batch_missing_item" if not translation else ""))
+            entries.append((key, entry, metrics))
+        return entries, calls, failed
+
+    # Include guarded retries in the bounded worker pool. Running them in the
+    # collector serialized paid calls and delayed persistence of other batches.
+    # Only the collector mutates summary/sidecar and writes the journal.
     journal_keys: set[str] = set()
     with ThreadPoolExecutor(max_workers=max(1, workers)) as executor:
-        if optimized:
-            futures = {submit_with_context(
-                           executor, _translate_batch_with_splits, invoke, batch,
-                           split_rounds=_TRANSLATION_SPLIT_ROUNDS): batch
-                       for batch in batches}
-        else:
-            futures = {submit_with_context(
-                           executor, _translate_marker_batch, invoke, batch): batch
-                       for batch in batches}
+        futures = [submit_with_context(executor, translate_and_validate, batch)
+                   for batch in batches]
         for future in as_completed(futures):
-            batch = futures[future]
-            batch_failure = ""
+            entries, calls, failed = future.result()
             if optimized:
-                # _translate_batch_with_splits 永不抛异常；返回 (result, calls, failed)。
-                translations, calls, failed = future.result()
                 summary["batch_calls"] += calls
-                summary["failed_calls"] += failed
-                if not translations and failed:
-                    batch_failure = "batch_unparseable"
-            else:
-                try:
-                    translations, _parseable = future.result()
-                except Exception as exc:
-                    translations = {}
-                    batch_failure = f"batch_call_failed: {str(exc)[:160]}"
-                    summary["failed_calls"] += 1
+            summary["failed_calls"] += failed
             changed_keys: set[str] = set()
-            for index, (key, owner, text) in enumerate(batch, start=1):
-                translation = translations.get(index, "")
-                entry, metrics = _resolve_guarded_translation(
-                    invoke, owner=owner, text=text, batch_translation=translation,
-                    model=summary["model"], strategy_version=strategy_version,
-                    strict=optimized,
-                    batch_failure=batch_failure or ("batch_missing_item" if not translation else ""))
+            for key, entry, metrics in entries:
                 for metric, value in metrics.items():
                     summary[metric] += value
                 if entry.get("status") == "unresolved":

@@ -35,7 +35,15 @@ class FreshPipelineRegressionTests(unittest.TestCase):
             out_dir = tmp_path / "out"
             self.write_minimal_docx(input_path)
 
-            manifest = atomize.run_atomizer_pipeline(input_path, out_dir, chunk_chars=800)
+            # Atomic candidates are an explicitly selected legacy track. Keep this
+            # regression focused on that legacy output instead of relying on the
+            # production functional-extract default.
+            manifest = atomize.run_atomizer_pipeline(
+                input_path,
+                out_dir,
+                chunk_chars=800,
+                include_atomic_candidates=True,
+            )
 
             atomic = read_jsonl(out_dir / "atomic_requirements.jsonl")
             quality = json.loads((out_dir / "quality_report.json").read_text(encoding="utf-8"))

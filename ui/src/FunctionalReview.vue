@@ -94,9 +94,14 @@ type FunctionalItem = {
   functional_requirement_id: string
   objective?: string
   title?: string
+  title_zh?: string
   behaviors?: string[]
   preconditions?: string[]
   data_constraints?: string[]
+  objective_zh?: string
+  behaviors_zh?: string[]
+  preconditions_zh?: string[]
+  data_constraints_zh?: string[]
   variants?: string[]
   exceptions?: string[]
   related_dlms_objects?: string[]
@@ -1429,7 +1434,7 @@ function toggleChildren(itemId: string) {
           <header class="detail-head">
             <div>
               <h3 class="detail-id">{{ selectedItem.functional_requirement_id }}</h3>
-              <p class="detail-objective">{{ selectedItem.objective || selectedItem.title || "（未填写目标）" }}</p>
+              <p class="detail-objective">{{ selectedItem.objective_zh || selectedItem.objective || selectedItem.title_zh || selectedItem.title || "（未填写目标）" }}</p>
             </div>
             <span
               v-if="selectedState?.lifecycle_state"
@@ -1440,17 +1445,17 @@ function toggleChildren(itemId: string) {
           <!-- 功能字段 -->
           <section class="detail-block">
             <h4 class="block-title">功能描述</h4>
-            <div v-if="selectedItem.behaviors?.length" class="field">
+            <div v-if="(selectedItem.behaviors_zh || selectedItem.behaviors)?.length" class="field">
               <span class="field-label">行为</span>
-              <ul class="field-list"><li v-for="(line, idx) in selectedItem.behaviors" :key="`b-${idx}`">{{ line }}</li></ul>
+              <ul class="field-list"><li v-for="(line, idx) in (selectedItem.behaviors_zh || selectedItem.behaviors)" :key="`b-${idx}`">{{ line }}</li></ul>
             </div>
-            <div v-if="selectedItem.preconditions?.length" class="field">
+            <div v-if="(selectedItem.preconditions_zh || selectedItem.preconditions)?.length" class="field">
               <span class="field-label">前置条件</span>
-              <ul class="field-list"><li v-for="(line, idx) in selectedItem.preconditions" :key="`p-${idx}`">{{ line }}</li></ul>
+              <ul class="field-list"><li v-for="(line, idx) in (selectedItem.preconditions_zh || selectedItem.preconditions)" :key="`p-${idx}`">{{ line }}</li></ul>
             </div>
-            <div v-if="selectedItem.data_constraints?.length" class="field">
+            <div v-if="(selectedItem.data_constraints_zh || selectedItem.data_constraints)?.length" class="field">
               <span class="field-label">数据约束</span>
-              <ul class="field-list"><li v-for="(line, idx) in selectedItem.data_constraints" :key="`d-${idx}`">{{ line }}</li></ul>
+              <ul class="field-list"><li v-for="(line, idx) in (selectedItem.data_constraints_zh || selectedItem.data_constraints)" :key="`d-${idx}`">{{ line }}</li></ul>
             </div>
             <div v-if="selectedItem.variants?.length" class="field">
               <span class="field-label">变体</span>

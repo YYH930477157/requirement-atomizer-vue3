@@ -69,6 +69,7 @@ const textModeEnabled = ref(true)
 // 三列工作区布局：拖动列头可调整顺序，边缘手柄调整宽度，工具栏可隐藏/恢复列。
 type PanelKey = "source" | "translation" | "analysis"
 const PANEL_LABELS: Record<PanelKey, string> = { source: "原文", translation: "翻译", analysis: "需求分析" }
+const PANEL_KEYS: PanelKey[] = ["source", "translation", "analysis"]
 const panelOrder = ref<PanelKey[]>(["source", "translation", "analysis"])
 const panelVisible = ref<Record<PanelKey, boolean>>({ source: true, translation: true, analysis: true })
 const panelWidths = ref<Record<PanelKey, number>>({ source: 1, translation: 0.62, analysis: 0.52 })
@@ -141,7 +142,7 @@ function panelDragStart(key: PanelKey, event: DragEvent) {
 function panelDrop(target: PanelKey, event: DragEvent) {
   const source = panelDragKey.value || (event.dataTransfer?.getData("text/plain") as PanelKey)
   panelDragKey.value = null
-  if (!source || source === target) return
+  if (!PANEL_KEYS.includes(source) || !PANEL_KEYS.includes(target) || source === target) return
   const order = panelOrder.value.filter((key) => key !== source)
   order.splice(Math.max(0, order.indexOf(target)), 0, source)
   panelOrder.value = order
@@ -992,10 +993,30 @@ const translationEntries = computed<TranslationEntry[]>(() => {
     const rowTranslation = rowKey ? pdfData.value?.row_context?.[rowKey] : null
     return [{
       id: cell.entry.cell_id,
-      text: cell.entry.text || "",
+      // 行译文对应整行，原文也展示整行，避免用整行译文冒充单元格译文。
+      text: rowTranslation?.text || cell.entry.text || "",
       translation: rowTranslation?.translation || "",
-      note: rowTranslation?.translation_note || (block ? "该单元格暂无独立翻译，请按行核对" : ""),
+      note: rowTranslation?.translation
+        ? (rowTranslation.translation_note || "当前译文对应整行，分析定位为该单元格")
+        : (block ? "该单元格暂无独立翻译，请按行核对" : ""),
       section: block?.table_title || "表格单元格",
+    }]
+  }
+  if (selectedClaim.value) {
+    const claim = selectedClaim.value
+    const block = blocks.value.find((item) => item.block_id === claim.block_id)
+    const cell = claim.table_cell_id
+      ? Object.values(pdfData.value?.cell_context || {}).find((item) => item.cell_id === claim.table_cell_id)
+      : null
+    const rowIndex = claim.data_row_index ?? cell?.data_row_index
+    const rowKey = rowIndex != null ? `${claim.block_id}#R${rowIndex}` : ""
+    const rowTranslation = rowKey ? pdfData.value?.row_context?.[rowKey] : null
+    return [{
+      id: claim.claim_id,
+      text: claim.rendered_text || claim.text || block?.text || "",
+      translation: rowTranslation?.translation || block?.translation || "",
+      note: rowTranslation?.translation_note || block?.translation_note || "",
+      section: claim.table_context?.table_title || (block?.section_path || []).filter(Boolean).pop() || "原文证据",
     }]
   }
   if (selectedReq.value) {
@@ -1208,7 +1229,7 @@ const omissionCount = computed(
 const stats = computed(() => ({
   reqs: requirements.value.length,
   anchored: requirements.value.filter((r) => (r.source_block_ids || []).length).length,
-  reviewRequired: requirements.value.filter((r) => r.review_required === true).length,
+  reviewRequired: requirements.value.filter(reviewRequiredOf).length,
   omissions: omissionCount.value,
 }))
 const internalCheckGroups = computed(() => internalChecks.value?.groups || [])
@@ -1306,6 +1327,13 @@ function statusOf(r: AiRequirement): string {
 }
 function ownershipOf(r: AiRequirement): string {
   return String(r.ownership_effective || r.ownership || "software")
+}
+function reviewRequiredOf(r: AiRequirement): boolean {
+  if (r.review_required !== true) return false
+  // 当前有效的专家裁决已完成后，不应继续显示候选单元的待确认提示。
+  const state = r.review_state as { status?: string } | null | undefined
+  return !(r.needs_reconfirmation !== true
+    && (state?.status === "accepted" || state?.status === "rejected"))
 }
 const OWNERSHIP_LABELS: Record<string, string> = { software: "软件", hardware: "硬件", co_design: "软硬件协同" }
 function devGuidanceOf(r: AiRequirement): string[] {
@@ -1965,10 +1993,10 @@ onMounted(() => {
                 v-for="r in (anchorByBlock.get(b.block_id) || [])"
                 :key="r.ai_req_id"
                 class="anno-chip"
-                :class="['st-' + statusOf(r), { sel: r.ai_req_id === selectedId, 'review-required': r.review_required }]"
+                :class="['st-' + statusOf(r), { sel: r.ai_req_id === selectedId, 'review-required': reviewRequiredOf(r) }]"
                 type="button"
                 :data-testid="`anno-${r.ai_req_id}`"
-                :title="`${moduleOf(r)} · ${r.title}${r.review_required ? ' · 待确认' : ''}`"
+                :title="`${moduleOf(r)} · ${r.title}${reviewRequiredOf(r) ? ' · 待确认' : ''}`"
                 @click.stop="select(r)"
               >{{ reqNumber(r) }} · {{ moduleOf(r) }}</button>
             </div>
@@ -2344,7 +2372,7 @@ onMounted(() => {
           <div class="dd-head">
             <span class="dd-module" data-testid="dd-module">{{ moduleOf(selectedReq) }}</span>
             <span class="dd-status" :class="'st-' + statusOf(selectedReq)">{{ STATUS_LABELS[statusOf(selectedReq)] || statusOf(selectedReq) }}</span>
-            <span v-if="selectedReq.review_required" class="dd-status st-review-required" data-testid="dd-review-required-status">待确认</span>
+            <span v-if="reviewRequiredOf(selectedReq)" class="dd-status st-review-required" data-testid="dd-review-required-status">待确认</span>
           </div>
           <div class="dd-nav">
             <span class="dd-anno-no" data-testid="dd-anno-no">批注 {{ reqNumber(selectedReq) }}<template v-if="selectedReqIndex >= 0"> · {{ selectedReqIndex + 1 }}/{{ orderedReqs.length }}</template></span>
@@ -2355,7 +2383,7 @@ onMounted(() => {
           </div>
           <h3 class="dd-title">{{ selectedReq.title }}</h3>
           <div class="dd-meta">{{ selectedReq.type }} · {{ selectedReq.priority }} · {{ selectedReq.source_section }}</div>
-          <div v-if="selectedReq.review_required" class="dd-suspicion" data-testid="dd-review-required">
+          <div v-if="reviewRequiredOf(selectedReq)" class="dd-suspicion" data-testid="dd-review-required">
             待确认：来源单元被判定为 needs_review/context，尚未确认是真实研发需求
           </div>
           <div v-if="(selectedReq.suspicion_reasons || []).length" class="dd-suspicion" data-testid="dd-suspicion">
@@ -2371,7 +2399,7 @@ onMounted(() => {
           <div class="dd-legend">{{ viewMode === "pdf" ? "左侧原版页面为核对依据，右侧为解析结果" : "解析文本可能丢失原版字形与间距，请用原版核对来源" }}</div>
           <div class="dd-section dd-result-primary" data-testid="dd-requirement-summary">
             <div class="dd-label">抽取需求</div>
-            <div class="dd-body">{{ selectedReq.description || "未生成需求摘要" }}</div>
+            <div class="dd-body">{{ selectedReq.functional_objective_zh || selectedReq.description || "未生成需求摘要" }}</div>
           </div>
           <div class="dd-section" v-if="selectedReq.source_quote">
             <div class="dd-label">抽取原句（对照左页）</div><div class="dd-quote">{{ selectedReq.source_quote }}</div>
@@ -2381,18 +2409,18 @@ onMounted(() => {
             <div class="dd-body"><strong>{{ selectedReq.functional_title || selectedReq.functional_requirement_id }}</strong></div>
             <div v-if="mergeBadgeOf(selectedReq)" :class="mergeWarnOf(selectedReq) ? 'dd-suspicion' : 'dd-consistency'"
                  data-testid="dd-merge">⧉ {{ mergeBadgeOf(selectedReq) }}</div>
-            <div v-if="selectedReq.functional_objective" class="dd-body">{{ selectedReq.functional_objective }}</div>
-            <template v-if="(selectedReq.functional_behaviors || []).length">
+            <div v-if="selectedReq.functional_objective_zh || selectedReq.functional_objective" class="dd-body">{{ selectedReq.functional_objective_zh || selectedReq.functional_objective }}</div>
+            <template v-if="(selectedReq.functional_behaviors_zh || selectedReq.functional_behaviors || []).length">
               <div class="dd-label">功能行为</div>
-              <ul class="dd-list"><li v-for="(b, i) in selectedReq.functional_behaviors" :key="i">{{ b }}</li></ul>
+              <ul class="dd-list"><li v-for="(b, i) in (selectedReq.functional_behaviors_zh || selectedReq.functional_behaviors)" :key="i">{{ b }}</li></ul>
             </template>
-            <template v-if="(selectedReq.functional_preconditions || []).length">
+            <template v-if="(selectedReq.functional_preconditions_zh || selectedReq.functional_preconditions || []).length">
               <div class="dd-label">前置条件</div>
-              <ul class="dd-list"><li v-for="(p, i) in selectedReq.functional_preconditions" :key="i">{{ p }}</li></ul>
+              <ul class="dd-list"><li v-for="(p, i) in (selectedReq.functional_preconditions_zh || selectedReq.functional_preconditions)" :key="i">{{ p }}</li></ul>
             </template>
-            <template v-if="(selectedReq.functional_data_constraints || []).length">
+            <template v-if="(selectedReq.functional_data_constraints_zh || selectedReq.functional_data_constraints || []).length">
               <div class="dd-label">数据约束</div>
-              <ul class="dd-list"><li v-for="(c, i) in selectedReq.functional_data_constraints" :key="i">{{ c }}</li></ul>
+              <ul class="dd-list"><li v-for="(c, i) in (selectedReq.functional_data_constraints_zh || selectedReq.functional_data_constraints)" :key="i">{{ c }}</li></ul>
             </template>
             <template v-if="(selectedReq.functional_variants || []).length">
               <div class="dd-label">功能变体</div>

@@ -5,6 +5,13 @@
 - 正式桌面端是 `ui/`（Vue3 + Electron）和 Python 后端。
 - 旧 `gui/` PySide6 界面、`ratomizer-gui` 入口及其测试已移除；历史段落中出现的 PySide6 内容仅记录当时的实现和决策，不代表当前仓库仍提供该能力。
 
+## 本机验证（2026-09-18）——功能直抽并发
+
+- 合入校验：翻译投影/API/多文档 portfolio/Fresh Pipeline 共 120 项通过，文档审查/功能审查前端 101 项通过；TypeScript/Vite 构建通过。Fresh Pipeline 旧测试补上显式 `include_atomic_candidates=True`，与生产默认功能轨分离，保留原子兼容路径原有断言。
+- 同日复核发现英文功能字段没有消费已完成的全文中文翻译：新增受护栏翻译投影，批注 HTML、文档审查和功能审查优先显示 `functional_*_zh`，原文引句与 PDF 保持原样；表格单元按列对齐、编号条件按序对齐并去重。MiMo ZETDC 产物已用零调用方式重导出并在 PDF 第 38 页 GPS/VTC 条目上验证。
+- ZETDC 全量实跑发现 `clause_family` 逐包串行，虽设置 `RATOMIZER_LLM_CONCURRENCY=8`，直抽仍未消费该配置。条款包现复用 `resolve_concurrency` 和 `submit_with_context` 并发执行，进度按完成数量递增，结果按源包序汇总；单包失败保留该包的 stub 与 mixed 路由语义，守恒门不变。
+- 新增并发屏障、ContextVar 传播、源顺序与局部失败回归；直抽/context-submit 66 项及 chain/conservation/unit-routing/claim-queue 128 项通过。同时修复翻译守卫重试在结果收集线程串行调用的问题：每批翻译与守卫重试都在有界 worker 内执行，仅主线程更新 sidecar/summary 与持久化。批注/翻译 165 项通过，新增守卫并发屏障测试通过。真实 MiMo 全量交付链验证结果以本机运行清单为准。
+
 ## 决策（2026-09-09c）——真实文档段落复查首轮收敛
 
 - `semantic-segmentation-v4` 已将编号义务句按正文处理，使跨视觉行的完整要求

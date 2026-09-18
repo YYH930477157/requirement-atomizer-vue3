@@ -24,6 +24,30 @@ def _seed_marker_block(out: Path, quote: str) -> None:
 
 @patch.dict(os.environ, {"RATOMIZER_TRANSLATE_BATCH": "0"})
 class TranslationModeTests(unittest.TestCase):
+    def test_guard_retries_run_concurrently_and_persist_both_batches(self) -> None:
+        from threading import Barrier
+        import annotation_translations as at
+        barrier = Barrier(2, timeout=5)
+
+        def guarded(*args, **kwargs):
+            barrier.wait()
+            return ({"translation": "有效译文", "status": "accepted", "rejected": False,
+                     "model": "injected", "strategy_version": kwargs["strategy_version"],
+                     "guards_version": at.ANNOTATION_TRANSLATION_GUARDS_VERSION}, {})
+
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {
+            "RATOMIZER_TRANSLATE_BATCH": "1", "RATOMIZER_LLM_CONCURRENCY": "2",
+        }), patch.object(at, "_translate_batch_with_splits", return_value=({}, 1, 0)), patch.object(
+            at, "_resolve_guarded_translation", side_effect=guarded
+        ):
+            texts = {dae._translation_key(t): ("block", t) for t in (
+                "The device shall log events.", "The device shall display readings.")}
+            result = dae.generate_annotation_translations(
+                Path(tmp), route="openai_compatible", chat=lambda *args: {}, texts=texts)
+            self.assertEqual(result["translated"], 2)
+            self.assertEqual(result["batch_calls"], 2)
+            self.assertEqual(set(dae._read_translation_sidecar(Path(tmp))), set(texts))
+
     def _counting_chat(self, calls: list[str]):
         def chat(system: str, user: str) -> dict:
             calls.append(user)

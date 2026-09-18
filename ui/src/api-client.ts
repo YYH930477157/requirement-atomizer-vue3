@@ -675,10 +675,18 @@ export type AiRequirement = Record<string, unknown> & {
   // 功能合成产物（functional_requirements.json,后端按 AIR id 投影;缺失=字段不存在）
   functional_requirement_id?: string
   functional_title?: string
+  functional_title_zh?: string
   functional_objective?: string
   functional_behaviors?: string[]
   functional_preconditions?: string[]
   functional_data_constraints?: string[]
+  // 已通过全文翻译护栏的中文投影；原文字段仍保留用于证据与回溯。
+  functional_objective_zh?: string
+  functional_behaviors_zh?: string[]
+  functional_preconditions_zh?: string[]
+  functional_data_constraints_zh?: string[]
+  functional_exceptions_zh?: string[]
+  functional_related_dlms_objects_zh?: string[]
   functional_variants?: Array<{ name?: string; behavior?: string }>
   functional_merge_method?: string
   functional_merge_confidence?: number

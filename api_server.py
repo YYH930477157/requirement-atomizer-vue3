@@ -89,6 +89,190 @@ REBUILD_DEBOUNCE_ENV = "RATOMIZER_REBUILD_DEBOUNCE_S"
 DEFAULT_REBUILD_DEBOUNCE_S = 1.5
 
 
+def _translation_cell_parts(value: str, expected: int) -> list[str]:
+    """Split a translated table row only when its pipe structure is stable."""
+    parts = [part.strip() for part in str(value or "").split("|")]
+    if expected and len(parts) == expected:
+        return parts
+    return []
+
+
+def _functional_translation_index(output_dir: Path) -> dict[str, list[dict[str, str]]]:
+    """Build a source-cell -> Chinese translation index for functional cards.
+
+    The extraction track deliberately keeps narrative fields in source language
+    for evidence checks.  Full translation already has a guarded, accepted
+    translation for the same blocks/table rows; this projection lets review
+    cards show Chinese without mutating the source narrative or source_quote.
+    """
+    path = _artifact_read_path(output_dir, "document_translations.jsonl", category="translation")
+    rows: dict[str, list[dict[str, str]]] = {}
+    try:
+        records = read_jsonl(path)
+    except (OSError, ValueError, TypeError):
+        return rows
+    for record in records:
+        if not isinstance(record, dict) or str(record.get("status") or "") != "translated":
+            continue
+        block_id = str(record.get("block_id") or "").strip()
+        table = record.get("table")
+        table_rows = table.get("rows") if isinstance(table, dict) else None
+        if isinstance(table_rows, list):
+            for table_row in table_rows:
+                if not isinstance(table_row, dict):
+                    continue
+                source_cells = [str(cell or "").strip() for cell in (table_row.get("source_cells") or [])]
+                translation = str(table_row.get("translation") or "").strip()
+                if not source_cells or not translation:
+                    continue
+                translated_cells = _translation_cell_parts(translation, len(source_cells))
+                if not translated_cells:
+                    # Keep a whole-row fallback for malformed/merged rows.
+                    source_text = str(table_row.get("source_text") or "").strip()
+                    if source_text:
+                        rows.setdefault(block_id, []).append({"source": source_text, "translation": translation})
+                    continue
+                for source_cell, translated_cell in zip(source_cells, translated_cells):
+                    if source_cell and translated_cell:
+                        rows.setdefault(block_id, []).append(
+                            {"source": source_cell, "translation": translated_cell}
+                        )
+            continue
+        source = str(record.get("source_text") or "").strip()
+        translation = str(record.get("translation") or "").strip()
+        if block_id and source and translation:
+            rows.setdefault(block_id, []).append({"source": source, "translation": translation})
+    return rows
+
+
+def _functional_title_translation(output_dir: Path, title: object) -> str:
+    """Reuse an accepted heading translation when the annotation cache has one."""
+    source_title = str(title or "").strip()
+    if not source_title:
+        return ""
+    path = _artifact_read_path(output_dir, "annotation_translations.json", category="translation")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return ""
+    items = payload.get("items") if isinstance(payload, dict) else None
+    if not isinstance(items, dict):
+        return ""
+    normalized_title = re.sub(r"[^0-9a-z]+", "", source_title.casefold())
+    for record in items.values():
+        if not isinstance(record, dict) or record.get("status") != "accepted":
+            continue
+        source_head = str(record.get("source_head") or "")
+        normalized_head = re.sub(r"[^0-9a-z]+", "", source_head.casefold())
+        if normalized_title and (normalized_title in normalized_head or normalized_head.startswith(normalized_title)):
+            translation = str(record.get("translation") or "").strip()
+            if _has_cjk(translation):
+                return translation
+    return ""
+
+
+def _has_cjk(value: str) -> bool:
+    return bool(re.search(r"[\u3400-\u9fff]", str(value or "")))
+
+
+def _translated_sentence(source: str, translation: str, needle: str, *, align_sentence: bool = True) -> str:
+    """Align a behavior to the corresponding sentence when both sides split."""
+    if not align_sentence:
+        return translation
+    source_numbered = [part.strip() for part in re.split(r"(?=\b\d+\s*[.)])", source) if part.strip()]
+    translated_numbered = [part.strip() for part in re.split(r"(?=\b\d+\s*[.)])", translation) if part.strip()]
+    normalized = " ".join(str(needle or "").casefold().split())
+    if len(source_numbered) == len(translated_numbered) and len(source_numbered) > 1:
+        for index, part in enumerate(source_numbered):
+            if normalized and normalized in " ".join(part.casefold().split()):
+                return translated_numbered[index]
+        needle_tokens = set(re.findall(r"[a-z0-9]+", normalized))
+        if needle_tokens:
+            scored = [
+                (len(needle_tokens & set(re.findall(r"[a-z0-9]+", part.casefold()))), index)
+                for index, part in enumerate(source_numbered)
+            ]
+            score, index = max(scored, default=(0, 0))
+            if score >= 2:
+                return translated_numbered[index]
+    source_parts = [part.strip() for part in re.split(r"(?<=[.!?])\s+|(?<=。)\s*", source) if part.strip()]
+    translated_parts = [part.strip() for part in re.split(r"(?<=[。！？.!?])\s*", translation) if part.strip()]
+    if len(source_parts) == len(translated_parts):
+        normalized = " ".join(str(needle or "").casefold().split())
+        for index, part in enumerate(source_parts):
+            if normalized and normalized in " ".join(part.casefold().split()):
+                return translated_parts[index]
+        needle_tokens = set(re.findall(r"[a-z0-9]+", normalized))
+        if needle_tokens:
+            scored = [
+                (len(needle_tokens & set(re.findall(r"[a-z0-9]+", part.casefold()))), index)
+                for index, part in enumerate(source_parts)
+            ]
+            score, index = max(scored, default=(0, 0))
+            if score >= 2:
+                return translated_parts[index]
+    return translation
+
+
+def _functional_translation_projection(
+    item: dict[str, object],
+    index: dict[str, list[dict[str, str]]],
+    *,
+    output_dir: Path | None = None,
+) -> dict[str, object]:
+    block_ids = [str(value) for value in (item.get("source_block_ids") or []) if str(value)]
+    candidates = [entry for block_id in block_ids for entry in (index.get(block_id) or [])]
+    if not candidates:
+        return {}
+
+    def translate(value: object, *, align_sentence: bool = True) -> str:
+        source_value = str(value or "").strip()
+        if not source_value:
+            return ""
+        matches = [entry for entry in candidates if source_value.casefold() in entry["source"].casefold()]
+        if not matches:
+            matches = [entry for entry in candidates if entry["source"].casefold() in source_value.casefold()]
+        if not matches:
+            value_tokens = set(re.findall(r"[a-z0-9]+", source_value.casefold()))
+            scored = []
+            for entry in candidates:
+                source_tokens = set(re.findall(r"[a-z0-9]+", entry["source"].casefold()))
+                overlap = len(value_tokens & source_tokens)
+                if overlap >= 2:
+                    scored.append((overlap, -len(entry["source"]), entry))
+            if scored:
+                matches = [max(scored, key=lambda row: (row[0], row[1]))[2]]
+        if not matches:
+            return ""
+        match = min(matches, key=lambda entry: len(entry["source"]))
+        result = _translated_sentence(
+            match["source"], match["translation"], source_value,
+            align_sentence=align_sentence,
+        )
+        return result if _has_cjk(result) else ""
+
+    projected: dict[str, object] = {}
+    if output_dir is not None:
+        title_zh = _functional_title_translation(output_dir, item.get("title"))
+        if title_zh:
+            projected["functional_title_zh"] = title_zh
+    objective = translate(item.get("objective"), align_sentence=False)
+    if objective:
+        projected["functional_objective_zh"] = objective
+    for field in ("behaviors", "preconditions", "data_constraints", "exceptions", "related_dlms_objects"):
+        values = item.get(field)
+        if not isinstance(values, list):
+            continue
+        translated = []
+        for value in values:
+            result = translate(value)
+            if result and result not in translated:
+                translated.append(result)
+        if translated:
+            projected[f"functional_{field}_zh"] = translated
+    return projected
+
+
 def _artifact_read_path(root: Path, filename: str, *, category: str | None = None) -> Path:
     """Resolve a result artifact without bypassing package_v1 addressing.
 
@@ -2524,14 +2708,27 @@ def _project_functional_review_view(
     snapshot = read_ai_review_authority_snapshot(output_dir)
     states = dict(snapshot.get("states") or {})
     product_fingerprint = str(payload.get("fingerprint") or "")
+    translation_index = _functional_translation_index(output_dir)
     rows: list[dict] = []
     for item in items:
         if not isinstance(item, dict):
             continue
         row = dict(item)
+        projected_translation = _functional_translation_projection(
+            item, translation_index, output_dir=output_dir
+        )
+        row.update(projected_translation)
+        row.update({
+            key.removeprefix("functional_"): value
+            for key, value in projected_translation.items()
+        })
         state = review_state_for_requirement(row, states)
         needs_reconfirmation = review_state_needs_reconfirmation(row, state)
         effective_state = None if needs_reconfirmation else state
+        if effective_state and effective_state.get("status") in {"accepted", "rejected"}:
+            # 候选层的 review_required 是待确认提示，不是永久属性；当前裁决已生效后
+            # 清掉它，避免批注界面继续把已处置条目标成“尚未确认”。
+            row["review_required"] = False
         rid = source_ai_requirement_id(row)
         row["level"] = "functional"
         row["review_state"] = state
@@ -2560,6 +2757,7 @@ def _functional_membership(output_dir: Path) -> dict[str, dict]:
     items = payload.get("items") if isinstance(payload, dict) else None
     if not isinstance(items, list):
         return {}
+    translation_index = _functional_translation_index(output_dir)
     mapping: dict[str, dict] = {}
     for item in items:
         if not isinstance(item, dict):
@@ -2580,6 +2778,11 @@ def _functional_membership(output_dir: Path) -> dict[str, dict]:
             "functional_source_count": len(item.get("source_ai_requirement_ids") or []),
             "functional_conflict_flags": item.get("conflict_flags") or [],
         }
+        projected_translation = _functional_translation_projection(
+            item, translation_index, output_dir=output_dir
+        )
+        if projected_translation:
+            projected.update(projected_translation)
         for source_id in item.get("source_ai_requirement_ids") or []:
             mapping[str(source_id)] = projected
         # §3.3：直抽条目无原子来源——以自身稳定主键挂功能字段，功能卡在批注视图可见
@@ -2898,6 +3101,8 @@ def _enrich_ai_requirement_rows(
         row["ai_req_id"] = rid
         needs_reconfirmation = review_state_needs_reconfirmation(row, state)
         effective_state = None if needs_reconfirmation else state
+        if effective_state and effective_state.get("status") in {"accepted", "rejected"}:
+            row["review_required"] = False
         row.update(membership.get(rid, {}))
         row.update(analysis_map.get(rid, {}))   # 兼容保留；当前视图不消费富化叙述字段
         row["anchor_block_id"] = anchor_block_id(req, text_by_block, noise_block_ids=noise_block_ids)

@@ -1342,6 +1342,54 @@ def _scripts_disjoint(a: set[str], b: set[str]) -> bool:
     return not (a & b)
 
 
+# atomic_requirements.jsonl 的这些字段只描述产物身份/来源/置信度；其余字段可能
+# 携带真实约束（例如 parameters、condition 或扩展的 retention_days），保真检查不能
+# 通过只保留 requirement 字段把它们静默删除。
+_ATOMIC_JSON_PROVENANCE_FIELDS = {
+    "req_id", "stable_req_id", "source_id", "source_type", "source_refs",
+    "confidence", "generated_by", "kb_matches",
+}
+
+
+def _json_scalar_text(value: Any) -> list[str]:
+    """递归展开 JSON 业务字段，保留数值/布尔约束，不带字段名噪声。"""
+    if value is None:
+        return []
+    if isinstance(value, dict):
+        result: list[str] = []
+        for nested in value.values():
+            result.extend(_json_scalar_text(nested))
+        return result
+    if isinstance(value, list):
+        result: list[str] = []
+        for nested in value:
+            result.extend(_json_scalar_text(nested))
+        return result
+    return [str(value)]
+
+
+def _atomic_json_business_text(source_text: str) -> str:
+    """从 JSONL 中移除明确元数据，同时保留所有可能的业务约束字段。"""
+    records: list[str] = []
+    parsed_any = False
+    for line in source_text.splitlines():
+        try:
+            row = json.loads(line)
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if not isinstance(row, dict):
+            continue
+        parsed_any = True
+        values: list[str] = []
+        for key, value in row.items():
+            if str(key) in _ATOMIC_JSON_PROVENANCE_FIELDS:
+                continue
+            values.extend(_json_scalar_text(value))
+        if values:
+            records.append(" ".join(values))
+    return "\n".join(records) if parsed_any and records else source_text
+
+
 def _preservation_findings(
     section: dict[str, Any], narrative_union: str,
     known_section_ids: set[str] | None = None,
@@ -1358,17 +1406,10 @@ def _preservation_findings(
     """
     # 表格标记（[TBL-NNNNNN] …）是管线定位符：其数字不是文档内容，剥离后再建基线（guards-v6）
     source_text = _strip_table_markers(str(section.get("text") or ""))
-    # JSON 元数据数字不是保真令牌；只比对嵌入的 requirement 正文。
+    # JSON 元数据数字不是保真令牌；保留其他字段中的真实业务约束。
     if any("atomic_requirements.jsonl" in str(part)
            for part in (section.get("section_path") or [])):
-        embedded_requirements: list[str] = []
-        for match in re.finditer(r'"requirement"\s*:\s*"((?:\\.|[^"\\])*)"', source_text):
-            try:
-                embedded_requirements.append(json.loads('"' + match.group(1) + '"'))
-            except (TypeError, json.JSONDecodeError):
-                continue
-        if embedded_requirements:
-            source_text = "\n".join(embedded_requirements)
+        source_text = _atomic_json_business_text(source_text)
     if _scripts_disjoint(
         _script_profile(source_text), _script_profile(narrative_union),
     ):
@@ -2790,14 +2831,19 @@ def _extract_by_context_packages(
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> tuple[list[dict[str, Any]], str]:
     """clause_family 策略：每条款包一次 LLM 调用；包级失败只退化受影响条款。"""
+    # 条款包彼此独立。旧实现逐包串行调用，长文档在远端模型响应较慢时会被
+    # 放大到数小时；复用项目统一的并发度和 ContextVar 传播机制，仍按原始
+    # 包序合并结果，保证产物稳定。stub/测试路径也走同一逻辑但不会产生网络调用。
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from context_submit import submit_with_context
+    from ai_extract import resolve_concurrency
+
     packages = build_context_packages(sections, doc_map=doc_map, semantic_pre_review=semantic_pre_review, max_chars=max_chars)
-    items: list[dict[str, Any]] = []
-    llm_ok = 0
-    stub_fallback = 0
     bank = bank or {}
     total = len(packages)
     _emit_functional_extract_progress(progress_callback, completed=0, total=total)
-    for index, package in enumerate(packages, start=1):
+
+    def process_package(package: dict[str, Any]) -> tuple[list[dict[str, Any]], bool]:
         target = package["target"]
         package_items: list[dict[str, Any]] | None = None
         negative_exemplars = _negative_exemplars_for_section(target, bank)
@@ -2809,14 +2855,35 @@ def _extract_by_context_packages(
                 LOGGER.warning("functional_extract 条款包 LLM 调用失败，该条款退回 stub：%s", exc)
                 package_items = None
         if package_items is None:
-            items.append(_stub_item(target, 1))
-            stub_fallback += 1
-        else:
-            items.extend(package_items)
+            return [_stub_item(target, 1)], False
+        return package_items, True
+
+    ordered_results: list[tuple[list[dict[str, Any]], bool] | None] = [None] * total
+    completed = 0
+    with ThreadPoolExecutor(max_workers=resolve_concurrency(None)) as executor:
+        futures = {
+            submit_with_context(executor, process_package, package): index
+            for index, package in enumerate(packages)
+        }
+        for future in as_completed(futures):
+            index = futures[future]
+            ordered_results[index] = future.result()
+            completed += 1
+            _emit_functional_extract_progress(
+                progress_callback, completed=completed, total=total,
+            )
+
+    items: list[dict[str, Any]] = []
+    llm_ok = 0
+    stub_fallback = 0
+    for result in ordered_results:
+        assert result is not None  # Future failures propagate above; never drop a package.
+        package_items, package_ok = result
+        items.extend(package_items)
+        if package_ok:
             llm_ok += 1
-        _emit_functional_extract_progress(
-            progress_callback, completed=index, total=total,
-        )
+        else:
+            stub_fallback += 1
     if active_chat is None or llm_ok == 0:
         final_route = "stub"
     elif stub_fallback:
