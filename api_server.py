@@ -172,46 +172,77 @@ def _functional_title_translation(output_dir: Path, title: object) -> str:
 
 
 def _has_cjk(value: str) -> bool:
-    return bool(re.search(r"[\u3400-\u9fff]", str(value or "")))
+    text = str(value or "")
+    cjk = len(re.findall(r"[\u3400-\u9fff]", text))
+    # Replacement characters and mojibake are common when a provider returns a
+    # response with the wrong charset. Never expose that as an accepted Chinese
+    # projection; the caller will retain the source-language field instead.
+    replacement = text.count("�")
+    if replacement or cjk < 2:
+        return False
+    letters = len(re.findall(r"[A-Za-z\u3400-\u9fff]", text))
+    return cjk / max(1, letters) >= 0.08
 
 
-def _translated_sentence(source: str, translation: str, needle: str, *, align_sentence: bool = True) -> str:
-    """Align a behavior to the corresponding sentence when both sides split."""
-    if not align_sentence:
-        return translation
-    source_numbered = [part.strip() for part in re.split(r"(?=\b\d+\s*[.)])", source) if part.strip()]
-    translated_numbered = [part.strip() for part in re.split(r"(?=\b\d+\s*[.)])", translation) if part.strip()]
-    normalized = " ".join(str(needle or "").casefold().split())
-    if len(source_numbered) == len(translated_numbered) and len(source_numbered) > 1:
-        for index, part in enumerate(source_numbered):
-            if normalized and normalized in " ".join(part.casefold().split()):
-                return translated_numbered[index]
-        needle_tokens = set(re.findall(r"[a-z0-9]+", normalized))
-        if needle_tokens:
-            scored = [
-                (len(needle_tokens & set(re.findall(r"[a-z0-9]+", part.casefold()))), index)
-                for index, part in enumerate(source_numbered)
-            ]
-            score, index = max(scored, default=(0, 0))
-            if score >= 2:
-                return translated_numbered[index]
-    source_parts = [part.strip() for part in re.split(r"(?<=[.!?])\s+|(?<=。)\s*", source) if part.strip()]
-    translated_parts = [part.strip() for part in re.split(r"(?<=[。！？.!?])\s*", translation) if part.strip()]
-    if len(source_parts) == len(translated_parts):
-        normalized = " ".join(str(needle or "").casefold().split())
-        for index, part in enumerate(source_parts):
-            if normalized and normalized in " ".join(part.casefold().split()):
-                return translated_parts[index]
-        needle_tokens = set(re.findall(r"[a-z0-9]+", normalized))
-        if needle_tokens:
-            scored = [
-                (len(needle_tokens & set(re.findall(r"[a-z0-9]+", part.casefold()))), index)
-                for index, part in enumerate(source_parts)
-            ]
-            score, index = max(scored, default=(0, 0))
-            if score >= 2:
-                return translated_parts[index]
-    return translation
+def _translation_match_score(needle: str, source: str) -> float:
+    """Prefer exact text; only accept distinctive, well-covered paraphrases."""
+    normalize = lambda value: " ".join(value.casefold().split()).rstrip(".。 ")
+    wanted, available = normalize(needle), normalize(source)
+    if not wanted or not available:
+        return 0.0
+    if wanted in available:
+        return 1.0
+    stopwords = {"a", "an", "the", "shall", "should", "be", "to", "of", "and",
+                 "for", "in", "on", "at", "is", "are", "with", "as", "by"}
+    tokens = lambda value: set(re.findall(r"[a-z]+|\d+(?:\.\d+)*", value)) - stopwords
+    wanted_tokens, source_tokens = tokens(wanted), tokens(available)
+    overlap = len(wanted_tokens & source_tokens)
+    score = overlap / max(1, len(wanted_tokens))
+    return score if overlap >= 2 and score >= 0.5 else 0.0
+
+
+def _translated_sentence(source: str, translation: str, needle: str) -> str:
+    """Reuse a uniquely aligned sentence, never a guessed whole paragraph."""
+    normalize = lambda value: " ".join(value.casefold().split()).rstrip(".。 ")
+    numbers = lambda value: set(re.findall(r"\d+(?:\.\d+)*", value))
+    if normalize(source) == normalize(needle):
+        return translation if numbers(source) <= numbers(translation) else ""
+
+    # A decimal such as 2.5 mm is not a numbered list. Require a real list
+    # delimiter (whitespace after the marker) and the same numbering on both sides.
+    # Accept a marker after Chinese punctuation as well as whitespace, while
+    # excluding decimal points because the preceding character is a digit.
+    marker = r"(?<![A-Za-z0-9])(\d+)[.)]\s+"
+    source_markers = list(re.finditer(marker, source))
+    translated_markers = list(re.finditer(marker, translation))
+    if (source_markers and len(source_markers) > 1
+            and [m.group(1) for m in source_markers] == [m.group(1) for m in translated_markers]):
+        def numbered_parts(value, matches):
+            starts = [m.start() for m in matches] + [len(value)]
+            return [value[a:b].strip() for a, b in zip(starts, starts[1:])]
+        source_parts = numbered_parts(source, source_markers)
+        translated_parts = numbered_parts(translation, translated_markers)
+    else:
+        # Split punctuation, except periods inside numbers. Chinese punctuation
+        # needs no trailing whitespace; English full stops do.
+        split = r"(?<=[。！？])\s*|(?<=[.!?])\s+(?!\d)|(?<=[!?])\s*"
+        source_parts = [part.strip() for part in re.split(split, source) if part.strip()]
+        translated_parts = [part.strip() for part in re.split(split, translation) if part.strip()]
+    if len(source_parts) != len(translated_parts):
+        return ""
+    scored = sorted(
+        ((_translation_match_score(needle, part), i) for i, part in enumerate(source_parts)),
+        reverse=True,
+    )
+    if not scored or scored[0][0] == 0:
+        return ""
+    if len(scored) > 1 and scored[0][0] - scored[1][0] < 0.15:
+        return ""
+    _, index = scored[0]
+    result = translated_parts[index]
+    # Even an accepted document translation must preserve this field's numbers.
+    required_numbers = numbers(needle) | numbers(source_parts[index])
+    return result if required_numbers <= numbers(result) else ""
 
 
 def _functional_translation_projection(
@@ -225,50 +256,36 @@ def _functional_translation_projection(
     if not candidates:
         return {}
 
-    def translate(value: object, *, align_sentence: bool = True) -> str:
+    def translate(value: object) -> str:
         source_value = str(value or "").strip()
         if not source_value:
             return ""
-        matches = [entry for entry in candidates if source_value.casefold() in entry["source"].casefold()]
-        if not matches:
-            matches = [entry for entry in candidates if entry["source"].casefold() in source_value.casefold()]
-        if not matches:
-            value_tokens = set(re.findall(r"[a-z0-9]+", source_value.casefold()))
-            scored = []
-            for entry in candidates:
-                source_tokens = set(re.findall(r"[a-z0-9]+", entry["source"].casefold()))
-                overlap = len(value_tokens & source_tokens)
-                if overlap >= 2:
-                    scored.append((overlap, -len(entry["source"]), entry))
-            if scored:
-                matches = [max(scored, key=lambda row: (row[0], row[1]))[2]]
-        if not matches:
-            return ""
-        match = min(matches, key=lambda entry: len(entry["source"]))
-        result = _translated_sentence(
-            match["source"], match["translation"], source_value,
-            align_sentence=align_sentence,
-        )
-        return result if _has_cjk(result) else ""
+        if _has_cjk(source_value):
+            return source_value
+        matches = {
+            result
+            for entry in candidates
+            if (result := _translated_sentence(entry["source"], entry["translation"], source_value))
+            and _has_cjk(result)
+        }
+        return next(iter(matches)) if len(matches) == 1 else ""
 
     projected: dict[str, object] = {}
     if output_dir is not None:
         title_zh = _functional_title_translation(output_dir, item.get("title"))
         if title_zh:
             projected["functional_title_zh"] = title_zh
-    objective = translate(item.get("objective"), align_sentence=False)
+    objective = translate(item.get("objective"))
     if objective:
         projected["functional_objective_zh"] = objective
     for field in ("behaviors", "preconditions", "data_constraints", "exceptions", "related_dlms_objects"):
         values = item.get(field)
         if not isinstance(values, list):
             continue
-        translated = []
-        for value in values:
-            result = translate(value)
-            if result and result not in translated:
-                translated.append(result)
-        if translated:
+        # Preserve item count/order, including untranslated entries. A translated
+        # subset or deduplication would silently hide original analytical fields.
+        translated = [translate(value) or str(value) for value in values]
+        if translated != values:
             projected[f"functional_{field}_zh"] = translated
     return projected
 
