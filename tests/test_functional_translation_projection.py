@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 from api_server import (
+    _functional_title_translation,
     _functional_translation_index,
     _functional_translation_projection,
     _translated_sentence,
@@ -11,6 +12,29 @@ from api_server import (
 
 
 class FunctionalTranslationProjectionTests(unittest.TestCase):
+    def test_packaged_translations_resolve_from_root_and_analysis_directory(self):
+        from result_package import initialize_result_package, governed_artifact_path
+
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            source = root / "source.pdf"
+            source.write_bytes(b"fixture")
+            initialize_result_package(root, input_path=source, requested_stages=["atomize"])
+            governed_artifact_path(root, "document_translations.jsonl", category="pipeline").write_text(
+                json.dumps({"block_id": "B1", "status": "translated",
+                            "source_text": "Send GPS coordinates.",
+                            "translation": "发送 GPS 坐标。"}) + "\n", encoding="utf-8")
+            governed_artifact_path(root, "annotation_translations.json", category="cache").write_text(
+                json.dumps({"items": {"heading": {"status": "accepted",
+                            "source_head": "Technical requirements",
+                            "translation": "技术要求"}}}), encoding="utf-8")
+            for directory in (root, root / ".ratomizer" / "pipeline"):
+                with self.subTest(directory=directory):
+                    self.assertEqual(_functional_translation_index(directory)["B1"][0]["translation"],
+                                     "发送 GPS 坐标。")
+                    self.assertEqual(_functional_title_translation(directory, "Technical requirements"),
+                                     "技术要求")
+
     def test_table_cells_project_to_chinese_without_changing_source_fields(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

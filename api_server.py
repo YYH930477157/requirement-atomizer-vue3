@@ -105,7 +105,7 @@ def _functional_translation_index(output_dir: Path) -> dict[str, list[dict[str, 
     translation for the same blocks/table rows; this projection lets review
     cards show Chinese without mutating the source narrative or source_quote.
     """
-    path = _artifact_read_path(output_dir, "document_translations.jsonl", category="translation")
+    path = _artifact_read_path(output_dir, "document_translations.jsonl", category="pipeline")
     rows: dict[str, list[dict[str, str]]] = {}
     try:
         records = read_jsonl(path)
@@ -150,7 +150,7 @@ def _functional_title_translation(output_dir: Path, title: object) -> str:
     source_title = str(title or "").strip()
     if not source_title:
         return ""
-    path = _artifact_read_path(output_dir, "annotation_translations.json", category="translation")
+    path = _artifact_read_path(output_dir, "annotation_translations.json", category="cache")
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError, TypeError):
