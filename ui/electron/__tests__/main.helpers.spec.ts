@@ -1023,6 +1023,30 @@ describe("resolveDeliverableFiles", () => {
     }
   })
 
+  it("reports nested package deliverables without allowing traversal", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "ratom-nested-dl-"))
+    try {
+      mkdirSync(path.join(dir, ".ratomizer", "pipeline", "engineering_requirements"), { recursive: true })
+      writeFileSync(
+        path.join(dir, ".ratomizer", "pipeline", "engineering_requirements", "engineering_requirements.json"),
+        "{}",
+      )
+      const result = resolveDeliverableFiles(dir, [
+        "engineering_requirements/engineering_requirements.json",
+        "../secret.txt",
+        "nested/../secret.txt",
+      ])
+      expect(result["engineering_requirements/engineering_requirements.json"].exists).toBe(true)
+      expect(result["engineering_requirements/engineering_requirements.json"].path).toContain(
+        `${path.sep}engineering_requirements${path.sep}engineering_requirements.json`,
+      )
+      expect(result["../secret.txt"].exists).toBe(false)
+      expect(result["nested/../secret.txt"].exists).toBe(false)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it("rejects path traversal names", () => {
     const result = resolveDeliverableFiles("E:\\out", ["../secret.txt"])
     expect(result["../secret.txt"].exists).toBe(false)

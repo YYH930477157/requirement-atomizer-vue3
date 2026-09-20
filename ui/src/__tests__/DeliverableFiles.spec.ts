@@ -53,7 +53,7 @@ describe("deliverable presence panel", () => {
     const panel = wrapper.find('[data-testid="deliverable-html"]')
     expect(panel.exists()).toBe(true)
     const rows = panel.findAll(".dl-file")
-    expect(rows).toHaveLength(3)
+    expect(rows).toHaveLength(7)
     expect(panel.text()).not.toContain("software_requirements.xlsx")
 
     const missingXlsx = rows.find((row) => row.text().includes("clarification_questions.xlsx"))
@@ -80,7 +80,7 @@ describe("deliverable presence panel", () => {
     await openRunPanel(wrapper)
 
     const rows = wrapper.find('[data-testid="deliverable-html"]').findAll(".dl-file")
-    expect(rows).toHaveLength(3)
+    expect(rows).toHaveLength(7)
     for (const row of rows) {
       expect(row.classes()).toContain("is-missing")
       expect(row.text()).toContain("未生成")

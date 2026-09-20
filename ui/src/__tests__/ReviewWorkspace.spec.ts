@@ -2153,6 +2153,47 @@ describe("review workspace shell", () => {
     })
   })
 
+  it("keeps an explicitly failed chain stage red even when its counters are complete", async () => {
+    const runPromise = new Promise<{ kind: string; out_dir: string }>(() => {})
+    type AnyEvent = { stage: string; step?: string; status?: string; completed?: number; total?: number; percent?: number }
+    let progressHandler: (event: AnyEvent) => void = () => {
+      throw new Error("progress handler was not registered")
+    }
+    Object.defineProperty(window, "ratomizerDesktop", {
+      configurable: true,
+      value: {
+        getApiSession: vi.fn().mockResolvedValue(null),
+        openDocument: vi.fn().mockResolvedValue("C:\\input\\doc.pdf"),
+        selectOutputDir: vi.fn().mockResolvedValue("E:\\out\\demo"),
+        openOutput: vi.fn(),
+        openPath: vi.fn(),
+        startApiSession: vi.fn().mockResolvedValue(null),
+        runPipeline: vi.fn().mockReturnValue(runPromise),
+        onTaskProgress: vi.fn((handler: (event: AnyEvent) => void) => {
+          progressHandler = handler
+          return vi.fn()
+        }),
+      },
+    })
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({ ok: true, json: async () => [] } as Response)
+
+    const wrapper = mount(App)
+    await wrapper.find('[data-testid="action-open-document"]').trigger("click")
+    await wrapper.find('[data-testid="nav-运行"]').trigger("click")
+    await flushPromises()
+    await wrapper.find('[data-testid="action-select-output-dir"]').trigger("click")
+    void wrapper.find('[data-testid="action-run-pipeline"]').trigger("click")
+    await vi.waitFor(() => {
+      expect(window.ratomizerDesktop?.onTaskProgress).toHaveBeenCalled()
+    })
+
+    progressHandler({ stage: "chain", step: "clarification-report", status: "failed", completed: 3, total: 3, percent: 100 })
+    progressHandler({ stage: "chain", step: "compose", completed: 3, total: 4, percent: 75 })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="run-stage-clarification-report"]').classes()).toContain("stage-failed")
+    expect(wrapper.find('[data-testid="run-stage-clarification-report"]').text()).toContain("失败")
+  })
+
   it("warns when a running stage goes quiet instead of silently looking stuck", async () => {
     // 单章 LLM 调用可能数分钟无事件——超过阈值后界面必须区分"慢"与"死"
     vi.useFakeTimers()

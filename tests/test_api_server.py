@@ -6,6 +6,7 @@ token 不匹配时拒绝。可独立运行，无网络/LLM 依赖。
 from __future__ import annotations
 
 import json
+from io import BytesIO
 import os
 import sys
 import tempfile
@@ -107,6 +108,19 @@ def _broken_package_api(package_root: Path):
 
 
 class ResultPackageEndpointTests(unittest.TestCase):
+    def test_rejects_oversized_json_body_before_reading_request(self) -> None:
+        handler = object.__new__(api_server.RequirementAPIHandler)
+        handler.headers = {"Content-Length": str(api_server.MAX_JSON_BODY_BYTES + 1)}
+        handler.rfile = BytesIO(b"{\"x\":\"unused\"}")
+        responses: list[tuple[dict, int]] = []
+        handler.send_json = lambda payload, status=200: responses.append((payload, status))
+        self.assertIsNone(handler.read_json_body())
+        self.assertEqual(responses, [(
+            {"error": "request body too large", "max_bytes": api_server.MAX_JSON_BODY_BYTES},
+            413,
+        )])
+        self.assertEqual(handler.rfile.tell(), 0, "oversized bodies must be rejected before reading")
+
     def test_exposes_package_root_and_internal_analysis_root(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

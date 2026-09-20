@@ -132,4 +132,25 @@ describe("partial export（守恒未闭合）run summary honesty", () => {
     expect(wrapper.find('[data-testid="software-hint"]').exists()).toBe(false)
     expect(wrapper.text()).not.toContain("software_requirements.xlsx")
   })
+
+  it("无结果包时也按最终 run_manifest 标记部分交付", async () => {
+    mockBridge({
+      summary: {
+        run_manifest: {
+          stages: {
+            atomize: { status: "ok" },
+            "llm-review": { status: "ok" },
+            "functional-extract": { status: "partial" },
+          },
+        },
+      },
+    })
+    const wrapper = mount(App)
+    await driveRun(wrapper)
+
+    await vi.waitFor(() => {
+      expect(wrapper.text()).toContain("运行未完成")
+    })
+    expect(wrapper.text()).not.toContain("运行完成：抽取与审查")
+  })
 })

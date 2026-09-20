@@ -333,6 +333,27 @@ _CACHE_FILENAMES = {
 _LOG_FILENAMES = {"run.log", "llm_trace.jsonl"}
 
 
+def _validate_governed_filename(filename: str) -> str:
+    """Keep governed artifact names inside their selected package directory."""
+    if not isinstance(filename, str):
+        raise ResultPackageError("invalid internal artifact filename")
+    candidate = filename.strip()
+    parts = Path(candidate).parts
+    if (
+        not candidate
+        or Path(candidate).is_absolute()
+        # Nested relative deliverables (for example compose's
+        # engineering_requirements/engineering_requirements.json) are valid;
+        # reject only traversal/empty segments and Windows-specific separators.
+        or "\\" in candidate
+        or ":" in candidate
+        or any(part in {"", ".", ".."} for part in parts)
+        or any(ord(char) < 32 for char in candidate)
+    ):
+        raise ResultPackageError("invalid internal artifact filename")
+    return candidate
+
+
 def governed_artifact_path(
     root: Path | str,
     filename: str,
@@ -346,6 +367,7 @@ def governed_artifact_path(
     读取不得自称"无副作用"却在盘上创建 .ratomizer/<category> 空目录；
     只有显式 for_write=True（默认，兼容既有写路径）才创建父目录。
     """
+    filename = _validate_governed_filename(filename)
     base = Path(root).expanduser().resolve()
     package_root = package_root_for_analysis_root(base)
     if package_root is None:

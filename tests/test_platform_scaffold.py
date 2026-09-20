@@ -521,6 +521,14 @@ class PlatformScaffoldTests(unittest.TestCase):
         self.assertTrue(is_allowed_origin("file://", allowed))
         self.assertFalse(is_allowed_origin("https://example.com", allowed))
 
+    def test_api_cors_does_not_allow_file_origin_without_explicit_opt_in(self) -> None:
+        # A standalone API without --allow-origin null/file:// must not let an
+        # arbitrary local HTML file read customer documents cross-origin.
+        allowed = {"http://127.0.0.1:8770", "http://localhost:8770"}
+        self.assertFalse(is_allowed_origin("file://", allowed))
+        self.assertFalse(is_allowed_origin("file:///tmp/untrusted.html", allowed))
+        self.assertFalse(is_allowed_origin("null", allowed))
+
     def test_api_token_accepts_header_and_rejects_query_value(self) -> None:
         params = {"token": ["secret"]}
 

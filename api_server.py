@@ -57,6 +57,7 @@ from table_review_state import (
 
 DEFAULT_OUTPUT = Path("out/abnt_nbr_16968_atomizer_v5")
 DEFAULT_ALLOWED_ORIGINS = {"http://127.0.0.1:8770", "http://localhost:8770"}
+MAX_JSON_BODY_BYTES = 16 * 1024 * 1024
 # M9 第 3 刀：TOKEN_HEADER 与解析/鉴权/匹配/审阅摘要帮助族逐字搬到 api_server_support，
 # 原名重导出——调用面（handler/测试的 api_server.X）零变化；patch 目标全部留守本模块。
 from api_server_support import (  # noqa: E402
@@ -2396,6 +2397,15 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", "0"))
         except ValueError:
             self.send_json({"error": "invalid content length"}, status=400)
+            return None
+        if length < 0:
+            self.send_json({"error": "invalid content length"}, status=400)
+            return None
+        if length > MAX_JSON_BODY_BYTES:
+            self.send_json({
+                "error": "request body too large",
+                "max_bytes": MAX_JSON_BODY_BYTES,
+            }, status=413)
             return None
         try:
             raw = self.rfile.read(length)

@@ -220,41 +220,44 @@ ipcMain.handle("llm:get-settings", async () => loadLlmSettings());
 ipcMain.handle("llm:save-settings", async (_event, input) => saveLlmSettings(input));
 ipcMain.handle("llm:test-connection", async (_event, input) => testLlmConnection(input));
 ipcMain.handle("task:result-package-start", async (_event, input) => {
+  const outputDir = assertAuthorizedTaskOutputDir(input?.outDir);
+  const inputPath = assertAuthorizedDocumentPath(input?.inputPath);
   // I5：legacy 扁平目录按旧管线运行，不创建 marker/.ratomizer——
   // Python initialize_result_package 保持 fail-closed，由 Electron 先行分类分流
-  const legacyPlan = planResultPackageStart(input.outDir);
+  const legacyPlan = planResultPackageStart(outputDir);
   if (legacyPlan) {
     return legacyPlan;
   }
   return runDesktopTaskProcess([
     "result-package-start",
-    "--out", input.outDir,
-    "--input", input.inputPath,
-    "--stages", (input.stages || []).join(","),
+    "--out", outputDir,
+    "--input", inputPath,
+    "--stages", Array.isArray(input?.stages) ? input.stages.join(",") : "",
   ]);
 });
 ipcMain.handle("task:result-package-complete", async (_event, input) => {
+  const outputDir = assertAuthorizedTaskOutputDir(input?.outDir);
   try {
     const payload = await runAndRememberOutput([
       "result-package-complete",
-      "--out", input.outDir,
-      "--run-id", input.runId,
-      "--completed-stages", (input.completedStages || []).join(","),
-    ], input.outDir);
-    await startApiServer(input.outDir, { forceRestart: true });
+      "--out", outputDir,
+      "--run-id", String(input?.runId || ""),
+      "--completed-stages", Array.isArray(input?.completedStages) ? input.completedStages.join(",") : "",
+    ], outputDir);
+    await startApiServer(outputDir, { forceRestart: true });
     return payload;
   } catch (error) {
     // I6：部分阶段降级不是运行失败——透传稳定错误码，渲染层显示
     // "分析未完成（部分阶段降级）"；其余错误维持 reject
     const envelope = parseTaskErrorEnvelope(error);
     if (envelope?.error?.type === "requested_stage_partial") {
-      await startApiServer(input.outDir, { forceRestart: true });
+      await startApiServer(outputDir, { forceRestart: true });
       return {
         kind: "result_package_complete",
         ok: false,
         code: "requested_stage_partial",
         message: String(envelope.error.message || "requested stage partial"),
-        out_dir: input.outDir,
+        out_dir: outputDir,
       };
     }
     throw error;
@@ -262,13 +265,18 @@ ipcMain.handle("task:result-package-complete", async (_event, input) => {
 });
 ipcMain.handle("task:result-package-fail", async (_event, input) => runDesktopTaskProcess([
   "result-package-fail",
-  "--out", input.outDir,
-  "--run-id", input.runId,
-  "--error", String(input.error || "analysis failed"),
+  "--out", assertAuthorizedTaskOutputDir(input?.outDir),
+  "--run-id", String(input?.runId || ""),
+  "--error", String(input?.error || "analysis failed"),
 ]));
 ipcMain.handle("task:run-pipeline", async (_event, input) => {
-  const payload = await runDesktopTaskProcess(buildRunPipelineArgs(input));
-  const outDir = String(payload.out_dir || input.outDir);
+  const safeInput = {
+    ...input,
+    inputPath: assertAuthorizedDocumentPath(input?.inputPath),
+    outDir: assertAuthorizedTaskOutputDir(input?.outDir),
+  };
+  const payload = await runDesktopTaskProcess(buildRunPipelineArgs(safeInput));
+  const outDir = String(payload.out_dir || safeInput.outDir);
   // 结果已经生成就先登记，API 启动失败也不能让重启后的历史入口丢失。
   rememberRecentSession(outDir);
   try {
@@ -280,14 +288,15 @@ ipcMain.handle("task:run-pipeline", async (_event, input) => {
   }
   return payload;
 });
-ipcMain.handle("task:ai-extract", async (_event, input) => runAndRememberOutput([
-  "ai-extract",
-  "--out",
-  input.outDir,
-  ...(input.llmRoute ? ["--llm-route", input.llmRoute] : []),
-  ...(input.limitSections ? ["--limit-sections", String(input.limitSections)] : []),
-  ...(input.sampleRatio ? ["--sample-ratio", String(input.sampleRatio)] : []),
-], input.outDir));
+ipcMain.handle("task:ai-extract", async (_event, input) => {
+  const outDir = assertAuthorizedTaskOutputDir(input?.outDir);
+  return runAndRememberOutput([
+    "ai-extract", "--out", outDir,
+    ...(input.llmRoute ? ["--llm-route", input.llmRoute] : []),
+    ...(input.limitSections ? ["--limit-sections", String(input.limitSections)] : []),
+    ...(input.sampleRatio ? ["--sample-ratio", String(input.sampleRatio)] : []),
+  ], outDir);
+});
 
 ipcMain.handle("logs:open", async () => {
   const dir = logsDirPath();
@@ -296,40 +305,54 @@ ipcMain.handle("logs:open", async () => {
   return { dir };
 });
 
-ipcMain.handle("task:assemble", async (_event, input) => runAndRememberOutput([
-  "assemble",
-  "--out",
-  input.outDir,
-  ...(input.enrichRoute ? ["--enrich-route", input.enrichRoute] : []),
-], input.outDir));
+ipcMain.handle("task:assemble", async (_event, input) => {
+  const outDir = assertAuthorizedTaskOutputDir(input?.outDir);
+  return runAndRememberOutput([
+    "assemble", "--out", outDir,
+    ...(input.enrichRoute ? ["--enrich-route", input.enrichRoute] : []),
+  ], outDir);
+});
 
-ipcMain.handle("task:compose", async (_event, input) =>
-  runAndRememberOutput(["compose", "--out", input.outDir], input.outDir));
+ipcMain.handle("task:compose", async (_event, input) => {
+  const outDir = assertAuthorizedTaskOutputDir(input?.outDir);
+  return runAndRememberOutput(["compose", "--out", outDir], outDir);
+});
 
-ipcMain.handle("task:requirements-analysis", async (_event, input) => runAndRefreshOutput([
-  "requirements-analysis",
-  "--out",
-  input.outDir,
-  ...(input.llmRoute ? ["--llm-route", input.llmRoute] : []),
-  ...(input.templatePath ? ["--template", assertAuthorizedTemplatePath(input.templatePath)] : []),
-], input.outDir));
+ipcMain.handle("task:requirements-analysis", async (_event, input) => {
+  const outDir = assertAuthorizedTaskOutputDir(input?.outDir);
+  return runAndRefreshOutput([
+    "requirements-analysis", "--out", outDir,
+    ...(input.llmRoute ? ["--llm-route", input.llmRoute] : []),
+    ...(input.templatePath ? ["--template", assertAuthorizedTemplatePath(input.templatePath)] : []),
+  ], outDir);
+});
 
 // 交付物链单命令编排（编排在后端，UI 只发一条命令 + 渲染进度）
-ipcMain.handle("task:chain", async (_event, input) =>
-  runAndRememberOutput(buildChainArgs(input), input.outDir));
+ipcMain.handle("task:chain", async (_event, input) => {
+  const safeInput = {
+    ...input,
+    outDir: assertAuthorizedTaskOutputDir(input?.outDir),
+  };
+  if (input?.templatePath) {
+    safeInput.templatePath = assertAuthorizedTemplatePath(input.templatePath);
+  }
+  return runAndRememberOutput(buildChainArgs(safeInput), safeInput.outDir);
+});
 
 // 澄清清单：全链疑问信号聚合 + 就绪判定（确定性零 LLM）
-ipcMain.handle("task:clarification-report", async (_event, input) =>
-  runAndRememberOutput(["clarification-report", "--out", input.outDir], input.outDir));
+ipcMain.handle("task:clarification-report", async (_event, input) => {
+  const outDir = assertAuthorizedTaskOutputDir(input?.outDir);
+  return runAndRememberOutput(["clarification-report", "--out", outDir], outDir);
+});
 
 // 成文：analyze 结果按公司标准化需求列表格式追加进对应模块 sheet（确定性零 LLM）
-ipcMain.handle("task:template-write", async (_event, input) => runAndRefreshOutput([
-  "template-write",
-  "--out",
-  input.outDir,
-  "--template",
-  assertAuthorizedTemplatePath(input.templatePath),
-], input.outDir));
+ipcMain.handle("task:template-write", async (_event, input) => {
+  const outDir = assertAuthorizedTaskOutputDir(input?.outDir);
+  return runAndRefreshOutput([
+    "template-write", "--out", outDir, "--template",
+    assertAuthorizedTemplatePath(input.templatePath),
+  ], outDir);
+});
 
 ipcMain.handle("dialog:open-template", async () => {
   const result = await dialog.showOpenDialog(mainWindow, {
@@ -341,13 +364,16 @@ ipcMain.handle("dialog:open-template", async () => {
   return result.filePaths[0];
 });
 
-ipcMain.handle("task:export-annotation-html", async (_event, input) =>
-  runAndRememberOutput(buildExportAnnotationArgs(input), input.outDir));
+ipcMain.handle("task:export-annotation-html", async (_event, input) => {
+  const outDir = assertAuthorizedTaskOutputDir(input?.outDir);
+  return runAndRememberOutput(buildExportAnnotationArgs({ ...input, outDir }), outDir);
+});
 
 ipcMain.handle("task:summary", async (_event, input) =>
-  runDesktopTaskProcess(["summary", "--out", input.outDir]));
+  runDesktopTaskProcess(["summary", "--out", assertAuthorizedTaskOutputDir(input?.outDir)]));
 
 ipcMain.handle("task:import-ai-decisions", async (_event, input) => {
+  const outputDir = assertAuthorizedTaskOutputDir(input?.outDir);
   const result = await dialog.showOpenDialog(mainWindow, {
     properties: ["openFile"],
     filters: [{ name: "AI 裁决 JSON", extensions: ["json"] }],
@@ -355,11 +381,12 @@ ipcMain.handle("task:import-ai-decisions", async (_event, input) => {
   if (result.canceled || !result.filePaths.length) {
     return { kind: "ai_decisions_import", applied: 0, skipped: 0, canceled: true };
   }
-  return runAndRememberOutput(["import-ai-decisions", "--out", input.outDir, "--file", result.filePaths[0]], input.outDir);
+  return runAndRememberOutput(["import-ai-decisions", "--out", outputDir, "--file", result.filePaths[0]], outputDir);
 });
 
 // 澄清处置回灌：同一工作簿同时导入客户答复与内部核对动作。
 ipcMain.handle("task:import-clarification-answers", async (_event, input) => {
+  const outputDir = assertAuthorizedTaskOutputDir(input?.outDir);
   const result = await dialog.showOpenDialog(mainWindow, {
     properties: ["openFile"],
     filters: [{ name: "澄清清单(已填写)", extensions: ["xlsx"] }],
@@ -367,7 +394,7 @@ ipcMain.handle("task:import-clarification-answers", async (_event, input) => {
   if (result.canceled || !result.filePaths.length) {
     return { kind: "clarification_answers", imported: 0, canceled: true };
   }
-  return runAndRememberOutput(["import-clarification-answers", "--out", input.outDir, "--file", result.filePaths[0]], input.outDir);
+  return runAndRememberOutput(["import-clarification-answers", "--out", outputDir, "--file", result.filePaths[0]], outputDir);
 });
 
 // WS-F：governed 产物读取（无 HTTP 读取端点的文件：functional_requirements.json /
@@ -804,6 +831,36 @@ function isAuthorizedReadPath(targetPath) {
   if (!apiSession?.outputDir) return false;
   // Generated previews are readable only from the active result package.
   return isInside(canonicalPath(apiSession.outputDir), canonicalTarget);
+}
+
+// Every renderer-triggered backend task must be bound to a directory that was
+// selected through a native chooser (or is the active session). The renderer
+// is not a trust boundary: a compromised page must not be able to substitute
+// an arbitrary --out/--input path and make the backend read or write elsewhere.
+function assertAuthorizedTaskOutputDir(outputDir) {
+  const candidate = String(outputDir || "").trim();
+  if (!candidate || !path.isAbsolute(candidate) || !isAuthorizedOutputDir(candidate)) {
+    throw new Error("输出目录未通过授权，请先通过文件选择器选择输出目录");
+  }
+  return canonicalPath(candidate);
+}
+
+function assertAuthorizedDocumentPath(inputPath) {
+  const candidate = String(inputPath || "").trim();
+  if (!candidate || !path.isAbsolute(candidate)) {
+    throw new Error("输入文档路径无效，请先通过文件选择器选择文档");
+  }
+  const canonical = canonicalPath(candidate);
+  if (!authorizedDocumentPaths.has(normalizeFsPath(canonical))) {
+    throw new Error("输入文档未通过授权，请重新选择文档");
+  }
+  try {
+    if (!fs.statSync(canonical).isFile()) throw new Error("输入文档不是文件");
+  } catch (error) {
+    if (error?.message?.includes("不是文件")) throw error;
+    throw new Error("输入文档不存在或不可读取");
+  }
+  return canonical;
 }
 
 // Templates are inputs selected through the native chooser.  Do not allow a

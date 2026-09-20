@@ -151,6 +151,22 @@ async function renderXlsx(bytes: Uint8Array) {
     const html = XLSX.utils.sheet_to_html(ws, { id: `xlsx-sheet-${name}`, editable: false })
     const tpl = document.createElement("template")
     tpl.innerHTML = html
+    // The workbook is user supplied. SheetJS emits markup for the grid, so
+    // keep the renderer defensive even if a future parser change preserves a
+    // formula/string as an element or attribute. Spreadsheet values are shown
+    // as text; scripts, active embeds, event handlers, and javascript URLs are
+    // never allowed into the Electron DOM.
+    tpl.content.querySelectorAll("script, iframe, object, embed, form, link, meta").forEach((node) => node.remove())
+    tpl.content.querySelectorAll<HTMLElement>("*").forEach((element) => {
+      for (const attribute of Array.from(element.attributes)) {
+        const value = attribute.value.trim().toLowerCase()
+        if (attribute.name.toLowerCase().startsWith("on")
+          || ((attribute.name === "href" || attribute.name === "src")
+            && (value.startsWith("javascript:") || value.startsWith("data:")))) {
+          element.removeAttribute(attribute.name)
+        }
+      }
+    })
     sheetBox.appendChild(tpl.content)
     wrap.appendChild(sheetBox)
   })

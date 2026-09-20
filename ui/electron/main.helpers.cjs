@@ -781,7 +781,7 @@ function resolveAutoRestoreDir(filePath, deps = {}) {
   return resolveAutoRestoreCandidates(filePath, deps)[0] || "";
 }
 
-// 最新交付物面板：按输出目录解析 basename 是否真实存在。根文件优先；
+// 最新交付物面板：按输出目录解析相对交付路径是否真实存在。根文件优先；
 // run_manifest.json 在 package_v1 下落在 .ratomizer/stages/（根目录通常没有）。
 function resolveDeliverableFiles(outDir, names, deps = {}) {
   const fsImpl = deps.fs || fs;
@@ -789,7 +789,11 @@ function resolveDeliverableFiles(outDir, names, deps = {}) {
   const result = {};
   for (const raw of names || []) {
     const name = typeof raw === "string" ? raw.trim() : "";
-    if (!root || !name || path.basename(name) !== name) {
+    const segments = name.replaceAll("\\", "/").split("/");
+    const safeName = Boolean(root && name && !path.isAbsolute(name)
+      && !name.includes("\\") && !name.includes(":")
+      && segments.every((segment) => segment && segment !== "." && segment !== ".."));
+    if (!safeName) {
       result[name || String(raw || "")] = { exists: false, path: null };
       continue;
     }
@@ -797,11 +801,11 @@ function resolveDeliverableFiles(outDir, names, deps = {}) {
     // legacy writer publishes them at the root.  Probe both locations so the
     // desktop delivery panel can open analysis outputs from either layout.
     const candidates = [
-      path.join(root, name),
-      path.join(root, ".ratomizer", "pipeline", name),
+      containedPackagePath(root, name),
+      containedPackagePath(path.join(root, ".ratomizer", "pipeline"), name),
     ];
     if (name === "run_manifest.json") {
-      candidates.push(path.join(root, ".ratomizer", "stages", "run_manifest.json"));
+      candidates.push(containedPackagePath(path.join(root, ".ratomizer", "stages"), name));
     }
     let found = null;
     for (const candidate of candidates) {

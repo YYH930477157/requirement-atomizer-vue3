@@ -272,6 +272,10 @@ def run_live_pair(
         run_atomizer_pipeline(
             input_doc, old_root,
             chunk_chars=chunk_chars, kb_paths=kb_paths, domain_pack_dir=domain_pack_dir,
+            # Keep the deterministic A-track core present on both sides of the
+            # comparison. The switch-off path must disable functional sidecars,
+            # not silently remove the very products used by the CAS gate.
+            include_atomic_candidates=True,
         )
     finally:
         _restore_env(prior_off)
@@ -284,6 +288,7 @@ def run_live_pair(
         run_atomizer_pipeline(
             input_doc, new_root,
             chunk_chars=chunk_chars, kb_paths=kb_paths, domain_pack_dir=domain_pack_dir,
+            include_atomic_candidates=True,
         )
         # 直抽侧车：开关 ON 时写 functional_requirements.json（stub route 确定性产出）。
         if functional_extract_enabled():

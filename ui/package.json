@@ -20,19 +20,19 @@
     "naive-ui": "^2.40.1",
     "pdfjs-dist": "^4.6.82",
     "vue": "^3.5.13",
-    "xlsx": "^0.18.5"
+    "xlsx": "npm:@e965/xlsx@0.20.3"
   },
   "devDependencies": {
-    "@vitejs/plugin-vue": "^5.2.1",
+    "@vitejs/plugin-vue": "^6.0.9",
     "@vue/test-utils": "^2.4.6",
-    "concurrently": "^9.1.0",
-    "electron": "^33.2.1",
-    "electron-builder": "^25.1.8",
+    "concurrently": "^9.2.4",
+    "electron": "^44.4.3",
+    "electron-builder": "^26.15.3",
     "jsdom": "^25.0.1",
-    "typescript": "^5.7.2",
-    "vite": "^6.0.3",
-    "vitest": "^2.1.8",
-    "vue-tsc": "^2.1.10",
+    "typescript": "^5.9.3",
+    "vite": "^8.3.0",
+    "vitest": "^5.0.1",
+    "vue-tsc": "^3.3.11",
     "wait-on": "^8.0.1"
   },
   "build": {
@@ -55,13 +55,37 @@
       "!dist/*.exe"
     ],
     "extraResources": [
-      { "from": "..", "to": ".", "filter": ["*.py"] },
-      { "from": "../parsers", "to": "parsers" },
-      { "from": "../requirement_kb", "to": "requirement_kb" },
-      { "from": "../domain_packs", "to": "domain_packs" },
-      { "from": "../knowledge_bases", "to": "knowledge_bases" },
-      { "from": "../llm_agents", "to": "llm_agents" },
-      { "from": "../dist-backend", "to": "backend" }
+      {
+        "from": "..",
+        "to": ".",
+        "filter": [
+          "*.py"
+        ]
+      },
+      {
+        "from": "../parsers",
+        "to": "parsers"
+      },
+      {
+        "from": "../requirement_kb",
+        "to": "requirement_kb"
+      },
+      {
+        "from": "../domain_packs",
+        "to": "domain_packs"
+      },
+      {
+        "from": "../knowledge_bases",
+        "to": "knowledge_bases"
+      },
+      {
+        "from": "../llm_agents",
+        "to": "llm_agents"
+      },
+      {
+        "from": "../dist-backend",
+        "to": "backend"
+      }
     ]
   }
 }

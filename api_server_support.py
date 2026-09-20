@@ -73,8 +73,13 @@ def parse_claim_page_value(
 def is_allowed_origin(origin: str, allowed_origins: set[str]) -> bool:
     if not origin:
         return True
+    # Chromium normally sends ``null`` for a file:// document. A literal
+    # file origin is accepted only when explicitly allowed by the server.
+    # Otherwise any local HTML file could read the full document API.
+    if origin == "null":
+        return "null" in allowed_origins or "file://" in allowed_origins
     if origin == "file://" or origin.startswith("file://"):
-        return True
+        return "file://" in allowed_origins or "null" in allowed_origins
     return origin in allowed_origins
 
 

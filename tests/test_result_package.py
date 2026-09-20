@@ -1443,6 +1443,24 @@ class MarkerContractHardeningTests(unittest.TestCase):
             governed_artifact_path(root, "review_states.jsonl", category="state")
             self.assertTrue((root / ".ratomizer" / "state").is_dir())
 
+    def test_governed_path_rejects_path_traversal_names(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._initialize(root)
+            resolved_nested = governed_artifact_path(
+                root, "nested/escape.json", category="state", for_write=False,
+            )
+            self.assertEqual(
+                resolved_nested,
+                (root / ".ratomizer" / "state" / "nested" / "escape.json").resolve(),
+            )
+            for filename in (
+                "../escape.json", "nested/../escape.json", "nested\\escape.json",
+                "C:escape.json", "escape.json:stream", "bad\x00name", str(root / "escape.json"),
+            ):
+                with self.subTest(filename=filename), self.assertRaises(ResultPackageError):
+                    governed_artifact_path(root, filename, category="state", for_write=False)
+
     def test_package_artifact_path_readonly_does_not_create_directories(self) -> None:
         import shutil
 

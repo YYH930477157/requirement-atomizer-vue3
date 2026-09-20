@@ -780,12 +780,14 @@ import {
   Download,
   ExternalLink,
   FileText,
+  FileSpreadsheet,
   FlaskConical,
   FolderOpen,
   FolderOutput,
   History,
   Image,
   Layers,
+  Languages,
   MessageSquareReply,
   MessagesSquare,
   ListChecks,
@@ -934,6 +936,10 @@ const tableDispositionOptions: Array<{ value: TableCellDisposition; label: strin
 const DELIVERABLE_FILES = [
   { key: "annotation", icon: FileText, tone: "htm", name: "document_annotation.html", hint: "批注视图 · 分享给专家离线裁决" },
   { key: "clarification", icon: CircleHelp, tone: "xls", name: "clarification_questions.xlsx", hint: "必答澄清 · 问客户/内部核对" },
+  { key: "translation", icon: Languages, tone: "htm", name: "document_translation.html", hint: "全文双语 · 对照原文复核" },
+  { key: "clarification-bilingual", icon: Languages, tone: "htm", name: "clarification_questions_bilingual.html", hint: "双语澄清 · 面向客户确认" },
+  { key: "template", icon: FileSpreadsheet, tone: "xls", name: "软件需求列表-成文.xlsx", hint: "成文交付 · 需求列表模板" },
+  { key: "engineering", icon: Braces, tone: "jsn", name: "engineering_requirements/engineering_requirements.json", hint: "工程组装 · 实现规格 JSON" },
   { key: "manifest", icon: Braces, tone: "jsn", name: "run_manifest.json", hint: "阶段台账 · 路由与续跑依据" },
 ] as const
 const deliverablePresence = ref<Record<string, { exists: boolean; path: string | null }>>({})
@@ -1413,6 +1419,20 @@ function applyRunManifestSummary(summary: Record<string, unknown> | null) {
       })
     }
   }
+}
+
+function manifestHasIncompleteStages(
+  summary: Record<string, unknown> | null,
+  requestedStages: string[],
+): boolean {
+  const manifest = objectValue(summary?.run_manifest)
+  const stages = objectValue(manifest?.stages)
+  if (!stages) return false
+  return requestedStages.some((stage) => {
+    const entry = objectValue(stages[stage])
+    const status = String(entry?.status || "").toLowerCase()
+    return ["partial", "failed", "running"].includes(status)
+  })
 }
 
 const abntPreset = {
@@ -2351,6 +2371,12 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
         if (chainConsistency) consistency = chainConsistency as ConsistencySummary
         latestTaskSummary.value = objectValue(chainPayload.summary) || latestTaskSummary.value
         applyRunManifestSummary(latestTaskSummary.value)
+        // 结果包未启用时没有 completeResultPackage 兜底；最终阶段账本仍是
+        // 交付状态的权威来源，部分/失败/中断不能被显示为运行完成。
+        runIncomplete = runIncomplete || manifestHasIncompleteStages(
+          latestTaskSummary.value,
+          requestedPackageStages,
+        )
         const chainReadiness = objectValue(chainPayload?.readiness) as { verdict?: string; reasons?: string[] } | null
         if (chainReadiness?.verdict) {
           readinessNote = `；就绪判定：${chainReadiness.verdict}` +
@@ -2537,10 +2563,20 @@ function handleTaskProgress(event: { stage: string; step?: string; status?: stri
     // 真实反馈 2026-07-14：链步进入新阶段 → 上一阶段卡片翻绿。后端的完成事件与开始事件
     // 同 step 名(只有 skipped 带 status),此前完成的阶段没人翻绿、卡在最后一次内部进度。
     if (lastChainStep && lastChainStep !== step) {
-      setRunStageState(lastChainStep, { status: "ok", percent: 100, detail: "已完成" })
+      const previousCardKey = lastChainStep === "functional-extract" ? "ai-extract" : lastChainStep
+      const previousState = runStageStates.value[previousCardKey as RunStageKey]
+      // 链会在守恒阻断后继续记账下游阶段；切步不能把已失败的上游阶段
+      // 覆盖成绿色完成，否则运行中看起来像整条链已成功。
+      if (previousState?.status !== "failed" && previousState?.status !== "skipped") {
+        setRunStageState(previousCardKey, { status: "ok", percent: 100, detail: "已完成" })
+      }
     }
     lastChainStep = step
-    const status = event.status === "skipped" ? "skipped" : completed >= total && total > 0 ? "ok" : "running"
+    // 后端的失败事件优先于计数：守恒阻断会在 completed=total 时发出
+    // failed，不能因为计数完成而把阶段渲染成绿色。
+    const status: RunStageStatus = event.status === "skipped" ? "skipped"
+      : event.status === "failed" ? "failed"
+        : completed >= total && total > 0 ? "ok" : "running"
     if (status === "running") {
       // 链级百分比是"第 N/共 M 步"(2/7≈14%),不是阶段内部进度——不写进卡片,
       // 卡片百分比由链内细粒度事件(ai_extract/analyze)驱动(setRunStageState 是合并语义)
@@ -2555,7 +2591,7 @@ function handleTaskProgress(event: { stage: string; step?: string; status?: stri
   }
   if (event.stage === "functional_extract") {
     setRunStageState("ai-extract", {
-      status: percent >= 100 ? "ok" : "running",
+      status: event.status === "failed" ? "failed" : percent >= 100 ? "ok" : "running",
       percent,
       detail: total ? `${completed}/${total} 条款` : "准备条款包",
     })
@@ -2571,14 +2607,22 @@ function handleTaskProgress(event: { stage: string; step?: string; status?: stri
       lastAiExtractCompleted = completed
       documentRefreshToken.value += 1
     }
-    setRunStageState("ai-extract", { status: percent >= 100 ? "ok" : "running", percent, detail: total ? `${completed}/${total} 章节` : "逐章节调用 LLM" })
+    setRunStageState("ai-extract", {
+      status: event.status === "failed" ? "failed" : percent >= 100 ? "ok" : "running",
+      percent,
+      detail: total ? `${completed}/${total} 章节` : "逐章节调用 LLM",
+    })
     runStage.value = total ? `AI 抽取 ${completed}/${total} 章节` : "AI 抽取"
     runProgress.value = percent
     runProgressDetail.value = event.model ? `模型：${event.model} · 逐章节调用 LLM` : "逐章节调用 LLM 抽取行为需求"
     return
   }
   if (event.stage !== "llm_review") return
-  setRunStageState("llm-review", { status: percent >= 100 ? "ok" : "running", percent, detail: total ? `${completed}/${total} 条` : "逐条审查" })
+  setRunStageState("llm-review", {
+    status: event.status === "failed" ? "failed" : percent >= 100 ? "ok" : "running",
+    percent,
+    detail: total ? `${completed}/${total} 条` : "逐条审查",
+  })
   runStage.value = total ? `AI 审查 ${completed}/${total}` : "AI 审查"
   runProgress.value = percent
   runProgressDetail.value = event.model ? `模型：${event.model}` : "模型正在逐条审查需求"
