@@ -78,6 +78,8 @@ def _seed(out: Path, with_tail: str | None = None) -> None:
     decisions = [
         {"schema": "unit-routing-decision/v1", "unit_id": unit["unit_id"],
          "route": "b_track", "procedural_subject": True,
+         "source_text_hash": unit["source_text_hash"],
+         "planner_version": unit["planner_version"],
          "router_version": UNIT_ROUTER_VERSION}
         for unit in units
     ]

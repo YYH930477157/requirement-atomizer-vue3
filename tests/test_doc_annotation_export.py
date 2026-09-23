@@ -2758,7 +2758,7 @@ class TranslationBatchOptimizationTests(unittest.TestCase):
     # --- Req 6：提示词版本真实进策略/producer/缓存指纹（不只是登记摆设）---
     def test_prompt_version_constant_registered_and_derived_into_strategy(self) -> None:
         from prompt_registry import is_registered
-        self.assertEqual(dae.TRANSLATION_BATCH_PROMPT_VERSION, "translation-prompt-v5")
+        self.assertEqual(dae.TRANSLATION_BATCH_PROMPT_VERSION, "translation-prompt-v6")
         self.assertTrue(is_registered(dae.TRANSLATION_BATCH_PROMPT_VERSION))
         # 策略版本由提示词版本派生 → 改提示词版本即改缓存/阶段指纹
         self.assertTrue(dae.ANNOTATION_TRANSLATION_STRATEGY_VERSION_OPTIMIZED.startswith(

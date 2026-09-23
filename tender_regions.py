@@ -15,7 +15,7 @@ import os
 import re
 from typing import Any
 
-TENDER_REGION_FILTER_VERSION = "tender-region-filter-v4"
+TENDER_REGION_FILTER_VERSION = "tender-region-filter-v5"
 # v3 → v4（2026-08-27 审查修复）：
 # 1) classify_tender_region 里句子形锚点先于 _TECHNICAL_RE——"compliance statement
 #    to the technical specification" 自带 technical 词面，原顺序下永远死在技术跨度
@@ -47,7 +47,9 @@ _INSTRUCTIONS_RE = re.compile(
     r"general\s+conditions|conditions\s+of\s+tender|tender\s+conditions|"
     r"contract\s+conditions|terms\s+and\s+conditions|commercial\s+terms|"
     r"price\s+schedule|bill\s+of\s+quantities|boq|form\s+of\s+tender|tender\s+form|"
-    r"bid\s+form|declaration|signatory|bank\s+guarantee|performance\s+bond|"
+    r"bid\s+form|(?:bidder|tenderer|bid|tender)\s+(?:s\s+)?declaration|"
+    r"declaration\s+(?:by|of)\s+(?:the\s+)?(?:bidder|tenderer)|"
+    r"signatory|bank\s+guarantee|performance\s+bond|"
     r"tender\s+validity|validity\s+period|closing\s+date|opening\s+of\s+tender|"
     r"bid\s+opening|opening\s+of\s+(?:the\s+)?bids?|"
     r"tax\s+clearance|bid\s+security|bid\s+bond|"
@@ -66,6 +68,7 @@ _TECHNICAL_RE = re.compile(
     r"technical\s+requirements?|functional\s+requirements?|specification\s+of\s+supply|"
     r"supply\s+and\s+delivery|scope\s+of\s+supply|equipment\s+specification|"
     r"system\s+requirements?|performance\s+requirements?|technical\s+data|"
+    r"declaration\s+of\s+conformity|"
     r"service\s+specification|work\s+specification|"
     r"qualification\s+tests?|type\s+tests?|routine\s+tests?|acceptance\s+tests?|"
     r"witness\s+tests?|factory\s+acceptance|site\s+acceptance|"

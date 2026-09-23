@@ -115,6 +115,9 @@ def _functional_translation_index(output_dir: Path) -> dict[str, list[dict[str, 
     for record in records:
         if not isinstance(record, dict) or str(record.get("status") or "") != "translated":
             continue
+        recorded_guards = str(record.get("guards_version") or "").strip()
+        if recorded_guards and recorded_guards != ANNOTATION_TRANSLATION_GUARDS_VERSION:
+            continue
         block_id = str(record.get("block_id") or "").strip()
         table = record.get("table")
         table_rows = table.get("rows") if isinstance(table, dict) else None
@@ -159,13 +162,23 @@ def _functional_title_translation(output_dir: Path, title: object) -> str:
     items = payload.get("items") if isinstance(payload, dict) else None
     if not isinstance(items, dict):
         return ""
-    normalized_title = re.sub(r"[^0-9a-z]+", "", source_title.casefold())
+    def title_key(value: object) -> str:
+        return re.sub(r"[^0-9a-z\u3400-\u9fff]+", "", str(value or "").casefold())
+
+    normalized_title = title_key(source_title)
     for record in items.values():
         if not isinstance(record, dict) or record.get("status") != "accepted":
             continue
+        recorded_guards = str(record.get("guards_version") or "").strip()
+        if recorded_guards and recorded_guards != ANNOTATION_TRANSLATION_GUARDS_VERSION:
+            continue
         source_head = str(record.get("source_head") or "")
-        normalized_head = re.sub(r"[^0-9a-z]+", "", source_head.casefold())
-        if normalized_title and (normalized_title in normalized_head or normalized_head.startswith(normalized_title)):
+        normalized_head = title_key(source_head)
+        head_without_leading_section = re.sub(r"^\d+", "", normalized_head)
+        if normalized_title and normalized_title in {
+            normalized_head,
+            head_without_leading_section,
+        }:
             translation = str(record.get("translation") or "").strip()
             if _has_cjk(translation):
                 return translation
@@ -202,6 +215,30 @@ def _translation_match_score(needle: str, source: str) -> float:
     return score if overlap >= 2 and score >= 0.5 else 0.0
 
 
+def _translation_control_signature(value: str) -> tuple[bool, bool]:
+    """Return polarity/condition controls that must survive field alignment.
+
+    The projection is allowed to use a distinctive paraphrase, but ordinary
+    token overlap is insufficient for ``shall close`` vs ``shall not close`` or
+    for a conditional sentence vs an unconditional one.  These controls are
+    deliberately coarse: uncertain matches are withheld from the UI instead of
+    presenting a plausible but wrong Chinese sentence.
+    """
+    text = str(value or "")
+    has_negation = bool(re.search(
+        r"\b(?:not|no|never|neither|nor|without|cannot|can't)\b|不|无|未|不得|禁止",
+        text,
+        re.IGNORECASE,
+    ))
+    has_condition = bool(re.search(
+        r"\b(?:if|when|unless|without|only\s+if|before|after|until|provided\s+that|except)\b"
+        r"|如果|当|除非|在.*?前|直到",
+        text,
+        re.IGNORECASE,
+    ))
+    return has_negation, has_condition
+
+
 def _translated_sentence(source: str, translation: str, needle: str) -> str:
     """Reuse a uniquely aligned sentence, never a guessed whole paragraph."""
     normalize = lambda value: " ".join(value.casefold().split()).rstrip(".。 ")
@@ -232,7 +269,11 @@ def _translated_sentence(source: str, translation: str, needle: str) -> str:
     if len(source_parts) != len(translated_parts):
         return ""
     scored = sorted(
-        ((_translation_match_score(needle, part), i) for i, part in enumerate(source_parts)),
+        (
+            (_translation_match_score(needle, part), i)
+            for i, part in enumerate(source_parts)
+            if _translation_control_signature(part) == _translation_control_signature(needle)
+        ),
         reverse=True,
     )
     if not scored or scored[0][0] == 0:
@@ -2740,7 +2781,16 @@ def _project_functional_review_view(
     for item in items:
         if not isinstance(item, dict):
             continue
-        row = dict(item)
+        # Raw persisted display fields must not bypass the validation projection.
+        row = {
+            key: value for key, value in item.items()
+            if not (key.endswith("_zh") and (
+                key.startswith("functional_") or key.removesuffix("_zh") in {
+                    "title", "objective", "description", "behaviors", "preconditions",
+                    "data_constraints", "variants", "exceptions", "related_dlms_objects",
+                }
+            ))
+        }
         projected_translation = _functional_translation_projection(
             item, translation_index, output_dir=output_dir
         )
@@ -3382,16 +3432,18 @@ def find_current_ai_requirement(output_dir: Path, req_id: str) -> dict | None:
     return None
 
 
-TRANSLATION_PROMPT_VERSION = "translation-prompt-v3"
+TRANSLATION_PROMPT_VERSION = "translation-prompt-v4"
 
 TRANSLATION_LANGUAGE_REQUIREMENTS = """语言要求：
 - 使用规范中文书面语（技术标准语体），按中文表达习惯重组语序，不逐词对译。
 - 避免直译腔：英文被动语态优先译为「应/须/应能/由…提供/按照…」等主动或中性句式；
   不使用「被要求/被进行/被允许/被提供」类生硬被动。
-- 条件、范围、时间等状语按中文习惯前置；长句拆为短句，一句一个意思。
-- 术语保持一致：meter 译「电表」，bidder 译「投标人」，credit 译「信用额度」。"""
+- 条件、范围、时间等状语按中文习惯前置；拆长句时保持条件、否定、例外与行为绑定。
+- 术语根据来源领域翻译：gas meter 为「燃气表」，electricity meter 为「电表」；
+  单独 meter 无明确领域时用「仪表」，不得自行假定为电表。period 表示时段，不得无据译为周。
+- 保留原文义务强度，shall/should/may 区分为应/宜/可；不得反转 not ... without、unless 等条件。"""
 
-TRANSLATION_SYSTEM_PROMPT = """You are a technical translator for DLMS/COSEM requirements.
+TRANSLATION_SYSTEM_PROMPT = """You are a technical document translator. Determine the domain from the source; never assume an electricity-meter domain.
 Translate English requirement text into concise Simplified Chinese.
 Preserve identifiers, quoted service names, OBIS codes, class names, attribute names, protocol acronyms, numeric values, and physical units (unit symbols such as V, A, Hz, s, %, °C, bar, etc. should be kept verbatim).
 Return only JSON with two string fields: translation and protected_codes (the exact, space-separated list of protected codes/acronyms/identifiers/units found in the source).

@@ -60,7 +60,7 @@ from requirement_record import provenance
 
 FUNCTIONAL_EXTRACT_VERSION = "functional-extract-v1"
 SEMANTIC_SECTION_LOADER_VERSION = "semantic-section-loader-v2"
-FUNCTIONAL_EXTRACT_PROMPT_VERSION = "functional-extract-prompt-v5"  # v5（2026-09-06）：明确表格参数行的字段名/值/单位/适用条件进入所属需求 data_constraints；表头、示例与上下文数字只有在条款定义为约束时才进入。v4 及以前见 CLAUDE.md。
+FUNCTIONAL_EXTRACT_PROMPT_VERSION = "functional-extract-prompt-v7"  # 领域中立与条件绑定。
 # S1-8：bump v1→v2。``_reject_drifted_codes`` 清洗范围从仅 objective 扩到全部叙述字段
 # （behaviors/data_constraints/variants/exceptions/preconditions/description），缓存产物内容
 # 变化——指纹含 guards 版本，bump 后旧 stub/LLM 缓存（behaviors 里残留幻觉编码）自然失效。
@@ -72,7 +72,7 @@ FUNCTIONAL_EXTRACT_PROMPT_VERSION = "functional-extract-prompt-v5"  # v5（2026-
 # 摘录（跨语种确认身份绑定义务文本）——守恒载荷内容变化，bump v4 → v5 使存量
 # 缓存失效，否则旧缓存恢复的 cross_script_review 无哈希，绕过确认失效机制。
 # v6 → v7：证据诊断覆盖完整叙述字段，并在同条款合并后重新计算。
-FUNCTIONAL_EXTRACT_GUARDS_VERSION = "functional-extract-guards-v7"
+FUNCTIONAL_EXTRACT_GUARDS_VERSION = "functional-extract-guards-v8"
 # §3.1 新守恒模型版本戳（进 conservation 报告与抽取指纹；模型演进时 bump）。
 # M1（2026-08-16 修复方案 §3.4）：obligation 覆盖从全局叙述并集改为声明局部绑定
 # （eligible-only 边；source_quote 只作锚）——产物语义变化，v1 → v2。
@@ -94,7 +94,7 @@ FUNCTIONAL_EXTRACT_GUARDS_VERSION = "functional-extract-guards-v7"
 # tools/binding_attribution.py 的 covered_clause_text_in_home 信号（b 类）同源。
 # v8 → v9：重复文本归一保留数值小数点、正负号、运算符和词界，避免数值语义碰撞。
 # v9 → v10：atomic_requirements.jsonl 只比对嵌入的 requirement 正文，JSON 元数据数字不进 preservation 基线。
-FUNCTIONAL_CONSERVATION_MODEL_VERSION = "functional-conservation-obligation-evidence-v10"
+FUNCTIONAL_CONSERVATION_MODEL_VERSION = "functional-conservation-obligation-evidence-v11"
 # v6 → v7（2026-08-31，绑定检查 reason 1 本地锚）：声明条款含义务单元却建不成
 # lexical/cross_script/source_quote 边时，若引句（剥表格标记后）逐字落在该声明条款
 # 基线文本内，不再判「占位声明」——SBD 清单/表格行无模态动词、永远成不了义务单元，
@@ -107,7 +107,7 @@ FUNCTIONAL_CONSERVATION_MODEL_VERSION = "functional-conservation-obligation-evid
 # §17 unit 级路由接线（2026-08-17）：clause_family 策略下表格主导条款路由出 B 轨输入
 # 与守恒基线（表格内容归 A 轨/上下文，phase2 探针实证其混入 B 轨是守恒失败根因之一）。
 # 接线版本只进 clause_family 缓存指纹维度（legacy 指纹逐字节不变）；路由判据演进时 bump。
-FUNCTIONAL_UNIT_ROUTING_VERSION = "functional-unit-routing-v8"  # v8（2026-08-31，heading-only 条款出抽取池）：只有标题没有实质正文的条款（全部块为 heading/heading 回显、义务单元数 0、无表格块）确定性路由出 B 轨输入与守恒基线——SBD result3 实证 TGS 章 24 个 heading-only 条款在 LLM 失败时退化 stub（"实现{heading}，并满足来源条款。"），成功时也只能回显标题（零义务内容，无可抽取）。判据三条全满足才路由出（宁漏勿错：非 heading 块有任何实质文本即保留，含 v6 碎片过滤会剔掉义务的碎片正文）；meta 新增 heading_only_sections_routed_out/heading_only_section_ids，块入 routed_out_block_ids/review_units 四桶合并。v7（2026-08-30，路由连坐窄门修）：tender 聚合路由出之前，条款内 confirmed 的被吞并 heading（document_outline 报告，只读）先切开再分别路由——程序性残骸照旧路由出，被连坐的技术内容（SBD 实证 2.3 STATEMENT OF REQUIREMENTS 整章）获得独立判定。纯切分零块位移（不做 toc 剔除/demoted 并入——那是 outline authority flag 的语义）；无 confirmed 吞并时行为与 v6 一致；routed_out_block_ids 补齐 tender 两桶（兑现 docstring「全部写入 meta」承诺）。v6（2026-08-27，WS-B）：节级 tender 判定改为义务主体+跨度聚合。R2 返工：标题词表先验（own title 程序性且非产品主语）；跨度改为非产品主语即可（不再要求无模态）；technical 否决改为 own title/path（块内吞进的下一章 technical heading 不否决程序性残骸）。v5（2026-08-27，P3）：逐标题路由分支补 technical 反向否决 + P2 路由键并入 tender_region_filter 版本。v4：句子形程序性 heading 窄锚点 + v3 跨度继承/前置样板编号剥离
+FUNCTIONAL_UNIT_ROUTING_VERSION = "functional-unit-routing-v9"  # v8（2026-08-31，heading-only 条款出抽取池）：只有标题没有实质正文的条款（全部块为 heading/heading 回显、义务单元数 0、无表格块）确定性路由出 B 轨输入与守恒基线——SBD result3 实证 TGS 章 24 个 heading-only 条款在 LLM 失败时退化 stub（"实现{heading}，并满足来源条款。"），成功时也只能回显标题（零义务内容，无可抽取）。判据三条全满足才路由出（宁漏勿错：非 heading 块有任何实质文本即保留，含 v6 碎片过滤会剔掉义务的碎片正文）；meta 新增 heading_only_sections_routed_out/heading_only_section_ids，块入 routed_out_block_ids/review_units 四桶合并。v7（2026-08-30，路由连坐窄门修）：tender 聚合路由出之前，条款内 confirmed 的被吞并 heading（document_outline 报告，只读）先切开再分别路由——程序性残骸照旧路由出，被连坐的技术内容（SBD 实证 2.3 STATEMENT OF REQUIREMENTS 整章）获得独立判定。纯切分零块位移（不做 toc 剔除/demoted 并入——那是 outline authority flag 的语义）；无 confirmed 吞并时行为与 v6 一致；routed_out_block_ids 补齐 tender 两桶（兑现 docstring「全部写入 meta」承诺）。v6（2026-08-27，WS-B）：节级 tender 判定改为义务主体+跨度聚合。R2 返工：标题词表先验（own title 程序性且非产品主语）；跨度改为非产品主语即可（不再要求无模态）；technical 否决改为 own title/path（块内吞进的下一章 technical heading 不否决程序性残骸）。v5（2026-08-27，P3）：逐标题路由分支补 technical 反向否决 + P2 路由键并入 tender_region_filter 版本。v4：句子形程序性 heading 窄锚点 + v3 跨度继承/前置样板编号剥离
 FUNCTIONAL_REQUIREMENTS_FILENAME = "functional_requirements.json"
 FUNCTIONAL_EXTRACT_CACHE = "functional_extract_cache.jsonl"
 # 待核成文（partial export，2026-09-01 用户拍板的政策反转）：守恒未闭合/直抽
@@ -159,8 +159,17 @@ _OBLIGATION_MODALS = (
     "应", "必须", "须", "可", "宜",
 )
 
+_FIDELITY_INSTRUCTIONS = (
+    "\n语义保真检查：主体、适用条件、阈值、例外必须与对应行为绑定，不能拆成相互独立的无条件要求。"
+    "特别是 not ... without / unless / only if：必须保留原逻辑；例如不得在未报警时超过阈值，"
+    "不能改成绝对不得超过阈值、也不得报警。should/may 不得升级为 shall。"
+    "原文没有实质内容的图例、标题或‘满足以下要求’引导句，不得借邻居条款补造其行为、条件或数值。"
+    "检查每个叙述字段均由目标原文支持；上下文只能消解指代，不能作为新增义务的来源。"
+    "领域和设备类型以原文为准，不预设电表、燃气表或 DLMS/COSEM；不确定时保留原术语。"
+)
+
 _SYSTEM_PROMPT_BASE = (
-    "你是 DLMS/COSEM 电表标准的功能需求抽取器。输入是已切好的条款单元（章节号 + 原文 + 块溯源）。"
+    "你是技术文档的功能需求抽取器。输入是已切好的条款单元（章节号 + 原文 + 块溯源）。"
     "对每个条款，默认只产出一条完整功能需求：保留条款的一句话/一段话作为上下文；"
     "同一目标下的多个行为归入 behaviors 列表，不要按 shall、分号或动作拆成伪原子。"
     "只有条款明确包含不同责任主体、生命周期或互斥对象时才允许拆条；表格行机械事实"
@@ -184,9 +193,9 @@ _SYSTEM_PROMPT_BASE = (
 def _system_prompt(negative_exemplars: str = "") -> str:
     """P0-8：负例 few-shot 可注入系统提示；无负例时不残留空壳。"""
     if not negative_exemplars:
-        return _SYSTEM_PROMPT_BASE
+        return _SYSTEM_PROMPT_BASE + _FIDELITY_INSTRUCTIONS
     return (
-        _SYSTEM_PROMPT_BASE + "\n"
+        _SYSTEM_PROMPT_BASE + _FIDELITY_INSTRUCTIONS + "\n"
         "【专家已拒绝的范例——请勿产出同类问题】\n"
         + negative_exemplars
     )
@@ -762,7 +771,7 @@ def _build_user_prompt(sections: Sequence[dict[str, Any]]) -> str:
 # ---------------------------------------------------------------------------
 
 _PACKAGE_SYSTEM_PROMPT_BASE = (
-    "你是 DLMS/COSEM 电表标准的功能需求抽取器。输入分三段：[TARGET_CLAUSE] 是本次要抽取的"
+    "你是技术文档的功能需求抽取器。输入分三段：[TARGET_CLAUSE] 是本次要抽取的"
     "目标条款（整文，未经截断）；[CONTEXT] 是同族相邻条款（仅作上下文，帮助理解目标条款，"
     "不得从中产出条目）；[DOC_MAP] 是整篇地图热区摘要（仅作定位参考，可能缺席）。\n"
     "只对目标条款默认产出一条完整功能需求：保留目标条款的一句话/一段话作为上下文；"
@@ -789,9 +798,9 @@ _PACKAGE_SYSTEM_PROMPT_BASE = (
 def _package_system_prompt(negative_exemplars: str = "") -> str:
     """P0-8：clause_family 策略下的系统提示，负例可注入。"""
     if not negative_exemplars:
-        return _PACKAGE_SYSTEM_PROMPT_BASE
+        return _PACKAGE_SYSTEM_PROMPT_BASE + _FIDELITY_INSTRUCTIONS
     return (
-        _PACKAGE_SYSTEM_PROMPT_BASE + "\n"
+        _PACKAGE_SYSTEM_PROMPT_BASE + _FIDELITY_INSTRUCTIONS + "\n"
         "【专家已拒绝的范例——请勿产出同类问题】\n"
         + negative_exemplars
     )
@@ -1390,6 +1399,58 @@ def _atomic_json_business_text(source_text: str) -> str:
     return "\n".join(records) if parsed_any and records else source_text
 
 
+def _strip_known_section_references(text: str, section_ids: set[str]) -> str:
+    """Remove section labels only in explicit reference phrases.
+
+    Section numbers and business values share the same lexical shape.  Removing
+    every occurrence of a known id makes preservation blind to requirements such
+    as ``store 4 records`` when the surrounding section is numbered ``4``.
+    Cross-reference phrases are narrow enough to ignore ``4.1`` in ``defined in
+    4.1`` without deleting ordinary numeric constraints.
+    """
+    labels = sorted(
+        {
+            str(value).strip() for value in section_ids
+            if str(value).strip()
+            and not re.fullmatch(r"[A-Za-z]?\d+(?:\.\d+)*", str(value).strip())
+            and len(str(value).strip()) >= 3
+        },
+        key=lambda value: (-len(value), value),
+    )
+    for label in labels:
+        # Chunk builders may repeat the section heading at the start of the
+        # authoritative text.  Remove that heading line only; never erase a
+        # matching phrase from the body.
+        text = re.sub(
+            rf"(?im)^\s*{re.escape(label)}(?=\s|$)\s*[:\-]?\s*",
+            " ",
+            text,
+            count=1,
+        )
+
+    candidates = sorted(
+        {
+            str(value).strip() for value in section_ids
+            if str(value).strip() and re.fullmatch(r"[A-Za-z]?\d+(?:\.\d+)*", str(value).strip())
+        },
+        key=lambda value: (-len(value), value),
+    )
+    if not candidates:
+        return text
+    ids = "|".join(re.escape(value) for value in candidates)
+    reference_prefix = (
+        r"(?:\b(?:section|clause|subclause|paragraph|item|annex|appendix)\s+"
+        r"(?:the\s+)?|\b(?:defined|specified|given|described|listed|shown)\s+in\s+"
+        r"(?:the\s+)?|\bsee\s+(?:(?:section|clause|subclause|paragraph)\s+)?)"
+    )
+    return re.sub(
+        rf"({reference_prefix})({ids})(?![\w])",
+        r"\1 ",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+
 def _preservation_findings(
     section: dict[str, Any], narrative_union: str,
     known_section_ids: set[str] | None = None,
@@ -1421,10 +1482,36 @@ def _preservation_findings(
         text_segment = str(segment or "").strip()
         if text_segment:
             own_ids.add(text_segment)
-    for token in sorted(own_ids | set(known_section_ids or ())):
-        if token:
-            source_text = source_text.replace(token, " ")
+    # Section identifiers are ignored only when the prose uses them as an
+    # explicit cross-reference.  A blanket ``str.replace`` is unsafe: a clause
+    # named ``4`` must not erase the real value in "store 4 records".
+    source_text = _strip_known_section_references(
+        source_text, own_ids | set(known_section_ids or ())
+    )
     findings: list[dict[str, Any]] = []
+    # Token presence alone cannot prove a coupled prohibition: "shall not X
+    # without Y" becomes its opposite if split into "shall not X" and
+    # "shall operate without Y". Require the coupled source sentence to remain
+    # intact for this high-risk form. Paraphrases require review; do not claim
+    # semantic equivalence from word overlap or repair the model silently.
+    # A line break is formatting, not a sentence boundary.  Keeping it inside
+    # the candidate sentence catches a conditional prohibition split across a
+    # PDF line wrap while normalisation below still accepts the unchanged text.
+    sentences = re.split(r"(?<=[.!?])\s+(?=[A-Z])", source_text)
+    normalized_narrative = " ".join(narrative_union.casefold().split())
+    for sentence in sentences:
+        if re.search(
+            r"\b(?:shall|must)\s+not\b.*?\b(?:without|unless)\b",
+            sentence,
+            re.I | re.S,
+        ):
+            normalized_sentence = " ".join(sentence.casefold().split()).rstrip(".!?")
+            if normalized_sentence and normalized_sentence not in normalized_narrative:
+                findings.append({
+                    "kind": "conditional_relation", "token": sentence.strip(),
+                    "severity": "blocking",
+                    "reason": "coupled prohibition requires intact source wording or expert correction",
+                })
     for kind in word_kinds:
         pattern = _PRESERVATION_PATTERNS[kind]
         source_hits = {m.group(0).lower() for m in pattern.finditer(source_text)}
@@ -3373,7 +3460,22 @@ def _section_is_heading_only(
         if str(block.get("type") or "") == "heading":
             heading_keys |= _heading_norm_variants(text)
             continue
+        # A standalone figure legend label has no independent requirement.
+        # Retain its source block in the routing audit, just like headings.
+        if text.strip().casefold() in {"key", "legend", "图例"}:
+            continue
         body_norms.append(_heading_norm(text))
+    # Pure punctuation (including PDF watermark fragments) and isolated figure
+    # legend labels contain no proposition, even without a section heading.
+    if all(
+        str(blocks_by_id[bid].get("type") or "") == "paragraph"
+        and (
+            str(blocks_by_id[bid].get("text") or "").strip().casefold() in {"key", "legend", "图例"}
+            or re.fullmatch(r"[-`,\s]*", str(blocks_by_id[bid].get("text") or ""))
+        )
+        for bid in block_ids
+    ) and not _obligation_index(section):
+        return True
     if not heading_keys:
         return False  # 无任何 heading 身份——不是 heading-only 形态
     for norm in body_norms:

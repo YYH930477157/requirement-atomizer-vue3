@@ -96,7 +96,7 @@ _TRANSLATION_BATCH = 8
 
 ANNOTATION_TRANSLATION_STRATEGY_VERSION = "annotation-translation-v3-segment-fallback"
 
-TRANSLATION_BATCH_PROMPT_VERSION = "translation-prompt-v5"
+TRANSLATION_BATCH_PROMPT_VERSION = "translation-prompt-v6"
 
 ANNOTATION_TRANSLATION_STRATEGY_VERSION_OPTIMIZED = (
     f"{TRANSLATION_BATCH_PROMPT_VERSION}-greedy-splithalf"
@@ -312,7 +312,7 @@ def _translation_guard_source(text: str) -> str:
     return _cleaned_marker_text(text)
 
 def _batch_translation_prompt(numbered: list[dict[str, Any]], *, optimized: bool) -> tuple[str, str]:
-    system = "你是电表/燃气表等技术标准文档的翻译助手。"
+    system = "你是技术标准文档的翻译助手，领域与设备类型以原文为准。"
     rules = [
         "把下列标准原文逐条忠实翻译成中文。规则：",
         "- 逐条对应，不合并、不拆分、不遗漏；",
@@ -448,7 +448,7 @@ def _translate_marker_single(chat: Any, text: str, *, forbidden_tokens: list[str
                              required_tokens: list[str] | None = None,
                              segment_label: str = "", retry_reason: str = "") -> str:
     cleaned = _cleaned_marker_text(text)
-    system = "你是电表/燃气表等技术标准文档的翻译助手。"
+    system = "你是技术标准文档的翻译助手，领域与设备类型以原文为准。"
     retry_kind = f"句段重试（{segment_label}）" if segment_label else "单条整段重试"
     retry_feedback = (
         "上一版译文因引入原文没有的编码/数字而被拒绝。"

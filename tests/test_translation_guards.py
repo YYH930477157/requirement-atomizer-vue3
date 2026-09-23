@@ -17,13 +17,14 @@ from llm_client import LLMResponseError
 class TranslationGuardTests(unittest.TestCase):
     def test_prompt_version_constant_registered(self):
         from prompt_registry import is_registered
-        self.assertEqual(TRANSLATION_PROMPT_VERSION, "translation-prompt-v3")
+        self.assertEqual(TRANSLATION_PROMPT_VERSION, "translation-prompt-v4")
         self.assertTrue(is_registered(TRANSLATION_PROMPT_VERSION))
 
     def test_system_prompt_includes_shared_language_requirements(self):
         self.assertIn(TRANSLATION_LANGUAGE_REQUIREMENTS, TRANSLATION_SYSTEM_PROMPT)
         self.assertIn("使用规范中文书面语", TRANSLATION_SYSTEM_PROMPT)
-        self.assertIn("meter 译「电表」", TRANSLATION_SYSTEM_PROMPT)
+        self.assertIn("gas meter 为「燃气表」", TRANSLATION_SYSTEM_PROMPT)
+        self.assertNotIn("meter 译「电表」", TRANSLATION_SYSTEM_PROMPT)
 
     @patch("api_server.chat_json")
     @patch("api_server.load_review_pipeline")

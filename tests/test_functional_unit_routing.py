@@ -1148,7 +1148,7 @@ class FingerprintScopingTests(unittest.TestCase):
     def test_legacy_fingerprint_ignores_routing_version(self) -> None:
         before = fe.extraction_fingerprint(self.SECTIONS, route_key="stub")
         with mock.patch.object(fe, "FUNCTIONAL_UNIT_ROUTING_VERSION",
-                               "functional-unit-routing-v9"):
+                               "functional-unit-routing-test-mutated"):
             after = fe.extraction_fingerprint(self.SECTIONS, route_key="stub")
             clause_family = fe.extraction_fingerprint(
                 self.SECTIONS, route_key="stub", context_strategy="clause_family")
@@ -1159,7 +1159,7 @@ class FingerprintScopingTests(unittest.TestCase):
         first = fe.extraction_fingerprint(
             self.SECTIONS, route_key="stub", context_strategy="clause_family")
         with mock.patch.object(fe, "FUNCTIONAL_UNIT_ROUTING_VERSION",
-                               "functional-unit-routing-v9"):
+                               "functional-unit-routing-test-mutated"):
             second = fe.extraction_fingerprint(
                 self.SECTIONS, route_key="stub", context_strategy="clause_family")
         self.assertNotEqual(first, second)

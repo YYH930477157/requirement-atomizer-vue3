@@ -63,10 +63,10 @@ PROMPT_REGISTRY: list[dict[str, str]] = [
     # v5（2026-09-06 证据收口）：表格参数行的字段名/值/单位/适用条件进所属需求
     # data_constraints；表头/示例/上下文数字仅在条款定义为约束时进入。同一 bump
     # 顺带覆盖 09-07 轨道分离提交的粒度契约提示词改动（dc34f25 改文本未 bump）。
-    {"id": "functional-extract", "version": "functional-extract-prompt-v5", "owner_module": "functional_extract",
+    {"id": "functional-extract", "version": "functional-extract-prompt-v7", "owner_module": "functional_extract",
      "purpose": "Functional requirement direct extraction prompt"},
     # v7：证据诊断覆盖完整叙述并在同条款合并后重算；护栏审计合并保留。
-    {"id": "functional-extract-guards", "version": "functional-extract-guards-v7", "owner_module": "functional_extract",
+    {"id": "functional-extract-guards", "version": "functional-extract-guards-v8", "owner_module": "functional_extract",
      "purpose": "Functional extract anti-drift guard version"},
     # 四轮复审 P2：守恒模型版本显式登记——守恒载荷语义演进（如 cross_script_review
     # 携带文本身份）随 registry/指纹/producer stamp/claim lineage 四处同步失效。
@@ -81,7 +81,7 @@ PROMPT_REGISTRY: list[dict[str, str]] = [
     # 不影响 ok）；任一被覆盖句不在声明条款内照旧 blocking。
     # v9：重复豁免保留数值小数点、正负号、运算符和词界。
     # v10：atomic_requirements.jsonl 只比对嵌入的 requirement 正文。
-    {"id": "functional-extract-conservation", "version": "functional-conservation-obligation-evidence-v10",
+    {"id": "functional-extract-conservation", "version": "functional-conservation-obligation-evidence-v11",
      "owner_module": "functional_extract",
      "purpose": "Functional extract obligation/evidence conservation model version"},
 
@@ -129,9 +129,9 @@ PROMPT_REGISTRY: list[dict[str, str]] = [
      "purpose": "Agent loop policy version pinned into trace/cache lineage"},
 
     # Translation
-    {"id": "translation", "version": "translation-prompt-v3", "owner_module": "api_server",
+    {"id": "translation", "version": "translation-prompt-v4", "owner_module": "api_server",
      "purpose": "Requirement text translation prompt"},
-    {"id": "annotation-translation-batch", "version": "translation-prompt-v5",
+    {"id": "annotation-translation-batch", "version": "translation-prompt-v6",
      "owner_module": "doc_annotation_export",
      "purpose": "Annotation marker batch translation prompt (dual-limit batch array contract)"},
     {"id": "annotation-translation-guards", "version": "annotation-translation-guards-v5",
