@@ -19,7 +19,7 @@ from typing import Any
 # v4：真实 PDF 跨页表格续文只登记可审计候选，保留物理表边界，不静默拼接。
 # v5：编号义务句允许编号末尾句点（如 ``9.2.2.1. The meter shall ...``），
 #      修复 PDF 视觉标题误分类后留下的半句正文。
-SEMANTIC_SEGMENTATION_VERSION = "semantic-segmentation-v5"
+SEMANTIC_SEGMENTATION_VERSION = "semantic-segmentation-v6"
 SEMANTIC_PROMPT_VERSION = "semantic-segmentation-prompt-v3-contextual-boundaries"
 SEMANTIC_MODES = ("off", "deterministic", "llm")
 _TERMINAL_RE = re.compile(r"[.!?。！？；;:]$")
@@ -279,6 +279,8 @@ def _llm_groups(blocks: list[dict[str, Any]], *, route: str, max_chars: int = 12
     windows: list[list[dict[str, Any]]] = []
     start = 0
     while start < len(blocks):
+        if len(windows) >= SEMANTIC_MAX_CALLS:
+            raise ValueError("semantic segmentation call budget exceeded")
         end = min(len(blocks), start + SEMANTIC_WINDOW_MAX_BLOCKS)
         window = blocks[start:end]
         while len(json.dumps(rows_for(window), ensure_ascii=False)) > max_chars and len(window) > 1:
@@ -289,9 +291,9 @@ def _llm_groups(blocks: list[dict[str, Any]], *, route: str, max_chars: int = 12
         windows.append(window)
         if end >= len(blocks):
             break
-        start = end - 1
-    if len(windows) > SEMANTIC_MAX_CALLS:
-        raise ValueError("semantic segmentation call budget exceeded")
+        # A singleton window cannot overlap itself: doing so never advances
+        # and accumulates windows indefinitely for long adjacent blocks.
+        start = max(start + 1, end - 1)
     merge_edges: set[tuple[str, str]] = set()
     for window in windows:
         payload = json.dumps(rows_for(window), ensure_ascii=False)

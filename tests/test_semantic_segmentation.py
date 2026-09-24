@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from semantic_segmentation import _semantic_prompt, build_semantic_report
+from semantic_segmentation import _llm_groups, _semantic_prompt, build_semantic_report
 
 
 def _blocks():
@@ -18,6 +18,20 @@ def _blocks():
 
 
 class SemanticSegmentationTests(unittest.TestCase):
+    def test_llm_window_budget_fails_instead_of_looping_on_singletons(self):
+        # Each block fits by itself but no pair fits. This used to leave
+        # ``start`` unchanged after the first singleton window forever.
+        blocks = [
+            {"block_id": f"B{i}", "type": "paragraph", "text": "x" * 160,
+             "section_path": ["4"]}
+            for i in range(10)
+        ]
+        with mock.patch("ai_extract.config_for_route", return_value=object()), \
+             mock.patch("llm_client.chat_json_messages", return_value={"groups": []}) as chat:
+            with self.assertRaisesRegex(ValueError, "call budget exceeded"):
+                _llm_groups(blocks, route="openai_compatible", max_chars=350)
+        self.assertEqual(chat.call_count, 0)
+
     def test_prompt_states_contextual_goal_and_hard_constraints(self) -> None:
         prompt = _semantic_prompt()
         for phrase in (
