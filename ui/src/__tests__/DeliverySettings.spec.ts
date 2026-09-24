@@ -145,8 +145,27 @@ describe("delivery settings (§20)", () => {
       expect(window.ratomizerDesktop?.runPipeline).toHaveBeenCalled()
     })
     expect(window.ratomizerDesktop?.runPipeline).toHaveBeenCalledWith(
-      expect.objectContaining({ skipReview: true, llmRoute: undefined }),
+      expect.objectContaining({ skipReview: true, llmRoute: "openai_compatible", semanticMode: "llm" }),
     )
+  })
+
+  it("respects an explicit LLM-off choice across parsing and delivery", async () => {
+    mockBridge({ getLlmSettings: vi.fn().mockResolvedValue({ enabled: false }) })
+    const wrapper = mount(App)
+    await flushPromises()
+    await driveRun(wrapper)
+
+    await vi.waitFor(() => {
+      expect(window.ratomizerDesktop?.runChain).toHaveBeenCalled()
+    })
+
+    const pipeline = (window.ratomizerDesktop?.runPipeline as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    expect(pipeline.llmRoute).toBe("stub")
+    expect(pipeline.semanticMode).toBe("deterministic")
+    expect(pipeline.semanticRoute).toBe("stub")
+    const chain = (window.ratomizerDesktop?.runChain as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    expect(chain.llmRoute).toBe("stub")
+    expect(chain.stages).not.toContain("full-translation")
   })
 
   it("hides atom diagnostics from daily nav until the advanced setting is on", async () => {

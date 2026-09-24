@@ -56,10 +56,10 @@ def _valid_llm_payload() -> dict:
 
 
 class SwitchTests(unittest.TestCase):
-    def test_default_off(self) -> None:
+    def test_default_on(self) -> None:
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("RATOMIZER_DOC_MAP", None)
-            self.assertFalse(doc_map.doc_map_enabled())
+            self.assertTrue(doc_map.doc_map_enabled())
             self.assertFalse(doc_map.doc_map_enabled("0"))
 
     def test_on(self) -> None:
@@ -286,6 +286,40 @@ class CacheTests(unittest.TestCase):
                 chat=chat,
             )
             self.assertEqual(calls["n"], 2, "内容变化必须缓存失配重算")
+
+    def test_cached_map_republishes_matching_payload_after_content_switch(self) -> None:
+        calls = {"n": 0}
+
+        def chat(system: str, user: str) -> dict:
+            calls["n"] += 1
+            return _valid_llm_payload()
+
+        section_a = [_section("4 / 4.1", ["B1"], "The meter shall collect voltage.")]
+        section_b = [_section("4 / 4.1", ["B1"], "The meter shall log all events.")]
+        blocks = [_block("B1", "The meter shall collect voltage.")]
+        with TemporaryDirectory() as tmp:
+            first = doc_map.run_doc_map(tmp, sections=section_a, blocks=blocks, chat=chat)
+            second = doc_map.run_doc_map(tmp, sections=section_b, blocks=blocks, chat=chat)
+            third = doc_map.run_doc_map(tmp, sections=section_a, blocks=blocks, chat=chat)
+            published = json.loads((Path(tmp) / doc_map.DOC_MAP_FILENAME).read_text(encoding="utf-8"))
+        self.assertEqual(calls["n"], 2)
+        self.assertNotEqual(first["fingerprint"], second["fingerprint"])
+        self.assertEqual(third["fingerprint"], first["fingerprint"])
+        self.assertEqual(published["fingerprint"], first["fingerprint"])
+
+    def test_loader_rejects_map_for_changed_source(self) -> None:
+        sections = [_section("4 / 4.1", ["B1"], "The meter shall collect voltage.")]
+        blocks = [_block("B1", "The meter shall collect voltage.")]
+        with TemporaryDirectory() as tmp:
+            doc_map.run_doc_map(tmp, sections=sections, blocks=blocks,
+                                chat=lambda system, user: _valid_llm_payload())
+            with patch("functional_extract.load_clauses", return_value=sections), \
+                    patch("doc_map._load_blocks", return_value=blocks):
+                self.assertIsNotNone(doc_map.load_doc_map(tmp))
+            changed = [_section("4 / 4.1", ["B1"], "The meter shall log all events.")]
+            with patch("functional_extract.load_clauses", return_value=changed), \
+                    patch("doc_map._load_blocks", return_value=blocks):
+                self.assertIsNone(doc_map.load_doc_map(tmp))
 
 
 class BudgetDegradationTests(unittest.TestCase):

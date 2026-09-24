@@ -9,8 +9,9 @@ Three areas:
   3. table_review_state.py degradation exit — geometry-conflict registry round-trip,
      read-path surfacing, and isomorphic writeback clearance.
 
-The default-OFF switch is asserted throughout: the production path (analyze_table) is
-byte-identical unless RATOMIZER_TABLE_DUAL_TRACK is set. No real LLM is called.
+The LLM proposal path is enabled by default. Explicitly setting
+RATOMIZER_TABLE_DUAL_TRACK=0 retains the deterministic production path.
+No real LLM is called.
 """
 from __future__ import annotations
 
@@ -217,8 +218,8 @@ class TableFamilyTemplateTests(unittest.TestCase):
 
 
 class DualTrackSwitchTests(unittest.TestCase):
-    def test_switch_defaults_off(self) -> None:
-        self.assertFalse(dual_track_enabled())
+    def test_switch_defaults_on(self) -> None:
+        self.assertTrue(dual_track_enabled())
 
     def test_switch_name_and_default_are_documented(self) -> None:
         self.assertEqual(TABLE_DUAL_TRACK_SWITCH, "RATOMIZER_TABLE_DUAL_TRACK")
@@ -226,7 +227,8 @@ class DualTrackSwitchTests(unittest.TestCase):
     def test_switch_off_returns_deterministic_path_unchanged(self) -> None:
         matrix = [["H1", "H2"], ["v1", "v2"]]
         deterministic = analyze_table(matrix)
-        result = analyze_table_dual_track(matrix)
+        with patch.dict(os.environ, {TABLE_DUAL_TRACK_SWITCH: "0"}):
+            result = analyze_table_dual_track(matrix)
         # Every deterministic key is preserved verbatim; only the dual_track block is added.
         for key, value in deterministic.items():
             self.assertEqual(result[key], value)

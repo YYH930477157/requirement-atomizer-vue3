@@ -355,7 +355,7 @@ def _attach_extract_degraded_marks(
 def run_requirements_analysis(
     out_dir: Path,
     *,
-    route: str = "stub",
+    route: str = "openai_compatible",
     template_path: Path | None = None,
     chat: ChatFn | None = None,
     pipeline_path: Path | None = None,
@@ -474,8 +474,8 @@ def run_requirements_analysis(
     # 进入归属分类、软件 LLM 或研发模板。
     requirements = [row for row in requirements if not is_compliance_requirement(row)]
     vocabulary = extract_template_vocabulary(template_path)
-    # 显式注入 chat 是测试/嵌入方的主动 opt-in；普通应用只有开关开启且请求 LLM
-    # 路由时才解析端点。默认关闭时连端点、模板知识和裁决样本都不读取。
+    # 显式注入 chat 是测试/嵌入方的主动 opt-in；普通应用默认启用 LLM 富化，
+    # 但显式关闭或 stub 路由不解析端点。端点不可用时如实降级并记录。
     enrichment_enabled = chat is not None or (
         route != STUB_ROUTE and requirements_analysis_enrichment_enabled()
     )

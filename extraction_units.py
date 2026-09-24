@@ -36,7 +36,10 @@ EXTRACTION_UNIT_SCHEMA = "extraction-unit/v1"
 # v3（2026-08-18）：行单元 table_context 补 disposition（行内格处置的最高优先级：
 # target > composite > review > context）——unit_router v3 依据它把非 target 处置的
 # 表格内容归 claim 体系，行单元此前缺此字段会被词法信号越权认领回 B 轨。
-EXTRACTION_UNIT_PLANNER_VERSION = "extraction-unit-planner-v3"
+# v4（2026-09-23）：mixed leaf 行中，row unit 只覆盖 leaf_kind=row 的格；
+# leaf_kind=cell/context 由自己的 table_cell unit 覆盖，避免同一物理格同时被
+# 行和格单元计数。旧 v3 产物必须重规划，不能沿用错误的守恒结果。
+EXTRACTION_UNIT_PLANNER_VERSION = "extraction-unit-planner-v4"
 EXTRACTION_UNITS_FILENAME = "extraction_units.jsonl"
 EXTRACTION_UNIT_PLAN_SCHEMA = "extraction-unit-plan/v1"
 
@@ -230,6 +233,14 @@ def _table_units(blocks: list[dict[str, Any]], table_items: list[dict[str, Any]]
             # 行级 context 判定按行值（atomize），稀疏行（Object/CL 空、只剩 Meaning/
             # Comment 列）拿不到——表级语境兜底，行单元 headers 只含本行非空列。
             roles.append("cosem_structured")
+        # A row can be a mixed leaf: the long value column may have its own
+        # cell unit while the key columns remain row-owned.  The row unit is
+        # still useful for table context and routing, but it must not claim
+        # cells that will also receive a dedicated table_cell unit.
+        row_owned_cell_ids = [
+            str(cell.get("cell_id")) for cell in row_cells
+            if str(cell.get("leaf_kind") or "row") == "row"
+        ]
         unit = _unit(
             f"UNIT-{item.get('item_id')}", "table_row", str(item.get("text") or ""),
             block={"block_id": block_id, "section_path": item.get("section_path") or []},
@@ -245,7 +256,7 @@ def _table_units(blocks: list[dict[str, Any]], table_items: list[dict[str, Any]]
             },
             context_refs=_context_refs_for(
                 {"section_path": item.get("section_path") or []}, section_defs),
-            covers_cell_ids=[str(cell.get("cell_id")) for cell in row_cells],
+            covers_cell_ids=row_owned_cell_ids,
             sort_key=(order, 3, row_index))
         units.append(unit)
 

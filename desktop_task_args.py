@@ -24,6 +24,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     run_parser.add_argument("--skip-review", action="store_true")
     run_parser.add_argument("--track", choices=["functional", "legacy_a"], default=None,
                             help="完整需求或显式旧 A 轨；旧调用方未传时保留兼容选择。")
+    # The UI supplies openai_compatible when LLM mode is enabled; leaving the
+    # value unset here preserves the low-level run command's explicit route
+    # contract.  Functional extraction itself resolves an unset route to the
+    # LLM-first default in desktop_tasks.
     run_parser.add_argument("--llm-route", choices=["stub", "openai_compatible"], default=None)
     run_parser.add_argument("--review-scope", choices=["targeted", "all"], default=None)
     run_parser.add_argument("--llm-review-limit", type=int, default=0)
@@ -81,7 +85,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     requirements_analysis_parser = subparsers.add_parser("requirements-analysis")
     requirements_analysis_parser.add_argument("--out", type=Path, required=True)
     requirements_analysis_parser.add_argument("--template", type=Path, default=None)
-    requirements_analysis_parser.add_argument("--llm-route", choices=["stub", "openai_compatible"], default="stub")
+    requirements_analysis_parser.add_argument("--llm-route", choices=["stub", "openai_compatible"], default="openai_compatible")
 
     ai_extract_parser = subparsers.add_parser("ai-extract")
     ai_extract_parser.add_argument("--out", type=Path, required=True)
@@ -227,7 +231,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="整篇对账：规则筛疑+LLM 裁定两段，写 reconcile_report.json 并并入 quality_report")
     reconcile_parser.add_argument("--out-dir", "--out", dest="out", type=Path, required=True)
     reconcile_parser.add_argument(
-        "--llm-route", choices=["stub", "openai_compatible"], default="stub",
+        "--llm-route", choices=["stub", "openai_compatible"], default="openai_compatible",
         help="裁定投票路由（默认 stub=仅规则筛疑 rules_only）")
 
     # WS-H：知识沉淀闭环（成文导出后自动/手动 harvest）

@@ -124,7 +124,7 @@ class ExtractXlsxE2ETests(unittest.TestCase):
             out_dir = tmp_path / "out"
             write_synthetic_xlsx(input_path)
 
-            manifest = run_atomizer_pipeline(input_path, out_dir)
+            manifest = run_atomizer_pipeline(input_path, out_dir, include_atomic_candidates=True)
             manifest_file = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))
             blocks = [json.loads(line) for line in (out_dir / "blocks.jsonl").read_text(encoding="utf-8").splitlines()]
             atomic_exists = (out_dir / "atomic_requirements.jsonl").exists()

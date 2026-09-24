@@ -2943,7 +2943,13 @@ def run_atomizer_pipeline(
         blocks, input_path, mode=segmentation.semantic_mode, route=segmentation.semantic_route,
         pre_review=semantic_pre_review,
     )
-    requirement_candidates = classify_semantic_units(semantic_report.get("units") or [])
+    # Candidate classification needs parser block metadata.  Semantic units
+    # intentionally carry only stable source ids, so table blocks otherwise
+    # lose their type and are filtered as ordinary context before functional
+    # extraction.  Passing the original blocks also preserves the explicit
+    # doc_region for tables whose section path contains a stale TOC ancestor.
+    requirement_candidates = classify_semantic_units(
+        semantic_report.get("units") or [], source_blocks=blocks)
     requirement_coverage_audit = build_full_coverage_audit(
         semantic_report.get("units") or [], requirement_candidates)
     add_visual_suggestions(paragraph_report, input_path, segmentation)

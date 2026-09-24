@@ -991,7 +991,9 @@ async function openDeliverable(name: string) {
 
 const activeNavLabel = computed(
   () => phaseNavItems.find((i) => i.id === activeNav.value)?.label || "审查")
-const llmMode = ref(false)
+// LLM is the product's primary execution mode.  Users can still explicitly
+// disable it for an offline deterministic diagnostic run.
+const llmMode = ref(true)
 type ParagraphMode = "text_only" | "layout" | "vision_assisted"
 type ParagraphFallback = "keep_for_review" | "text_fallback" | "fail_closed"
 function storedChoice<T extends string>(key: string, choices: readonly T[], fallback: T): T {
@@ -1005,7 +1007,7 @@ const paragraphVisionMaxCalls = ref(5)
 const paragraphVisionMaxTokens = ref(100000)
 type SemanticMode = "off" | "deterministic" | "llm"
 type SemanticRoute = "stub" | "openai_compatible"
-const semanticMode = ref<SemanticMode>(storedChoice("ratomizer.semanticMode.v1", ["off", "deterministic", "llm"], "deterministic"))
+const semanticMode = ref<SemanticMode>(storedChoice("ratomizer.semanticMode.v1", ["off", "deterministic", "llm"], "llm"))
 const semanticRoute = ref<SemanticRoute>(storedChoice("ratomizer.semanticRoute.v1", ["stub", "openai_compatible"], "openai_compatible"))
 watch(semanticMode, value => { try { localStorage.setItem("ratomizer.semanticMode.v1", value) } catch { /* storage unavailable */ } })
 watch(semanticRoute, value => { try { localStorage.setItem("ratomizer.semanticRoute.v1", value) } catch { /* storage unavailable */ } })
@@ -1054,7 +1056,7 @@ const translationError = ref("")
 const settingsStatus = ref("")
 const llmApiKey = ref("")
 const llmSettings = ref<LlmSettings>({
-  enabled: false,
+  enabled: true,
   visionCapable: false,
   baseUrl: "http://127.0.0.1:11434/v1",
   model: "qwen2.5:14b",
@@ -1812,7 +1814,7 @@ function applyLlmSettings(payload: Partial<LlmSettings>) {
 
 function normalizeUiLlmSettings(payload: Partial<LlmSettings>): LlmSettings {
   return {
-    enabled: Boolean(payload.enabled),
+    enabled: payload.enabled == null ? true : Boolean(payload.enabled),
     visionCapable: payload.visionCapable == null ? false : Boolean(payload.visionCapable),
     baseUrl: stringOr(payload.baseUrl, "http://127.0.0.1:11434/v1"),
     model: stringOr(payload.model, "qwen2.5:14b"),
@@ -2272,7 +2274,7 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
       skipReview: !reviewEnabled,
       track: (reviewEnabled || (!options.llmReviewLimit && (runStages.value.assemble || runStages.value.compose)))
         ? "legacy_a" : "functional",
-      llmRoute: useLlmReview ? "openai_compatible" : undefined,
+      llmRoute: llmMode.value ? "openai_compatible" : "stub",
       reviewScope: useLlmReview ? "targeted" : undefined,
       ...(options.llmReviewLimit && reviewEnabled ? { llmReviewLimit: options.llmReviewLimit } : {}),
       ...abntPreset,
@@ -2282,8 +2284,8 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
       paragraphVisionMaxRegions: paragraphVisionMaxRegions.value,
       paragraphVisionMaxCalls: paragraphVisionMaxCalls.value,
       paragraphVisionMaxTokens: paragraphVisionMaxTokens.value,
-      semanticMode: semanticMode.value,
-      semanticRoute: semanticRoute.value,
+      semanticMode: llmMode.value ? semanticMode.value : "deterministic",
+      semanticRoute: llmMode.value ? semanticRoute.value : "stub",
     })
     runProgress.value = 82
     runStage.value = "加载解析结果"

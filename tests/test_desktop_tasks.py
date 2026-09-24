@@ -471,7 +471,7 @@ class DesktopTaskTests(unittest.TestCase):
         run_pipeline.assert_called_once_with(
             input_path,
             out_dir,
-            segmentation=SegmentationOptions(),
+            segmentation=SegmentationOptions(semantic_mode="llm"),
             skip_review=False,
             llm_route=None,
             review_scope=None,
@@ -1228,7 +1228,7 @@ class ChainAndManifestTests(unittest.TestCase):
             "compose": "engineering_composer/v1+ai-supplement-v3-identity-preconditions+impl-v2",
             "export-annotation-html": (
                 "doc_annotation_export/v19-structured-claim-source+claim-annotation-v17"
-                "+claim-focus-adapter-v3+translation-prompt-v5-greedy-splithalf-b10-c8000"
+                "+claim-focus-adapter-v3+translation-prompt-v6-greedy-splithalf-b10-c8000"
                 "+annotation-translation-guards-v5+doc-facsimile-v1"
                 "+ai-supplement-v3-identity-preconditions"
             ),
@@ -2491,7 +2491,7 @@ class ChainAndManifestTests(unittest.TestCase):
 
             atomize_config = {
                 "chunk_chars": 3500,
-                "kb_paths": [str(path) for path in desktop_tasks.resolve_kb_paths(None)],
+                "kb_paths": [str(path) for path in desktop_tasks.resolve_kb_paths(desktop_tasks.default_kb_paths())],
                 "domain_pack_dir": "",
                 "mode": "legacy_a_track",
                 # 与 run_pipeline_task 的 segmentation.lineage() 全字段同形
@@ -2703,7 +2703,7 @@ class FingerprintReuseAndLockHardeningTests(unittest.TestCase):
 
             atomize_config = {
                 "chunk_chars": 3500,
-                "kb_paths": [str(path) for path in desktop_tasks.resolve_kb_paths(None)],
+                "kb_paths": [str(path) for path in desktop_tasks.resolve_kb_paths(desktop_tasks.default_kb_paths())],
                 "domain_pack_dir": "",
                 "mode": "legacy_a_track",
                 "paragraph_segmentation": SegmentationOptions().lineage(),
@@ -2768,7 +2768,7 @@ class FingerprintReuseAndLockHardeningTests(unittest.TestCase):
 
             atomize_config = {
                 "chunk_chars": 3500,
-                "kb_paths": [str(path) for path in desktop_tasks.resolve_kb_paths(None)],
+                "kb_paths": [str(path) for path in desktop_tasks.resolve_kb_paths(desktop_tasks.default_kb_paths())],
                 "domain_pack_dir": "",
                 "mode": "legacy_a_track",
                 "paragraph_segmentation": SegmentationOptions().lineage(),

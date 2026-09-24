@@ -34,6 +34,9 @@ class SegmentationOptions:
     vision_max_calls: int = 5
     vision_max_tokens: int = 100000
     fallback: str = "keep_for_review"
+    # Library callers retain the deterministic constructor default.  The CLI/UI
+    # product entrypoints select LLM explicitly (with deterministic fallback),
+    # so low-level tests and integrations do not silently acquire paid calls.
     semantic_mode: str = "deterministic"
     semantic_route: str = "openai_compatible"
 
@@ -80,7 +83,7 @@ def options_from_args(args) -> SegmentationOptions:
         for field, default in defaults.items()
         if field not in {"semantic_mode", "semantic_route"}
     }
-    values["semantic_mode"] = getattr(args, "semantic_mode", defaults["semantic_mode"])
+    values["semantic_mode"] = getattr(args, "semantic_mode", "llm")
     values["semantic_route"] = getattr(args, "semantic_route", defaults["semantic_route"])
     return SegmentationOptions(**values)
 

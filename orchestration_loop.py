@@ -767,7 +767,8 @@ def resolve_max_rounds(cli_value: int | None) -> int:
 def resolve_allow_llm(cli_flag: bool) -> bool:
     if cli_flag:
         return True
-    env_raw = os.environ.get("RATOMIZER_ORCHESTRATION_ALLOW_LLM", "").strip().lower()
+    from config import get_env
+    env_raw = get_env("RATOMIZER_ORCHESTRATION_ALLOW_LLM").strip().lower()
     return env_raw in {"1", "true", "yes", "on"}
 
 

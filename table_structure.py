@@ -32,7 +32,8 @@ from typing import Any, Iterable, Mapping
 # page-continuation fragment that has no repeated header.
 TABLE_STRUCTURE_VERSION = "table-structure-v10"
 # Dual-track entry (WS1 wk3-5, plan §3.2.2): a separate identity stamp for the new
-# hypothesis-first entry. The dual-track path remains gated behind a default-OFF switch
+# hypothesis-first entry. The LLM proposal is enabled by default; deterministic
+# geometry validation remains the sole signing authority.
 # (TABLE_DUAL_TRACK_SWITCH below); v10 includes deterministic page-continuation handling.
 TABLE_DUAL_TRACK_VERSION = "table-dual-track-v1"
 TABLE_CELL_ITEM_SCHEMA = "table-cell-item/v1"
@@ -1765,8 +1766,9 @@ _TABLE_DUAL_TRACK_TRUTHY = ("1", "true", "yes", "on")
 
 
 def dual_track_enabled() -> bool:
-    """Whether the hypothesis-first entry is active. Default OFF (old deterministic path)."""
-    return os.environ.get(TABLE_DUAL_TRACK_SWITCH, "0").strip().lower() in _TABLE_DUAL_TRACK_TRUTHY
+    """Whether the hypothesis-first entry is active. Default ON."""
+    from config import get_env
+    return get_env(TABLE_DUAL_TRACK_SWITCH).strip().lower() in _TABLE_DUAL_TRACK_TRUTHY
 
 
 def structure_from_hypothesis(

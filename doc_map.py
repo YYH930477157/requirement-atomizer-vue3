@@ -1,4 +1,4 @@
-"""V3 WS-A A1：整篇地图（doc_map，LLM 一遍，默认关闭）。
+"""V3 WS-A A1：整篇地图（doc_map，LLM 一遍，默认开启）。
 
 输入 atomize/extract_units 产物（blocks/chunks 条款单元），LLM 单遍产出文档级地图：
 章节骨架、条款→块映射、表格族分布（复用 ``table_family_templates`` 确定性表头匹配）、
@@ -20,7 +20,7 @@
   并记 ``rejected_codes``（复用 ``cosem_behavior_spec.extract_codes``）。
 * **封闭 schema**：产物校验 ``schemas/doc_map.schema.json``（additionalProperties 全闭）。
 
-入口开关 ``RATOMIZER_DOC_MAP``（默认 ``0``）。产物路径走
+入口开关 ``RATOMIZER_DOC_MAP``（默认 ``1``）。产物路径走
 ``result_package.governed_artifact_path``。测试中禁止真实 LLM 调用。
 """
 from __future__ import annotations
@@ -107,8 +107,14 @@ def _validate_payload_schema(payload: Any, schema_filename: str, *, label: str) 
 # ---------------------------------------------------------------------------
 
 def doc_map_enabled(value: str | None = None) -> bool:
-    """RATOMIZER_DOC_MAP 是否开启（默认关）。"""
-    raw = os.environ.get(ENTRY_SWITCH_ENV) if value is None else value
+    """RATOMIZER_DOC_MAP 是否开启（默认开）。"""
+    if value is None:
+        # Defaults are owned by config.ENV_REGISTRY; reading os.environ directly
+        # would silently keep the old disabled default when the variable is unset.
+        from config import get_env
+        raw = get_env(ENTRY_SWITCH_ENV)
+    else:
+        raw = value
     return str(raw or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
@@ -420,6 +426,18 @@ def _build_user_prompt(scaffold: dict[str, Any]) -> str:
     )
 
 
+def ensure_doc_map(out_dir: Path | str, *, route: str | None) -> dict[str, Any]:
+    """Apply the product policy and resolve the current source through the paid cache."""
+    if route == "stub":
+        return {"status": "disabled:stub_route", "written": []}
+    if not doc_map_enabled():
+        return {"status": "disabled", "written": []}
+    result = run_doc_map(out_dir, route=route)
+    if str(result.get("status") or "").startswith("unavailable:"):
+        LOGGER.warning("LLM 文档大纲不可用，功能抽取将使用无地图上下文：%s", result.get("status"))
+    return result
+
+
 def run_doc_map(
     out_dir: Path | str,
     *,
@@ -462,7 +480,11 @@ def run_doc_map(
     cached = _read_cache(out_dir).get(fingerprint)
     if cached is not None and isinstance(cached.get("payload"), dict):
         payload = dict(cached["payload"])
-        return _result_summary(payload, out_dir, route, written=False)
+        existing = load_doc_map(out_dir)
+        # A cached hypothesis must be materialized for this run. An older
+        # doc_map.json cannot remain the contextual input after source changes.
+        needs_publish = existing is None or existing.get("fingerprint") != fingerprint
+        return _result_summary(payload, out_dir, route, written=needs_publish)
 
     scaffold = build_scaffold(sections, blocks)
 
@@ -607,7 +629,7 @@ def _load_blocks(out_dir: Path) -> list[dict[str, Any]]:
 
 
 def load_doc_map(out_dir: Path | str) -> dict[str, Any] | None:
-    """只读加载已产出的 doc_map.json（不存在/损坏返回 None，调用方退回无地图路径）。"""
+    """只读加载与当前解析内容匹配的地图；旧地图不得进入新抽取。"""
     from result_package import governed_artifact_path
 
     out_dir = Path(out_dir).expanduser().resolve()
@@ -621,5 +643,13 @@ def load_doc_map(out_dir: Path | str) -> dict[str, Any] | None:
     if not isinstance(payload, dict) or payload.get("schema_version") != DOC_MAP_SCHEMA:
         return None
     if payload.get("status") != "ok":
+        return None
+    from functional_extract import load_clauses
+
+    try:
+        current_content = _content_fingerprint(load_clauses(out_dir), _load_blocks(out_dir))
+    except Exception:
+        return None
+    if payload.get("content_fingerprint") != current_content:
         return None
     return payload

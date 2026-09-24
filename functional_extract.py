@@ -2838,7 +2838,7 @@ def extract_functional_requirements(
     sections: Sequence[dict[str, Any]],
     *,
     chat: ExtractChat | None = None,
-    route: str | None = "stub",
+    route: str | None = "openai_compatible",
     blocks: Sequence[dict[str, Any]] | None = None,
     strategy: str = "legacy",
     doc_map: dict[str, Any] | None = None,
@@ -3867,10 +3867,10 @@ def run_functional_extract(
             semantic_pre_review = json.loads(pre_path.read_text(encoding="utf-8"))
     except Exception:
         semantic_pre_review = None
-    if resolved_strategy == "clause_family" and doc_map is None:
+    if resolved_strategy == "clause_family" and doc_map is None and route != "stub":
         try:
-            from doc_map import load_doc_map
-            doc_map = load_doc_map(out_dir)
+            from doc_map import doc_map_enabled, load_doc_map
+            doc_map = load_doc_map(out_dir) if doc_map_enabled() else None
         except Exception:  # noqa: BLE001 — 无地图时退回无地图包，不阻断
             doc_map = None
     # §17 unit 级路由接线：仅 clause_family——表格主导条款出 B 轨输入与守恒基线

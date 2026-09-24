@@ -11,7 +11,15 @@ NON_REQUIREMENT_REGION = re.compile(r"\b(?:foreword|introduction|references?|def
 
 
 def _region_role(unit: dict[str, Any], text: str) -> str:
-    path = " / ".join(str(x) for x in (unit.get("section_path") or []))
+    # Use the leaf section plus the explicit parser region when available.
+    # Some DOCX table rows inherit a stale TOC ancestor (for example
+    # ``2 Normative References / 5 General Requirements``); matching every
+    # ancestor would incorrectly turn the normative table into front matter.
+    path_parts = [str(x) for x in (unit.get("section_path") or []) if str(x).strip()]
+    path = " / ".join(path_parts[-2:])
+    doc_region = str(unit.get("doc_region") or "").strip().lower()
+    if doc_region == "body":
+        return "normative_body"
     heading = str(unit.get("heading") or "")
     if NON_REQUIREMENT_REGION.search(f"{path} {heading} {text[:120]}"):
         return "informational"
@@ -20,13 +28,32 @@ def _region_role(unit: dict[str, Any], text: str) -> str:
     return "normative_body"
 
 
-def classify_semantic_units(units: Sequence[dict[str, Any]]) -> dict[str, Any]:
+def classify_semantic_units(
+    units: Sequence[dict[str, Any]],
+    source_blocks: Sequence[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    blocks_by_id = {
+        str(block.get("block_id")): block
+        for block in (source_blocks or [])
+        if isinstance(block, dict) and block.get("block_id")
+    }
     rows: list[dict[str, Any]] = []
     current_role = "normative_body"
     for unit in units:
         text = str(unit.get("text") or unit.get("text_normalized") or "").strip()
         low = text.lower()
-        region_role = _region_role(unit, text)
+        source_ids = [str(value) for value in (unit.get("source_block_ids") or [])]
+        source_rows = [blocks_by_id.get(value, {}) for value in source_ids]
+        is_table = bool(unit.get("type") == "table") or any(
+            str(row.get("type") or "") == "table" for row in source_rows
+        )
+        explicit_doc_region = next(
+            (str(row.get("doc_region") or "").strip().lower()
+             for row in source_rows if row.get("doc_region")),
+            "",
+        )
+        region_role = _region_role(
+            {**unit, "doc_region": explicit_doc_region}, text)
         if re.search(r"\bforeword\b", text, re.I):
             current_role = "informational"
         elif re.search(r"\bintroduction\b", text, re.I):
@@ -45,7 +72,7 @@ def classify_semantic_units(units: Sequence[dict[str, Any]]) -> dict[str, Any]:
         if not text or PAGE.match(text) or unit.get("noise"):
             category = "noise"
             reason = "page_or_parser_noise"
-        elif unit.get("type") == "table" or "column_" in low:
+        elif is_table or "column_" in low:
             category = "table_candidate"
             reason = "table_context_required"
         elif NORMATIVE.search(text) and region_role != "informational":
@@ -60,7 +87,7 @@ def classify_semantic_units(units: Sequence[dict[str, Any]]) -> dict[str, Any]:
         else:
             category = "context"
             reason = "non_normative_context"
-        rows.append({"semantic_unit_id": unit.get("semantic_unit_id") or unit.get("unit_id"), "category": category, "reason": reason, "region_role": region_role, "source_block_ids": list(unit.get("source_block_ids") or [])})
+        rows.append({"semantic_unit_id": unit.get("semantic_unit_id") or unit.get("unit_id"), "category": category, "reason": reason, "region_role": region_role, "source_block_ids": source_ids})
     counts = Counter(row["category"] for row in rows)
     return {"schema": "requirement-candidates/v1", "counts": dict(counts), "units": rows}
 

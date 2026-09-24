@@ -234,6 +234,19 @@ _CHAIN_BUDGET_STAGES = {
 }
 
 
+def _ensure_doc_map(out_dir: Path, *, route: str | None) -> dict[str, Any]:
+    """Materialize the LLM document map before functional extraction.
+
+    ``doc_map`` is a contextual pre-pass, not a requirement authority.  It is
+    intentionally run after atomize has produced blocks/chunks and before any
+    functional extraction stage consumes them.  The map module owns its
+    content-fingerprint cache, so reruns do not repeat a paid call.  Explicit
+    ``stub`` runs remain zero-LLM test runs and report the unavailable state.
+    """
+    from doc_map import ensure_doc_map
+    return ensure_doc_map(out_dir, route=route)
+
+
 def run_pipeline_task(
     input_path: Path,
     out_dir: Path,
@@ -256,6 +269,10 @@ def run_pipeline_task(
     from pipeline_track import resolve_run_track
 
     resolved_track = resolve_run_track(track, skip_review=skip_review)
+    # Product entrypoints are LLM-first.  Keep ``None`` as a compatible API
+    # value for callers/tests, but resolve it before any functional LLM stage.
+    if resolved_track == "functional" and llm_route is None:
+        llm_route = "openai_compatible"
     out_dir.mkdir(parents=True, exist_ok=True)
     # S1-1：开启 RATOMIZER_LLM_BUDGET 时挂文档预算单（attach 后所有 LLM 调用经钩子扣减 +
     # 超额事前拦截；save 落盘 cost-report 数据源）。开关未开返回 None，行为逐字节不变。
@@ -2592,6 +2609,14 @@ def _functional_extract_stage_config(limit_sections: int | None = None) -> dict[
         # §3.6：运行时求值（修掉 import 时常量在同进程不刷新的缺陷）
         "negative_k": functional_extract_negative_k(),
     }
+    # The pre-extraction document map is a paid, content-fingerprinted input.
+    # Include its policy/version so toggling the LLM-first context pass cannot
+    # silently reuse a product created without the map.
+    from doc_map import DOC_MAP_VERSION, doc_map_enabled
+    config["doc_map"] = {
+        "enabled": doc_map_enabled(),
+        "version": DOC_MAP_VERSION if doc_map_enabled() else "",
+    }
     if limit_sections:
         config["limit_sections"] = int(limit_sections)
     # Phase 2b：大纲权威开关改变条款集 → 阶段必须重跑。flag 关时键缺席
@@ -2739,6 +2764,10 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
     _CHAIN_ACTIVE = True   # 链内各阶段跳过 summary;finally 复位,失败路径不污染后续任务
     chain_budget = _attach_budget_ledger_for_run(out_dir)  # S1-1：开启预算单时挂账本
     try:
+        if "functional-extract" in ordered:
+            # Resolve the map once, under the active document budget, before
+            # computing stage fingerprints. Parsing alone does not pay for it.
+            payload["doc_map"] = _ensure_doc_map(out_dir, route=route)
         llm_stages = {"ai-extract", "functional-extract", "functional-synthesis", "assemble",
                       "requirements-analysis", "full-translation", "export-annotation-html"}
         for index, stage in enumerate(ordered, start=1):
@@ -3545,6 +3574,7 @@ def main(argv: list[str] | None = None) -> int:
                                       limit_sections=args.limit_sections or None,
                                       sample_ratio=args.sample_ratio or None)
         elif args.command == "functional-extract":
+            _ensure_doc_map(args.out, route=args.llm_route)
             payload = functional_extract_task(args.out, route=args.llm_route)
         elif args.command == "export-annotation-html":
             payload = export_annotation_html_task(

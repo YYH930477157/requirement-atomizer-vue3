@@ -132,7 +132,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     analyze = subparsers.add_parser("analyze", help="Run requirements analysis agent.")
     analyze.add_argument("--out", type=Path, required=True)
     analyze.add_argument("--template", type=Path, default=None)
-    analyze.add_argument("--llm-route", choices=["stub", "openai_compatible"], default="stub")
+    analyze.add_argument("--llm-route", choices=["stub", "openai_compatible"], default="openai_compatible")
     add_verbosity_arguments(analyze)
 
     claim_acceptance = subparsers.add_parser(
@@ -262,8 +262,14 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def command_run(args: argparse.Namespace, started: float, timing_ms: dict[str, int]) -> dict[str, Any]:
+    from dataclasses import replace
     from paragraph_segmentation import options_from_args
     export_formats = parse_export_formats(args.export)
+    route = args.llm_route or ("openai_compatible" if args.track == "functional" else None)
+    segmentation = options_from_args(args)
+    if route == "stub":
+        segmentation = replace(segmentation, semantic_route="stub",
+                               semantic_mode="deterministic" if segmentation.semantic_mode == "llm" else segmentation.semantic_mode)
 
     atomize_started = time.perf_counter()
     manifest = run_atomizer_pipeline(
@@ -273,18 +279,21 @@ def command_run(args: argparse.Namespace, started: float, timing_ms: dict[str, i
         kb_paths=args.kb or default_kb_paths(),
         domain_pack_dir=args.domain_pack,
         include_atomic_candidates=args.track == "legacy_a",
-        segmentation=options_from_args(args),
+        segmentation=segmentation,
     )
     timing_ms["atomize"] = elapsed_ms(atomize_started)
 
     review_summary = None
     functional_summary = None
+    doc_map_summary = None
     exports: list[str] = []
     if args.track == "functional":
+        from doc_map import ensure_doc_map
+        doc_map_summary = ensure_doc_map(args.out, route=route)
         extract_started = time.perf_counter()
         functional_summary = run_functional_extract(
             args.out,
-            route=args.llm_route or "stub",
+            route=route,
             truth_set=args.truth_set,
         )
         timing_ms["functional_extract"] = elapsed_ms(extract_started)
@@ -318,6 +327,7 @@ def command_run(args: argparse.Namespace, started: float, timing_ms: dict[str, i
     )
     envelope["track"] = args.track
     envelope["functional_extract"] = functional_summary
+    envelope["doc_map"] = doc_map_summary
     return envelope
 
 

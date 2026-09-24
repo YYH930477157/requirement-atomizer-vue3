@@ -400,6 +400,8 @@ describe("Electron main helpers", () => {
   })
 
   it("defaults completeness self-check on and exposes the toggle to Python", () => {
+    expect(normalizeLlmSettings({}).enabled).toBe(true)              // 旧配置无此字段 → 默认开
+    expect(normalizeLlmSettings({ enabled: false }).enabled).toBe(false)
     expect(normalizeLlmSettings({}).selfCheck).toBe(true)            // 旧配置无此字段 → 默认开
     expect(normalizeLlmSettings({ selfCheck: false }).selfCheck).toBe(false)
     expect(buildLlmEnvironment({ selfCheck: false })).toMatchObject({ RATOMIZER_AI_SELFCHECK: "0" })

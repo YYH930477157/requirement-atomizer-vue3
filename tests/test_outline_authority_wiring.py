@@ -205,7 +205,8 @@ class FlagOffByteIdentityTests(unittest.TestCase):
         with mock.patch.dict(os.environ, base, clear=True):
             off = desktop_tasks._functional_extract_stage_config()
         self.assertEqual(
-            set(off), {"strategy", "strategy_env_raw", "negative_k"})
+            set(off), {"strategy", "strategy_env_raw", "negative_k", "doc_map"})
+        self.assertTrue(off["doc_map"]["enabled"])
         with mock.patch.dict(os.environ, {**base, FLAG_ENV: "1"}, clear=True):
             on = desktop_tasks._functional_extract_stage_config()
         self.assertEqual(on["outline_authority"], "outline-authority-v1")

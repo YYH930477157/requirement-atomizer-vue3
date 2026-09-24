@@ -58,7 +58,8 @@ function buildExportAnnotationArgs(input) {
 }
 
 const DEFAULT_LLM_SETTINGS = {
-  enabled: false,
+  // LLM-first product default.  Explicitly saved false remains respected.
+  enabled: true,
   visionCapable: false,
   baseUrl: "http://127.0.0.1:11434/v1",
   model: "qwen2.5:14b",
@@ -78,7 +79,7 @@ const SESSION_API_KEY_ENV = "RATOMIZER_LLM_SESSION_API_KEY";
 
 function normalizeLlmSettings(input = {}) {
   return {
-    enabled: Boolean(input.enabled),
+    enabled: input.enabled == null ? DEFAULT_LLM_SETTINGS.enabled : Boolean(input.enabled),
     visionCapable: input.visionCapable == null
       ? DEFAULT_LLM_SETTINGS.visionCapable : Boolean(input.visionCapable),
     baseUrl: stringValue(input.baseUrl, DEFAULT_LLM_SETTINGS.baseUrl),

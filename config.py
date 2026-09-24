@@ -31,7 +31,7 @@ ENV_REGISTRY: tuple[EnvVar, ...] = (
     EnvVar("RATOMIZER_LLM_MAX_RETRIES", "", "非 429 错误重试次数（429 另有独立预算）", True),
     EnvVar("RATOMIZER_LLM_CONCURRENCY", "8", "抽取/富化并发度（1..16；2026-07-14 默认 4→8）", True),
     EnvVar("RATOMIZER_LLM_ADAPTIVE", "1", "429 自适应闸门（跨线程全局冷却+在飞上限 AIMD；=0 关闭回到各线程独立退避）", False),
-    EnvVar("RATOMIZER_REQUIREMENTS_ANALYSIS_ENRICH", "0", "需求分析 LLM 富化开关（默认关闭；方案库成熟后设为 1 启用）", False),
+    EnvVar("RATOMIZER_REQUIREMENTS_ANALYSIS_ENRICH", "1", "需求分析 LLM 富化开关（默认开启；设为 0 仅运行确定性分析）", False),
     EnvVar("RATOMIZER_ANALYZE_NEGATIVE_K", "2", "analyze 富化负例 few-shot 注入数量上限（0=不注入）", False),
     EnvVar("RATOMIZER_ANALYZE_BATCH", "4", "软需富化合批条数（1..8；1=逐条；硬件翻译批量 ×2 封顶 8）", False),
     EnvVar("RATOMIZER_ENRICH_BATCH", "6", "装配描述富化合批条数（1..10；1=逐条；带蓝皮书条款的条目恒单发）", False),
@@ -63,7 +63,7 @@ ENV_REGISTRY: tuple[EnvVar, ...] = (
     EnvVar("RATOMIZER_VERIFIER_LEDGER_COMPACT_MAX_ROWS", "2000", "claim_verifier_attempts.jsonl 压缩触发行数（默认 2000；≤0 回退默认）", False),
     EnvVar("RATOMIZER_AI_UNIT_MODE", "clause", "抽取单元模式：clause（条款族，默认）/ chapter（整章，实验，A/B 已裁决劣于 clause）", False),
     # --- 表格双轨制（WS1）---
-    EnvVar("RATOMIZER_TABLE_DUAL_TRACK", "0", "表格结构双轨入口开关（=1 启用「LLM 提议→几何校验签发」；默认 0=旧确定性几何单轨，签名失败/无预算/无假设时一律退回单轨）", False),
+    EnvVar("RATOMIZER_TABLE_DUAL_TRACK", "1", "表格结构双轨入口开关（=1 启用「LLM 提议→几何校验签发」；默认开启，签名失败/无预算/无假设时一律退回单轨）", False),
     # --- PDF 版式修复（W8：D1 下标归位 / D2 断行连字符 / D3 两栏定义表；全部 OFF 时解析输出与旧版字节一致）---
     EnvVar("RATOMIZER_PDF_SUBSCRIPT_FIX", "1", "PDF 下标归位开关（D1；=0 关闭 size 证据抽取与下标拼接；默认 1）", False),
     EnvVar("RATOMIZER_PDF_HYPHEN_FIX", "1", "PDF 断行连字符合并开关（D2；=0 回到旧版仅小写续行拼接；默认 1 含 G4 护栏与数字续行）", False),
@@ -95,7 +95,7 @@ ENV_REGISTRY: tuple[EnvVar, ...] = (
     # --- T2 编排环（agent_loop 升格：缺口驱动的再规划，裁决仍在专家面板）---
     # 默认非侵入：allow_llm 关闭时编排环只读缺口并把 extract 缺口转人工，不发起任何 LLM 补抽。
     EnvVar("RATOMIZER_ORCHESTRATION_MAX_ROUNDS", "8", "编排环每文档最大轮次上限（1..50，默认 8；达上限未收敛→文档 NEEDS WORK 交人）", False),
-    EnvVar("RATOMIZER_ORCHESTRATION_ALLOW_LLM", "0", "编排环经 openai_compatible 路由自动发起 spot_extract/targeted_reextract 的授权开关（=1 启用；默认 0=只读缺口，extract 缺口转人工）", False),
+    EnvVar("RATOMIZER_ORCHESTRATION_ALLOW_LLM", "1", "编排环经 openai_compatible 路由自动发起 spot_extract/targeted_reextract 的授权开关（默认开启；设为 0 仅只读缺口）", False),
     EnvVar("RATOMIZER_TEXT_MODE", "1", "旧解析文本模式开关（=1 保留 DocumentReview 的「解析文本」模式；=0 隐藏文本模式按钮，删除动作待 G4 平价清单验收后执行）", False),
     # --- WS-A 防漏网 / 内容模型分流（默认关或纯增量登记）---
     EnvVar("RATOMIZER_ENABLE_HTML_PARSER", "0", "HTML 输入解析器开关（=1 启用 parsers/html_parser.py；默认 0，不改变既有 docx/xlsx/pdf 主路径）", False),
@@ -115,7 +115,7 @@ ENV_REGISTRY: tuple[EnvVar, ...] = (
     # DOC_MAP / RECONCILE 仍默认关。CONTEXT_PACK_STRATEGY 登记默认仍是 legacy（显式回滚
     # 与 get_env 单源字面）；生效策略由 functional_extract.context_pack_strategy() 解析——
     # 直抽开启且环境变量未设时走 clause_family，不在此改登记默认以免与显式 legacy 无法区分。
-    EnvVar("RATOMIZER_DOC_MAP", "0", "A1 整篇地图开关（=1 启用 doc_map.LLM 单遍文档地图并写 doc_map.json；预算走文档预算单 structure_hypothesis 子预算，耗尽/stub 如实 unavailable；默认 0=不生成，调用方走无地图路径）", False),
+    EnvVar("RATOMIZER_DOC_MAP", "1", "A1 整篇地图开关（默认开启 doc_map.LLM 单遍文档地图并写 doc_map.json；预算走文档预算单 structure_hypothesis 子预算，耗尽/stub 如实 unavailable，调用方明确记录后退回无地图路径）", False),
     EnvVar("RATOMIZER_CONTEXT_PACK_STRATEGY", "legacy", "A2 功能直抽上下文包策略（legacy=文档级 4000 字符切片 / clause_family=按条款自然边界组装）。登记默认 legacy 供显式回滚；直抽开启且本变量未设时，context_pack_strategy() 生效 clause_family", False),
     EnvVar("RATOMIZER_CONTEXT_PACK_MAX_CHARS", "24000", "A2 上下文包大小上限字符数（只约束拼包：装不下的邻居整条舍弃；目标条款自身超限仍整文进包，宁超勿截）", False),
     EnvVar("RATOMIZER_RECONCILE", "0", "A3 整篇对账开关（=1 时 chain 链尾自动跑 reconcile：规则筛疑+LLM 裁定两段，硬依据一票否决，LLM 不可用如实 rules_only；默认 0=不跑，亦可用 desktop reconcile 子命令显式执行）", False),
@@ -142,7 +142,7 @@ ENV_REGISTRY: tuple[EnvVar, ...] = (
     EnvVar("RATOMIZER_UNIT_ROUTER_RULES", "", "单元路由规则集覆盖（保留给真实语料标定后的阈值集；空=内置规则）", False),
     # --- 大纲权威接线 Phase 2b（2026-08-29 第一片，默认关） ---
     EnvVar("RATOMIZER_OUTLINE_AUTHORITY", "0", "大纲权威条款重切开关（=1 B 轨条款装配层按 document_outline 裁决重切边界：demoted 升格正文句并入前条款、被吞并 confirmed heading 切开成新条款、toc 条目不进正文基线、suspect 只审计不动切分；报告不可得时如实回退旧切分并记 unavailable；默认 0=装配/指纹/产物逐字节不变。重切身份 outline-authority-v1 在 flag 开时进 functional-extract 抽取缓存指纹、chain 阶段 producer 与 ai-extract 付费缓存/发布 lineage）", False),
-    EnvVar("RATOMIZER_SEMANTIC_PRE_REVIEW", "0", "语义预审开关（=1 在抽取前生成段落结构预审报告并写入 semantic_pre_review.json；默认 0）", False),
+    EnvVar("RATOMIZER_SEMANTIC_PRE_REVIEW", "1", "语义预审开关（默认开启，在抽取前生成段落结构预审报告并写入 semantic_pre_review.json；设为 0 关闭）", False),
     # --- 待核成文 partial export（2026-09-01，用户拍板对 08-19「守恒拦成文」的政策反转） ---
     EnvVar("RATOMIZER_PARTIAL_EXPORT", "1", "待核成文开关（=1 默认：守恒未闭合/直抽 partial[mixed] 时 requirements-analysis/template-write/clarification-report 照跑并如实记 partial，失败面行级「待核+失败类」标记进成文 xlsx，首代走 record_analysis_partial 发布（marker=incomplete 不冒充完成代）；execution_status=failed 与 draft:true 一律仍拦；READY/Claim 发布/WS0 门禁语义不动；=0 回到整段拦截旧行为——回滚通道）", False),
 )

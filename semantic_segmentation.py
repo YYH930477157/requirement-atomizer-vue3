@@ -101,14 +101,14 @@ def _table_continuation_evidence(previous: dict[str, Any], current: dict[str, An
 
 
 def add_semantic_arguments(parser) -> None:
-    parser.add_argument("--semantic-mode", choices=SEMANTIC_MODES, default="deterministic",
-                        help="语义段落：off、确定性规则或使用 LLM 判断边界")
+    parser.add_argument("--semantic-mode", choices=SEMANTIC_MODES, default="llm",
+                        help="语义段落：off、确定性规则或使用 LLM 判断边界（默认 LLM）")
     parser.add_argument("--semantic-route", choices=["stub", "openai_compatible"], default="openai_compatible")
 
 
 def semantic_options_from_args(args) -> dict[str, str]:
     return {
-        "semantic_mode": getattr(args, "semantic_mode", "deterministic"),
+        "semantic_mode": getattr(args, "semantic_mode", "llm"),
         "semantic_route": getattr(args, "semantic_route", "openai_compatible"),
     }
 
