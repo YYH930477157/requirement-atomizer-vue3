@@ -625,6 +625,7 @@ def chat_json_with_meta(
     user_prompt: str,
     *,
     request_budget: LLMRequestBudget | None = None,
+    max_truncation_escalations: int | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """chat_json + 全底层调用（首发/修复/截断升级重发）聚合的 token 用量。
 
@@ -640,6 +641,7 @@ def chat_json_with_meta(
         _usage_sink=usage_sink,
         _request_budget=request_budget,
         _request_stats=request_stats,
+        max_truncation_escalations=max_truncation_escalations,
     )
     aggregate = _aggregate_usage(usage_sink)
     if request_stats["failed_call_count"]:

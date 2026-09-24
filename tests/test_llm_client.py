@@ -749,6 +749,25 @@ class LLMClientTests(unittest.TestCase):
         self.assertEqual(meta["call_count"], 2)
         self.assertEqual(meta["failed_call_count"], 0)
 
+    def test_chat_json_with_meta_forwards_truncation_escalations(self) -> None:
+        """Callers using the metadata wrapper retain the truncation retry policy."""
+        from llm_client import chat_json_with_meta
+
+        truncated = {
+            "choices": [{"message": {"content": ""}, "finish_reason": "length"}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12},
+        }
+        good = {"choices": [{"message": {"content": '{"ok": true}'}}],
+                "usage": {"prompt_tokens": 14, "completion_tokens": 3, "total_tokens": 17}}
+        with MockOpenAIService([{"body": truncated}, {"body": good}]) as service:
+            data, meta = chat_json_with_meta(
+                LLMClientConfig(base_url=service.base_url, model="mock-model", api_key_env="", timeout_s=2, max_retries=0),
+                "system", "user", max_truncation_escalations=1,
+            )
+        self.assertEqual(data, {"ok": True})
+        self.assertEqual(len(service.requests), 2)
+        self.assertEqual(meta["call_count"], 2)
+
     def test_chat_json_with_meta_marks_missing_usage_as_partial(self) -> None:
         """端点不返回 usage → 计 0 且 usage_complete=False（不得估算冒充精确值）。"""
         from llm_client import chat_json_with_meta
