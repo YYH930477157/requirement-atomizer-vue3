@@ -9,6 +9,7 @@ from pathlib import Path
 
 from atomize import (
     AtomizerInputError,
+    SectionState,
     DEFAULT_ACCESS_RIGHT_CLIENTS,
     build_atomic_candidates,
     build_table_artifacts,
@@ -25,6 +26,27 @@ from source_spans import validate_source_alignment
 
 
 class AtomizeTableTests(unittest.TestCase):
+    def test_numbered_chapters_do_not_inherit_mismatched_word_style_levels(self):
+        state = SectionState()
+        state.update(1, "2 Normative References")
+        self.assertEqual(state.update(3, "3. Terms and Definitions"),
+                         ["3. Terms and Definitions"])
+        self.assertEqual(state.update(3, "5. General Technical Requirements"),
+                         ["5. General Technical Requirements"])
+        self.assertEqual(state.update(4, "5.1. Single-phase IPUE"),
+                         ["5. General Technical Requirements", "5.1. Single-phase IPUE"])
+        self.assertEqual(state.update(4, "5.2. Three-phase IPUE"),
+                         ["5. General Technical Requirements", "5.2. Three-phase IPUE"])
+
+    def test_unnumbered_heading_styles_and_numbered_subchapters_are_preserved(self):
+        state = SectionState()
+        state.update(1, "Part A")
+        state.update(2, "2 Requirements")
+        self.assertEqual(state.update(3, "2.1 Voltage"),
+                         ["Part A", "2 Requirements", "2.1 Voltage"])
+        self.assertEqual(state.update(3, "Notes"),
+                         ["Part A", "2 Requirements", "Notes"])
+
     def test_large_bare_integer_sentence_is_not_a_heading(self) -> None:
         self.assertIsNone(detect_heading(
             "100 litres of water shall be stored safely.",

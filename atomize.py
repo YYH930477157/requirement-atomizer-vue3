@@ -359,6 +359,24 @@ class SectionState:
     levels: dict[int, str] = field(default_factory=dict)
 
     def update(self, level: int, title: str) -> list[str]:
+        # Word styles can drift while the explicit chapter numbering remains
+        # coherent (2 References styled H1, 3 Definitions styled H3). Reuse the
+        # established numbered sibling/parent level instead of nesting a new
+        # chapter under its predecessor. Unnumbered headings keep style levels.
+        number = re.match(r"^(\d+(?:\.\d+)*)(?:\.\s+|\s+)", title)
+        if number:
+            parts = number.group(1).split(".")
+            for old_level, old_title in sorted(self.levels.items()):
+                old_number = re.match(r"^(\d+(?:\.\d+)*)(?:\.\s+|\s+)", old_title)
+                if not old_number:
+                    continue
+                old_parts = old_number.group(1).split(".")
+                if len(parts) == len(old_parts) and parts[:-1] == old_parts[:-1]:
+                    level = old_level
+                    break
+                if len(parts) > len(old_parts) and parts[:len(old_parts)] == old_parts:
+                    level = old_level + len(parts) - len(old_parts)
+                    break
         self.levels[level] = title
         for old_level in list(self.levels):
             if old_level > level:

@@ -157,6 +157,28 @@ class LLMRouteTests(unittest.TestCase):
             self.assertEqual(result["status"], "ok")
             self.assertIs(init.call_args.kwargs["route_config"], config)
 
+    def test_configured_route_runs_through_real_runner_and_metadata_adapter(self) -> None:
+        # Mock only the HTTP boundary: catch adapter signature/config errors
+        # which injected-chat tests and a mocked runner would hide.
+        config = llm_client.LLMClientConfig(
+            base_url="http://localhost:1/v1", model="test-map-model", api_key_env="",
+        )
+        response = {"choices": [{"message": {"content": json.dumps(_valid_llm_payload())},
+                                 "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 10, "completion_tokens": 10, "total_tokens": 20}}
+        with TemporaryDirectory() as tmp, \
+                patch("ai_extract.config_for_route", return_value=config), \
+                patch("llm_client._post_json", return_value=response) as post:
+            result = doc_map.run_doc_map(
+                tmp, route="openai_compatible",
+                sections=[_section("4 / 4.1", ["B1"], "The meter shall log events.")],
+                blocks=[_block("B1", "The meter shall log events.")],
+            )
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(result["route"], "llm:test-map-model")
+            self.assertEqual(post.call_count, 1)
+            self.assertTrue((Path(tmp) / doc_map.DOC_MAP_FILENAME).exists())
+
     def test_ok_path_writes_doc_map_and_validates_schema(self) -> None:
         with TemporaryDirectory() as tmp:
             result = self._run(tmp, lambda system, user: _valid_llm_payload())

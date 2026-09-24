@@ -2280,3 +2280,10 @@ CLI 契约见 `docs/cli-contract.md`（对接公司任务管理系统的接口�
 
 - `functional_extract.apply_unit_routing` 增加技术子路径保护，修复 DOCX 标题层级扁平化后真实技术表被 Normative References 前置过滤的问题；`doc_map.run_doc_map` 固定执行标签与路由配置的边界，真实模型配置通过 runner 注入。
 - 版本血统更新为 `functional-unit-routing-v10` 与 `doc-map-v2`；新增技术子路径路由和 doc_map runner 配置回归。功能路由、doc_map、大纲路由、回归组合共 84 项通过，`git diff --check` 通过。
+
+## 2026-09-24 PPDC 第二轮修复
+
+- 复核真实 DOCX 的 Word 样式后确认，章节编号与 Heading 层级不一致会把第 3、5 章错误嵌入第 2 章。`SectionState` 现在以已建立的显式编号层级校正同级章和子章，同时保留无编号标题的样式层级；`atomize` 实现版本升至 `v14`，避免旧解析缓存复用。
+- `doc_map` 的真实 runner 回归此前被过度 mock 遮住：元数据适配器向 `chat_json_with_meta` 传入的截断升级参数未被接收，导致真实路线变成 `unavailable:llm_call_failed`。客户端适配器现完整转发该参数，并新增真实 runner + HTTP 边界回归。
+- 在 PPDC 原文上的零付费回放确认 164 个块、391 个表行、1080 个单元格可解析；技术表块 `BLK-000098/100/103` 均保留在第 5 章技术要求路径下，不再挂在 Normative References 下。该回放只验证解析与路由，不能替代 MIMO 质量验收。
+- 验证：doc_map、LLM 客户端、job runner、atomize、功能路由、标题路由和回归组合共 181 项通过，`git diff --check` 通过。此前第三次 MIMO 结果使用旧解析缓存且仍为 partial，不能作为本轮修复后的全量结果。
