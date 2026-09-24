@@ -2268,3 +2268,15 @@ CLI 契约见 `docs/cli-contract.md`（对接公司任务管理系统的接口�
 - `doc_map` 在功能抽取前按当前解析内容和路由生成，纳入功能抽取阶段指纹；旧文档地图内容变化后不会被续跑误复用，缓存命中会重新发布当前地图产物。无密钥、stub、预算耗尽和非法响应均记录 unavailable 并回退无地图上下文。
 - 需求分析默认开启 LLM 富化，端点不可用时逐条确定性降级并保留 requested/executed route 证据；显式关闭仍不解析端点。
 - 验证：后端 LLM/大纲/表格/入口定向 112 项通过，UI 58 项通过，`npm run build` 与 `git diff --check` 通过；完整 4408 项回归仍有 6 项环境/旧契约问题（Windows 子进程 GBK 捕获、CLI quiet 与默认 LLM 日志、旧测试基线），未宣称全量通过。
+
+## 2026-09-24 PPDC 全量复跑与阻塞定位
+
+- 修复 semantic segmentation 单块窗口无限重叠、调用窗口预算过晚检查的问题（7f5b0ed，semantic-segmentation-v6）；13 项定向回归通过。旧解析进程经命令行/启动时间核实后停止，旧输出保留。
+- 新 MIMO v2.6 Flash 4 并发全量链于 04:16—04:32 完成尝试，结果位于 out/sto-ppdc-mimo-v2.6-flash-full-20260924，package partial，分析 incomplete。164 块/364 物理表行/1080 单元格已解析，但最终只有 3 条 stub、0 条真实模型功能需求，不合格。
+- 复核确认的缺陷已在后续修复：技术表所在路径含 `General Technical Requirements` 子章节时不再继承 front_matter 过滤；doc_map 将已解析的模型配置直接传给 `LLMJobRunner`，不再把 `llm:mimo-v2.6-flash` 审计标签当作配置键。路由版本升至 v10、doc_map 版本升至 v2，避免旧缓存复用。旧结果仍只作为缺陷证据，守恒 true 不能替代全文质量门。
+- 全文翻译实际覆盖块 159/164、行 384/395，批注 partial，无原版 PDF 转换器。完整性 verify 通过与质量验收分开；详细复核在同名 -logs/expert-review.md。
+
+## 2026-09-24 PPDC 缺陷修复
+
+- `functional_extract.apply_unit_routing` 增加技术子路径保护，修复 DOCX 标题层级扁平化后真实技术表被 Normative References 前置过滤的问题；`doc_map.run_doc_map` 固定执行标签与路由配置的边界，真实模型配置通过 runner 注入。
+- 版本血统更新为 `functional-unit-routing-v10` 与 `doc-map-v2`；新增技术子路径路由和 doc_map runner 配置回归。功能路由、doc_map、大纲路由、回归组合共 84 项通过，`git diff --check` 通过。

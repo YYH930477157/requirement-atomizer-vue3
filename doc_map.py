@@ -36,7 +36,7 @@ from typing import Any, Callable, Sequence
 from cosem_behavior_spec import extract_codes
 from requirement_record import provenance
 
-DOC_MAP_VERSION = "doc-map-v1"
+DOC_MAP_VERSION = "doc-map-v2"
 DOC_MAP_PROMPT_VERSION = "doc-map-prompt-v1"
 DOC_MAP_SCHEMA = "doc-map/v1"
 DOC_MAP_FILENAME = "doc_map.json"
@@ -452,7 +452,7 @@ def run_doc_map(
     （复用 functional_extract.load_clauses，不改 extract_units/atomize）。
     """
     import llm_client
-    from functional_extract import _resolve_extract_chat, load_clauses
+    from functional_extract import _resolve_extract_chat, _route_config, load_clauses
 
     out_dir = Path(out_dir).expanduser().resolve()
     if sections is None:
@@ -463,6 +463,10 @@ def run_doc_map(
     blocks = list(blocks or [])
 
     active_chat, executed_route = _resolve_extract_chat(route, chat)
+    # ``executed_route`` is an audit label (for example ``llm:mimo-v2.6-flash``),
+    # not a config registry key.  Keep the resolved config on the runner so the
+    # job cannot try to resolve that label a second time and fail.
+    resolved_config = None if chat is not None else _route_config(route)
     fingerprint = doc_map_fingerprint(sections, blocks, route_key=executed_route)
 
     if active_chat is None:
@@ -516,7 +520,9 @@ def run_doc_map(
             chat_with_meta=_injected_adapter)
         job_route = "injected"
     else:
-        runner = LLMJobRunner(out_dir, chat_with_meta=_chat_with_meta)
+        runner = LLMJobRunner(
+            out_dir, route_config=resolved_config, chat_with_meta=_chat_with_meta,
+        )
         job_route = executed_route
     job = LLMJob(stage="doc_map", processor=STAGE_STRUCTURE_HYPOTHESIS, unit_id="",
                  system_prompt=_SYSTEM_PROMPT,

@@ -191,13 +191,13 @@ class HeadingOnlyRoutingTests(unittest.TestCase):
             self.assertEqual(meta["table_dominated_routed_out"], 1)
             self.assertEqual(meta["routed_out_section_ids"], ["4.2"])
 
-    def test_v9_in_routing_lineage_versions(self) -> None:
-        """版本断言：v9 经 routing_lineage_versions 自动进缓存键与 stage producer。"""
+    def test_v10_in_routing_lineage_versions(self) -> None:
+        """版本断言：v10 经 routing_lineage_versions 自动进缓存键与 stage producer。"""
         self.assertEqual(
-            fe.FUNCTIONAL_UNIT_ROUTING_VERSION, "functional-unit-routing-v9")
+            fe.FUNCTIONAL_UNIT_ROUTING_VERSION, "functional-unit-routing-v10")
         self.assertEqual(
             fe.routing_lineage_versions()["functional_unit_routing"],
-            "functional-unit-routing-v9")
+            "functional-unit-routing-v10")
 
     def test_routed_heading_only_absent_from_conservation_baseline(self) -> None:
         """守恒基线：路由出的 heading-only 条款不出现在 conservation_report 里。"""

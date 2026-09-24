@@ -107,7 +107,7 @@ FUNCTIONAL_CONSERVATION_MODEL_VERSION = "functional-conservation-obligation-evid
 # §17 unit 级路由接线（2026-08-17）：clause_family 策略下表格主导条款路由出 B 轨输入
 # 与守恒基线（表格内容归 A 轨/上下文，phase2 探针实证其混入 B 轨是守恒失败根因之一）。
 # 接线版本只进 clause_family 缓存指纹维度（legacy 指纹逐字节不变）；路由判据演进时 bump。
-FUNCTIONAL_UNIT_ROUTING_VERSION = "functional-unit-routing-v9"  # v8（2026-08-31，heading-only 条款出抽取池）：只有标题没有实质正文的条款（全部块为 heading/heading 回显、义务单元数 0、无表格块）确定性路由出 B 轨输入与守恒基线——SBD result3 实证 TGS 章 24 个 heading-only 条款在 LLM 失败时退化 stub（"实现{heading}，并满足来源条款。"），成功时也只能回显标题（零义务内容，无可抽取）。判据三条全满足才路由出（宁漏勿错：非 heading 块有任何实质文本即保留，含 v6 碎片过滤会剔掉义务的碎片正文）；meta 新增 heading_only_sections_routed_out/heading_only_section_ids，块入 routed_out_block_ids/review_units 四桶合并。v7（2026-08-30，路由连坐窄门修）：tender 聚合路由出之前，条款内 confirmed 的被吞并 heading（document_outline 报告，只读）先切开再分别路由——程序性残骸照旧路由出，被连坐的技术内容（SBD 实证 2.3 STATEMENT OF REQUIREMENTS 整章）获得独立判定。纯切分零块位移（不做 toc 剔除/demoted 并入——那是 outline authority flag 的语义）；无 confirmed 吞并时行为与 v6 一致；routed_out_block_ids 补齐 tender 两桶（兑现 docstring「全部写入 meta」承诺）。v6（2026-08-27，WS-B）：节级 tender 判定改为义务主体+跨度聚合。R2 返工：标题词表先验（own title 程序性且非产品主语）；跨度改为非产品主语即可（不再要求无模态）；technical 否决改为 own title/path（块内吞进的下一章 technical heading 不否决程序性残骸）。v5（2026-08-27，P3）：逐标题路由分支补 technical 反向否决 + P2 路由键并入 tender_region_filter 版本。v4：句子形程序性 heading 窄锚点 + v3 跨度继承/前置样板编号剥离
+FUNCTIONAL_UNIT_ROUTING_VERSION = "functional-unit-routing-v10"  # v8（2026-08-31，heading-only 条款出抽取池）：只有标题没有实质正文的条款（全部块为 heading/heading 回显、义务单元数 0、无表格块）确定性路由出 B 轨输入与守恒基线——SBD result3 实证 TGS 章 24 个 heading-only 条款在 LLM 失败时退化 stub（"实现{heading}，并满足来源条款。"），成功时也只能回显标题（零义务内容，无可抽取）。判据三条全满足才路由出（宁漏勿错：非 heading 块有任何实质文本即保留，含 v6 碎片过滤会剔掉义务的碎片正文）；meta 新增 heading_only_sections_routed_out/heading_only_section_ids，块入 routed_out_block_ids/review_units 四桶合并。v7（2026-08-30，路由连坐窄门修）：tender 聚合路由出之前，条款内 confirmed 的被吞并 heading（document_outline 报告，只读）先切开再分别路由——程序性残骸照旧路由出，被连坐的技术内容（SBD 实证 2.3 STATEMENT OF REQUIREMENTS 整章）获得独立判定。纯切分零块位移（不做 toc 剔除/demoted 并入——那是 outline authority flag 的语义）；无 confirmed 吞并时行为与 v6 一致；routed_out_block_ids 补齐 tender 两桶（兑现 docstring「全部写入 meta」承诺）。v6（2026-08-27，WS-B）：节级 tender 判定改为义务主体+跨度聚合。R2 返工：标题词表先验（own title 程序性且非产品主语）；跨度改为非产品主语即可（不再要求无模态）；technical 否决改为 own title/path（块内吞进的下一章 technical heading 不否决程序性残骸）。v5（2026-08-27，P3）：逐标题路由分支补 technical 反向否决 + P2 路由键并入 tender_region_filter 版本。v4：句子形程序性 heading 窄锚点 + v3 跨度继承/前置样板编号剥离
 FUNCTIONAL_REQUIREMENTS_FILENAME = "functional_requirements.json"
 FUNCTIONAL_EXTRACT_CACHE = "functional_extract_cache.jsonl"
 # 待核成文（partial export，2026-09-01 用户拍板的政策反转）：守恒未闭合/直抽
@@ -3013,6 +3013,17 @@ _FRONT_MATTER_TOP_LEVEL = frozenset({
 # 保守：只剥 ``^\d+(\.\d+)*\s+``，"2 20 Control of" → "20 control of" 不命中 definitions。
 _FRONT_MATTER_NUMBER_PREFIX = re.compile(r"^\d+(\.\d+)*\s+")
 
+# Some DOCX exports flatten the heading stack and attach the real technical
+# body to a preceding ``Normative References`` node.  The full path still
+# contains a technical chapter; filtering such a section as front matter
+# would silently remove its tables and normative paragraphs.
+_TECHNICAL_SUBPATH_MARKERS = (
+    "general technical requirements",
+    "technical requirements",
+    "technical data requirements",
+    "functional requirements",
+)
+
 # 招标程序性区域：投标须知/商务附件出 B 轨。不含 tender_preface——
 # Introduction 会出现在正文技术条款标题里，误伤电表功能章。
 _TENDER_PROCEDURAL_REGIONS = frozenset({"tender_instructions", "tender_commercial"})
@@ -3022,6 +3033,15 @@ def _front_matter_top_key(title: str) -> str:
     """顶级标题归一化：折叠空白并剥离前导条款编号后再比对前置样板集合。"""
     normalized = " ".join(str(title or "").lower().split())
     return _FRONT_MATTER_NUMBER_PREFIX.sub("", normalized, count=1)
+
+
+def _has_technical_subpath(path: Sequence[str]) -> bool:
+    """Return true when a nested path identifies a technical body chapter."""
+    for part in list(path)[1:]:
+        normalized = _front_matter_top_key(str(part))
+        if any(marker in normalized for marker in _TECHNICAL_SUBPATH_MARKERS):
+            return True
+    return False
 
 
 def _section_own_tender_titles(section: dict[str, Any]) -> list[str]:
@@ -3585,7 +3605,7 @@ def apply_unit_routing(
         nonlocal mixed_kept
         path = [str(part).strip() for part in (section.get("section_path") or [])]
         top = _front_matter_top_key(path[0]) if path else ""
-        if top in _FRONT_MATTER_TOP_LEVEL:
+        if top in _FRONT_MATTER_TOP_LEVEL and not _has_technical_subpath(path):
             # §7.5 前置样板章节：范围/引用/术语定义——归 context 索引，不进 B 轨
             # （单独计数，与表格路由区分审计）。
             front_matter.append(section)

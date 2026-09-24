@@ -230,6 +230,22 @@ class ApplyUnitRoutingTests(unittest.TestCase):
             self.assertEqual(meta["front_matter_routed_out"], 1)
             self.assertEqual(meta["front_matter_section_ids"], ["Scope"])
 
+    def test_nested_technical_path_under_normative_references_is_kept(self) -> None:
+        """DOCX flattened heading stacks must not hide technical tables."""
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            _seed_out(out, cell_routes=["b_track", "context"])
+            sections = fe.load_clauses(out)
+            sections[1]["section_path"] = [
+                "2 Normative References", "5 General Technical Requirements",
+            ]
+            sections[1]["heading"] = "5 General Technical Requirements"
+            blocks = _blocks_jsonl()
+            blocks[1]["section_path"] = list(sections[1]["section_path"])
+            kept, meta = fe.apply_unit_routing(sections, blocks=blocks, out_dir=out)
+            self.assertIn(sections[1]["section_id"], [s["section_id"] for s in kept])
+            self.assertEqual(meta["front_matter_routed_out"], 0)
+
     def test_tender_instruction_sections_routed_out_meter_kept(self) -> None:
         """招标程序性条款（开标/税清/保函）出 B 轨；电表技术条款留下。
 

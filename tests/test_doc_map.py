@@ -132,6 +132,31 @@ class LLMRouteTests(unittest.TestCase):
             self.assertEqual(row["execution_status"], "ok")
             self.assertTrue(row["fingerprint"].startswith("docmap:"))
 
+    def test_real_route_passes_config_to_job_runner(self) -> None:
+        """The execution label must not be resolved as a config registry key."""
+        from llm_client import LLMClientConfig
+        from llm_job_runner import LLMJobResult
+
+        config = LLMClientConfig(
+            base_url="http://localhost:1/v1", model="mimo-v2.6-flash",
+        )
+        with TemporaryDirectory() as tmp, \
+                patch("functional_extract._route_config", return_value=config), \
+                patch("llm_job_runner.LLMJobRunner.__init__", return_value=None) as init, \
+                patch("llm_job_runner.LLMJobRunner.run") as run:
+            run.return_value = LLMJobResult(
+                job_fingerprint="test-doc-map",
+                data=_valid_llm_payload(), execution_status="ok", usage={}, call_count=1,
+            )
+            result = doc_map.run_doc_map(
+                tmp,
+                sections=[_section("4 / 4.1", ["B1"], "The meter shall log events.")],
+                blocks=[_block("B1", "The meter shall log events.")],
+                route="openai_compatible",
+            )
+            self.assertEqual(result["status"], "ok")
+            self.assertIs(init.call_args.kwargs["route_config"], config)
+
     def test_ok_path_writes_doc_map_and_validates_schema(self) -> None:
         with TemporaryDirectory() as tmp:
             result = self._run(tmp, lambda system, user: _valid_llm_payload())
