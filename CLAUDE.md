@@ -2300,3 +2300,9 @@ CLI 契约见 `docs/cli-contract.md`（对接公司任务管理系统的接口�
 - 默认富化改为“一主两辅”：只由 LLM 生成证据保真的软件需求正文、明确有据的研发指引和待澄清/假设记录；`design_options` 与 `acceptance_criteria` 保留在 schema 中，但本阶段不采纳模型写入，避免把架构设计和测试设计混入需求事实。
 - 隔离字段即使出现在模型响应中也不会进入结果、回退候选或澄清问题；按条目留审计警告。富化版本升至 `analyze-llm-v11`，旧缓存自动失效。
 - 验证：需求分析、富化护栏、缓存和模板回归共 198 项通过，`git diff --check` 通过。
+
+## 2026-09-26 partial export 与需求分析门控修复
+
+- 复核发现完整 chain 在功能直抽返回 `execution_status=partial` 后，无条件跳过需求分析，导致配置默认开启的 `RATOMIZER_PARTIAL_EXPORT=1` 与 `allow_unclosed=True` 在真实全量链路中不可达；单独续跑测试无法覆盖这个问题。
+- `desktop_tasks.chain_task` 现在只在 partial export 开启且功能直抽为非 draft 的 `partial`（或守恒未闭合但执行状态为 `ok`）时放行需求分析/澄清/成文；`failed`、stub draft 和显式关闭开关仍然阻断。守恒阻断信号继续保留，结果不会被标记为完整成功。
+- 新增同一 chain 内 `functional-extract=partial → requirements-analysis` 的回归测试；分析富化与 partial export 定向回归共 209 项通过，`git diff --check` 通过。`tests.test_desktop_tasks` 仍有仓库既有的 producer 版本断言不一致，与本修复无关。

@@ -502,7 +502,7 @@ def functional_extract_task(out_dir: Path, *, route: str | None = "openai_compat
         result.setdefault(
             "note",
             f"功能直抽执行不完整（execution_status={result.get('execution_status')}），"
-            "下游分析与成文将被阻断",
+            "仅 partial 且 partial export 开启时进入下游待核旁路，failed/draft 仍阻断",
         )
     # §3.4（2026-08-15）：直抽模式 claim 发布——执行完整且守恒闭合才发布 B 轨 shadow
     # （target store=functional_requirements.json，FRE- 主键）；失败/不守恒产物不进绑定。
@@ -2584,6 +2584,40 @@ def _partial_export_enabled() -> bool:
     }
 
 
+def _partial_export_downstream_allowed(out_dir: Path, *, enabled: bool) -> bool:
+    """判断功能直抽产物是否允许进入 partial export 下游阶段。
+
+    ``chain_task`` 在功能直抽完成后会保留 ``conservation_blocked`` 作为审计信号。
+    这个信号不能再无条件跳过需求分析：partial export 开启时，``partial`` 的混合
+    产物应进入需求分析并由 ``allow_unclosed`` 标记待核。只有真正失败的直抽、stub
+    草稿，或显式关闭 partial export 时，才应继续阻断。
+    """
+    if not enabled:
+        return False
+    try:
+        from functional_extract import _payload_execution_status
+        from requirements_analysis_rules import _read_functional_requirements_payload
+
+        payload = _read_functional_requirements_payload(out_dir) or {}
+        status = _payload_execution_status(payload)
+        if status == "failed" or bool(payload.get("draft")):
+            return False
+        if status == "partial":
+            return True
+        conservation = payload.get("conservation")
+        return (
+            status == "ok"
+            and isinstance(conservation, dict)
+            and not conservation.get("ok", True)
+        )
+    except Exception:
+        # A missing or unreadable functional payload must fail closed. The
+        # downstream analysis stage has its own loud input validation, but the
+        # chain gate should not accidentally turn an unknown state into a
+        # paid partial export.
+        return False
+
+
 def _functional_extract_stage_config(limit_sections: int | None = None) -> dict[str, Any]:
     """functional-extract 阶段指纹配置：策略/负例条数改变产物 → 阶段必须重跑。
 
@@ -2773,7 +2807,18 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
         for index, stage in enumerate(ordered, start=1):
             emit_progress({"stage": "chain", "step": stage, "completed": index - 1,
                            "total": len(ordered), "percent": int((index - 1) * 100 / len(ordered))})
-            if conservation_blocked and stage in conservation_gated:
+            # ``conservation_blocked`` remains an audit/readiness signal, but
+            # it must not override the explicit partial-export policy.  A
+            # mixed functional extract is safe to pass to requirements
+            # analysis only when the partial path is enabled; failed or draft
+            # products still stop here.
+            if (
+                conservation_blocked
+                and stage in conservation_gated
+                and not _partial_export_downstream_allowed(
+                    out_dir, enabled=partial_export
+                )
+            ):
                 update_run_manifest(out_dir, stage, "failed", error=conservation_block_error)
                 results[stage] = {
                     "error": conservation_block_error,
@@ -2917,10 +2962,18 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
                     and completion_status in {"partial", "failed"}
                 ):
                     conservation_blocked = True
-                    conservation_block_error = (
-                        f"功能直抽执行不完整（execution_status={completion_status}），"
-                        "下游分析与成文已阻断"
-                    )
+                    if _partial_export_downstream_allowed(
+                        out_dir, enabled=partial_export
+                    ):
+                        conservation_block_error = (
+                            f"功能直抽执行不完整（execution_status={completion_status}），"
+                            "已进入 partial export 待核旁路"
+                        )
+                    else:
+                        conservation_block_error = (
+                            f"功能直抽执行不完整（execution_status={completion_status}），"
+                            "下游分析与成文已阻断"
+                        )
                     payload["conservation_blocked"] = True
                     payload["conservation_block_error"] = conservation_block_error
                 update_run_manifest(out_dir, stage, completion_status, route=actual_route,

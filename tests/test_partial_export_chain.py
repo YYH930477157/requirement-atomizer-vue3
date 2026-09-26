@@ -143,6 +143,61 @@ class PartialExportChainTests(unittest.TestCase):
             self.assertTrue(payload.get("partial_export"))
             self.assertTrue((out / "软件需求列表-成文.xlsx").exists())
 
+    def test_full_chain_partial_extract_reaches_analysis(self) -> None:
+        """同一次 chain 的 functional-extract=partial 也必须进入 partial analysis。
+
+        旧实现只覆盖了直接从已有 FR 继续跑的场景；完整链路在看到
+        ``conservation_blocked`` 后无条件跳过了 requirements-analysis，导致
+        ``allow_unclosed=True`` 永远不可达。
+        """
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            _seed_fr(out, execution_status="partial")
+            analysis_allow_unclosed: list[bool] = []
+
+            def fake_functional_extract(
+                root: Path, *, route: str, limit_sections: int | None = None,
+            ) -> dict:
+                payload = json.loads(
+                    (root / "functional_requirements.json").read_text(encoding="utf-8")
+                )
+                payload["written"] = [str(root / "functional_requirements.json")]
+                return payload
+
+            def fake_requirements_analysis(
+                root: Path, *, route: str, template_path: Path | None,
+                allow_unclosed: bool = False,
+            ) -> dict:
+                analysis_allow_unclosed.append(allow_unclosed)
+                return {
+                    "kind": "requirements_analysis",
+                    "out_dir": str(root),
+                    "written": [],
+                    "unclosed_basis": True,
+                    "pending_marked_rows": 1,
+                }
+
+            with mock.patch.object(desktop_tasks, "_ensure_doc_map", return_value={}), \
+                    mock.patch.object(desktop_tasks, "functional_extract_task",
+                                       side_effect=fake_functional_extract), \
+                    mock.patch.object(desktop_tasks, "requirements_analysis_task",
+                                       side_effect=fake_requirements_analysis):
+                payload = desktop_tasks.chain_task(
+                    out,
+                    stages=["functional-extract", "requirements-analysis"],
+                    route="openai_compatible",
+                )
+
+            self.assertEqual(analysis_allow_unclosed, [True])
+            self.assertTrue(payload.get("conservation_blocked"))
+            self.assertTrue(payload.get("partial_export"))
+            result = payload["results"]["requirements-analysis"]
+            self.assertNotIn("skipped_due_to_conservation", result)
+            self.assertEqual(
+                desktop_tasks.read_run_manifest(out)["stages"]["requirements-analysis"]["status"],
+                "partial",
+            )
+
     def test_mixed_stub_rows_marked_extract_degraded_even_when_conservation_ok(self) -> None:
         """v2：mixed 载荷的 stub 占位行挂 extract_degraded——与守恒状态独立。
 
