@@ -2287,3 +2287,10 @@ CLI 契约见 `docs/cli-contract.md`（对接公司任务管理系统的接口�
 - `doc_map` 的真实 runner 回归此前被过度 mock 遮住：元数据适配器向 `chat_json_with_meta` 传入的截断升级参数未被接收，导致真实路线变成 `unavailable:llm_call_failed`。客户端适配器现完整转发该参数，并新增真实 runner + HTTP 边界回归。
 - 在 PPDC 原文上的零付费回放确认 164 个块、391 个表行、1080 个单元格可解析；技术表块 `BLK-000098/100/103` 均保留在第 5 章技术要求路径下，不再挂在 Normative References 下。该回放只验证解析与路由，不能替代 MIMO 质量验收。
 - 验证：doc_map、LLM 客户端、job runner、atomize、功能路由、标题路由和回归组合共 181 项通过，`git diff --check` 通过。此前第三次 MIMO 结果使用旧解析缓存且仍为 partial，不能作为本轮修复后的全量结果。
+
+## 2026-09-25 分析富化证据边界修复
+
+- 根因复核确认：分析富化让 LLM 将确定性需求改写为可研发、可验收正文，并同时生成研发指引、设计候选和验收标准；旧校验只在混合了确定性 `requirement` 基底的文本上做源数字遗漏检查，导致模型漏写数字时可能被基底掩盖。
+- `requirements_analysis_agent.validate_llm_item` 现在只针对生成的 `software_requirement_text` 检查源文参数数字；`task 0`、`AI-REQ-0012`、`block-7` 等对齐标识不会充当业务参数。源文参数遗漏在 `_apply_llm_item` 采纳生成候选后强制降级为 `待澄清`，并保留候选到审计回退字段，不再以软提示直接交付。
+- 富化提示明确禁止把原文没有证据的状态、接口、日志、存储、时序、容量、默认值和异常行为写入正文、指引或验收标准；版本升至 `analyze-llm-v9` / `analyze-unfounded-v5`，旧缓存不会静默复用。
+- 验证：分析、缓存、Excel、深度富化和护栏定向回归共 165 项通过，源码编译与 `git diff --check` 通过。

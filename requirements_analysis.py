@@ -42,10 +42,11 @@ LOGGER = logging.getLogger("requirement_atomizer")
 ChatFn = Callable[[str, str], dict[str, Any]]
 
 SCHEMA_VERSION = "requirements-analysis/v1"
-# v7：无依据富化字段强制"待澄清"（Agent Phase 2 WP2，规则版本 analyze-unfounded-v1 随行）；
+# v9：富化正文的源文数字遗漏改为字段级阻断（不会再被确定性 base 文本掩盖），并收紧
+# 证据约束提示；v8：无依据富化字段强制"待澄清"（Agent Phase 2 WP2，规则版本随行）；
 # v6：冻结归属注入 prompt（模型不再重判,只按给定归属定正文深度）；
 # v5：注入文档背景/条款原文/相邻需求,正文连贯成文（2026-07-12 富化深度）
-ANALYZE_PROMPT_VERSION = "analyze-llm-v8"
+ANALYZE_PROMPT_VERSION = "analyze-llm-v9"
 # P0-8：负例 few-shot 注入数量上限（可配）。
 def _int_env(name: str, default: int) -> int:
     """Read a registered integer setting without making module import fail."""
@@ -58,9 +59,10 @@ def _int_env(name: str, default: int) -> int:
 ANALYZE_NEGATIVE_K = _int_env("RATOMIZER_ANALYZE_NEGATIVE_K", 2)
 # WP2 待澄清规则版本——确定性后处理（拒/无据 → 待澄清 + open_questions 同步）变更必须
 # bump 并进 analyze_enrich_cache 指纹与阶段 producer（AGENTS.md 缓存指纹纪律）
+# v5：源文数字遗漏在生成正文采纳后降级为待澄清，保留真实 LLM 候选供审计；
 # v4：编造编码字段级拒收（只拒含码字段,干净字段放行;同判据逐字段重检保防幻觉红线）
 # v3：归属护栏（software 项不采纳 LLM 写入的 hardware_dependency）+ 富化调用失败/返回非法同样标待澄清
-UNFOUNDED_RULE_VERSION = "analyze-unfounded-v4"  # v2:渲染兜底（clarify_fallback 原始候选标注透出）
+UNFOUNDED_RULE_VERSION = "analyze-unfounded-v5"  # v2:渲染兜底（clarify_fallback 原始候选标注透出）
 CLARIFY_MARK = "待澄清"
 # WP2 触发面（冻结点 4）：仅富化叙述字段；确定性 join 字段（id/归属/引句/模块）永不标待澄清
 _UNFOUNDED_TEXT_FIELDS = ("software_requirement_text", "hardware_dependency")
@@ -1158,6 +1160,14 @@ def _apply_llm_item(
         _fabricated_code_fields(llm_item, source_req, ctx) if fabricated_codes else {})
     if semantic_drift:
         blocked_fields.setdefault("software_requirement_text", [])
+    # 源文数字遗漏与编造数字同样会改变需求语义，必须在采纳生成正文后把该字段降级为
+    # “待澄清”。这里不能把正文加入 blocked_fields：那会跳过采纳，随后只能把确定性
+    # base 文本放进 clarify_fallback，丢掉真正需要审查的 LLM 候选。先记下遗漏，待
+    # 字段采纳完成后再调用 _mark_unfounded_field，才能同时保留候选和阻断交付。
+    missing_number_drift = [
+        d for d in drift
+        if d.startswith("source number ") and d.endswith("missing from analysis text")
+    ]
     fabricated_issues: list[str] = []
     if fabricated_codes:
         _mark_rejected_enrichment_fields(item, set(blocked_fields), _FABRICATED_REJECT_REASON)
@@ -1231,8 +1241,15 @@ def _apply_llm_item(
         return False, fabricated_issues + base_issues
     item["analysis_source"] = "llm"
     clarify_issues = _replace_unfounded_adopted_fields(item, source_req, ctx, adopted_fields)
+    if missing_number_drift:
+        reason = "源文数字未进入生成的软件需求正文: " + "; ".join(missing_number_drift)
+        _mark_unfounded_field(item, "software_requirement_text", reason)
+        clarify_issues.append(f"软件需求正文因源文数字遗漏已标待澄清: {'; '.join(missing_number_drift)}")
 
-    soft = [d for d in drift if not d.startswith("fabricated code")]
+    soft = [
+        d for d in drift
+        if not d.startswith("fabricated code") and d not in missing_number_drift
+    ]
     # 软标必须随交付物同行（2026-07-08 审计 B1）：此前只进 run 级 issues（excel/成文不读），
     # 编造数字以零可见标记落进公司模板成文 xlsx。现在钉在 item 上，_notes_text/成文同列渲染。
     warnings = soft + ownership_skips   # 归属护栏跳过同样钉 item（审计 r2 S1：留痕随交付物同行）

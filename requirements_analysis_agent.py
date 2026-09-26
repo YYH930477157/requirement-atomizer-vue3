@@ -21,6 +21,33 @@ def _as_list(value: Any) -> list[Any]:
     return [value]
 
 
+# 遗漏校验只针对需求参数，不把条目/位置标识当成必须在正文重复的业务数值。
+# 例如 ``task 0``、``AI-REQ-0012``、``block-7`` 是抽取对齐信息；若把它们算入
+# 分母，会把正常的中文改写误报成数字遗漏。条款、表格、章节引用由
+# text_normalize.strip_reference_numbers 另行处理。
+_IDENTIFIER_NUMBER = re.compile(
+    r"(?ix)\b(?:task|item|req(?:uirement)?|ai(?:_?req)?|block|record|row|column)"
+    r"\s*[-_:#]?\s*\d+\b"
+    r"|\b[A-Za-z][A-Za-z0-9_]*[-_]\d+\b"
+)
+
+
+def _requirement_parameter_numbers(text: object) -> set[int]:
+    """Return numbers that are candidates for source-to-body completeness checks.
+
+    The broad ``extract_ints`` scanner remains the authority for fabricated-number
+    detection.  This narrower helper is only for the reverse direction ("did the
+    generated body omit a source number?") where identifier numbers are not
+    semantic parameters and should not make a valid paraphrase fail closed.
+    """
+    from text_normalize import join_digit_groups, strip_enum_markers, strip_reference_numbers
+    from cosem_behavior_spec import extract_ints
+
+    cleaned = _IDENTIFIER_NUMBER.sub(" ", str(text or ""))
+    cleaned = join_digit_groups(strip_reference_numbers(strip_enum_markers(cleaned)))
+    return extract_ints(cleaned)
+
+
 def slim_vocabulary(vocabulary: dict[str, Any], module: str) -> dict[str, Any]:
     """全量词表 → 本模块视图（W1-4，2026-07-12）：旧行为把所有模块的 submodule 全量 JSON
     逐条重复注入（~500-2000 tok/条），但内容只是分类名、零知识含量。瘦身为
@@ -62,6 +89,9 @@ def build_analysis_prompt(requirements: list[dict[str, Any]], vocabulary: dict[s
         "hardware 需求只做简要说明。",
         "co_design 需求的软件侧必须详细说明，硬件依赖只做简要说明。",
         "不能只翻译原文；必须推导可研发、可验收的软件需求。",
+        "所有富化字段都必须逐条受客户原文证据约束。可以改写表达和补齐处理步骤，但不得自行补充"
+        "原文没有明确支持的状态、事件、日志、接口、存储、超时、容量、默认值或异常行为；"
+        "无法从本条证据推出的内容只能放入 assumptions/open_questions，不能写进正文、研发指引或验收标准。",
         "不能修改数字、OBIS、DLMS class ID、阈值、时间、访问权限；只能引用原文已有的这些值，绝不新增。",
         "每个 item 的字段：",
         "  - source_requirement_ids: 原样回填输入需求的 ai_req_id（用于对齐）",
@@ -198,12 +228,15 @@ def validate_llm_item(item: dict[str, Any], source: dict[str, Any],
     # 遗漏分母的格式归一（2026-07-14,test18 实测 25 条警告几乎全是条款号/列表标号拆散的
     # 小整数——真参数值遗漏被淹没）:剥除枚举标号与引用性编号(条款/附录/图表引用是"地址"
     # 不是"数值")。这与"分母永不扩"防稀释纪律不冲突:不引入外部文本,只剥排版/引用数字。
-    from text_normalize import join_digit_groups, strip_enum_markers, strip_reference_numbers
-    missing_basis = join_digit_groups(strip_reference_numbers(strip_enum_markers(priority_text)))
+    missing_basis = priority_text
     # 空洞确认语/短片段不是可交付的软件需求正文，必须走既有降级/待澄清通道。
     text = str(item.get("software_requirement_text") or "").strip()
     if text in {"好的", "收到", "明白", "可以", "ok", "OK", "N/A", "无"} or len(text) <= 2:
         issues.append("software requirement text is empty or non-substantive")
-    for number in sorted(extract_ints(missing_basis) - extract_ints(join_digit_groups(analysis_text))):
+    # 遗漏检查只看 LLM 生成的软件正文。item["requirement"] 是确定性原始基底，
+    # 若把它并入分母，模型即使完全漏掉源文数字也会因为基底仍含该数字而不报警。
+    generated_software_text = str(item.get("software_requirement_text") or "")
+    for number in sorted(_requirement_parameter_numbers(missing_basis)
+                         - _requirement_parameter_numbers(generated_software_text)):
         issues.append(f"source number {number} missing from analysis text")
     return issues

@@ -126,6 +126,22 @@ class AcceptedEnrichmentFieldDowngradeTests(unittest.TestCase):
         self.assertTrue(any("待澄清" in msg for msg in issues))
         self.assertTrue(any("软件需求正文" in q for q in item["open_questions"]))
 
+    def test_source_number_omission_blocks_generated_body(self) -> None:
+        """源文数字未进入 LLM 正文时，不能以软提示继续作为可实施正文。"""
+        item = base_item()
+        source = dict(SOURCE, source_quote="The meter shall store 900 seconds of data.",
+                      requirement="The meter shall store 900 seconds of data.")
+        ok, issues = _apply_llm_item(
+            item, source,
+            {"software_requirement_text": "Store the data.",
+             "developer_guidance": ["Use the source-defined storage behavior."]},
+            CTX)
+
+        self.assertTrue(ok)
+        self.assertEqual(item["software_requirement_text"], CLARIFY_MARK)
+        self.assertIn("software_requirement_text", item.get("clarify_fallback") or {})
+        self.assertTrue(any("source number 900 missing" in msg for msg in issues))
+
     def test_grounded_enrichment_kept_byte_identical(self) -> None:
         """有据富化逐字节不变——正文/指引全部保留,open_questions 零新增。"""
         item = base_item()
@@ -499,7 +515,7 @@ class StrListFieldPayloadParityTests(unittest.TestCase):
 
 class VersionAndCacheFingerprintTests(unittest.TestCase):
     def test_prompt_version_bumped(self) -> None:
-        self.assertEqual(ANALYZE_PROMPT_VERSION, "analyze-llm-v8")
+        self.assertEqual(ANALYZE_PROMPT_VERSION, "analyze-llm-v9")
 
     def test_enrich_key_covers_unfounded_rule_version(self) -> None:
         """确定性后处理（待澄清规则）版本必须进 analyze_enrich_cache 指纹（AGENTS.md 纪律）。"""
@@ -508,7 +524,7 @@ class VersionAndCacheFingerprintTests(unittest.TestCase):
         with patch("requirements_analysis.UNFOUNDED_RULE_VERSION", "analyze-unfounded-v0-hypothetical"):
             key_changed = _enrich_key(req, "model-x")
         self.assertNotEqual(key_now, key_changed)
-        self.assertEqual(UNFOUNDED_RULE_VERSION, "analyze-unfounded-v4")
+        self.assertEqual(UNFOUNDED_RULE_VERSION, "analyze-unfounded-v5")
 
 
 class IntegrationRenderAndClarificationLoopTests(unittest.TestCase):

@@ -97,6 +97,33 @@ class ValidateLlmItemTests(unittest.TestCase):
 
         assert not any("fabricated" in issue for issue in issues)
 
+    def test_missing_number_is_checked_against_generated_text_not_base_requirement(self) -> None:
+        source = {"source_quote": "capture period shall be 900 seconds",
+                  "requirement": "capture period shall be 900 seconds"}
+        item = {"requirement": "capture period shall be 900 seconds",
+                "software_requirement_text": "系统应支持捕获周期。"}
+
+        issues = validate_llm_item(item, source)
+
+        assert "source number 900 missing from analysis text" in issues
+
+    def test_identifier_numbers_are_not_treated_as_business_parameters(self) -> None:
+        source = {"source_quote": "The meter shall do task 0.",
+                  "ai_req_id": "AI-REQ-0012"}
+        item = {"software_requirement_text": "系统应执行该任务。"}
+
+        issues = validate_llm_item(item, source)
+
+        assert not any("source number" in issue for issue in issues)
+
+    def test_parameter_numbers_still_require_body_preservation(self) -> None:
+        source = {"source_quote": "The meter shall retain data for 16 years."}
+        item = {"software_requirement_text": "系统应保留数据。"}
+
+        issues = validate_llm_item(item, source)
+
+        assert "source number 16 missing from analysis text" in issues
+
 
 if __name__ == "__main__":
     unittest.main()
