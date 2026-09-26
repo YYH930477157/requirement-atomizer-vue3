@@ -42,12 +42,12 @@ LOGGER = logging.getLogger("requirement_atomizer")
 ChatFn = Callable[[str, str], dict[str, Any]]
 
 SCHEMA_VERSION = "requirements-analysis/v1"
-# v10：收窄富化职责为证据保真改写，设计候选/验收标准默认不生成；v9：富化正文的源文数字遗漏
+# v11：设计候选/验收标准在本阶段始终隔离；v10：收窄富化职责为证据保真改写；v9：富化正文的源文数字遗漏
 # 改为字段级阻断（不会再被确定性 base 文本掩盖），并收紧
 # 证据约束提示；v8：无依据富化字段强制"待澄清"（Agent Phase 2 WP2，规则版本随行）；
 # v6：冻结归属注入 prompt（模型不再重判,只按给定归属定正文深度）；
 # v5：注入文档背景/条款原文/相邻需求,正文连贯成文（2026-07-12 富化深度）
-ANALYZE_PROMPT_VERSION = "analyze-llm-v10"
+ANALYZE_PROMPT_VERSION = "analyze-llm-v11"
 # P0-8：负例 few-shot 注入数量上限（可配）。
 def _int_env(name: str, default: int) -> int:
     """Read a registered integer setting without making module import fail."""

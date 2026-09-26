@@ -23,9 +23,8 @@ class BuildAnalysisPromptTests(unittest.TestCase):
             {"modules": []})
 
         assert "证据保真富化" in prompt["user"]
-        assert "design_options: 默认输出空数组" in prompt["user"]
-        assert "acceptance_criteria: 默认输出空数组" in prompt["user"]
-        assert "不得自行提出队列、缓存、接口分层" in prompt["user"]
+        assert "design_options: 本阶段始终输出空数组" in prompt["user"]
+        assert "acceptance_criteria: 本阶段始终输出空数组" in prompt["user"]
 
 
 class TemplateRefsPromptTests(unittest.TestCase):

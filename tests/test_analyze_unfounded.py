@@ -519,7 +519,7 @@ class StrListFieldPayloadParityTests(unittest.TestCase):
 
 class VersionAndCacheFingerprintTests(unittest.TestCase):
     def test_prompt_version_bumped(self) -> None:
-        self.assertEqual(ANALYZE_PROMPT_VERSION, "analyze-llm-v10")
+        self.assertEqual(ANALYZE_PROMPT_VERSION, "analyze-llm-v11")
 
     def test_enrich_key_covers_unfounded_rule_version(self) -> None:
         """确定性后处理（待澄清规则）版本必须进 analyze_enrich_cache 指纹（AGENTS.md 纪律）。"""
