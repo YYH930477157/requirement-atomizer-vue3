@@ -584,13 +584,10 @@ describe("DocumentReview", () => {
     const wrapper = mount(DocumentReview, { props: { client, active: true } })
     await flushPromises()
 
-    expect(wrapper.find('[data-testid="repair-tag"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="repair-tag"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="failed-extraction-tag"]').exists()).toBe(true)
-    await wrapper.find('[data-testid="repair-tag"]').trigger("click")
-    const repair = wrapper.find('[data-testid="repair-audit"]')
-    expect(repair.text()).toContain("i sobliged")
-    expect(repair.text()).toContain("is obliged")
-    expect(repair.text()).toContain("wordlist_fragment_repair")
+    await wrapper.find('[data-testid="failed-extraction-tag"]').trigger("click")
+    expect(wrapper.find('[data-testid="repair-audit"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="failed-card"]').text()).toContain("该章节的 AI 抽取调用失败")
   })
 
@@ -1604,8 +1601,11 @@ describe("DocumentReview", () => {
     const wrapper = mount(DocumentReview, { props: { client, active: true } })
     await flushPromises()
     await wrapper.find('[data-testid="anno-AIR-1"]').trigger("click")
-    expect(wrapper.find('[data-testid="dd-requirement-summary"]').text()).toContain("抽取需求")
-    expect(wrapper.find('[data-testid="dd-requirement-summary"]').text()).toContain("抽取轨浅描述")
+    expect(wrapper.find('[data-testid="dd-requirement-summary"]').text()).toContain("功能需求摘要")
+    expect(wrapper.find('[data-testid="dd-requirement-summary"]').text()).toContain("对计量结果进行累计和存储")
+    expect(wrapper.find('.dd-context').text()).toContain("来源")
+    expect(wrapper.find('.dd-collapsible').exists()).toBe(true)
+    expect(wrapper.find('.dd-collapsible').attributes('open')).toBeUndefined()
     expect(wrapper.find('[data-testid="dd-functional"]').text()).toContain("体积计量管理")
     expect(wrapper.find('[data-testid="dd-functional"]').text()).toContain("累计体积计量结果")
     expect(wrapper.find('[data-testid="dd-analysis-badge"]').exists()).toBe(false)
@@ -1626,9 +1626,34 @@ describe("DocumentReview", () => {
     await flushPromises()
     await wrapper.find('[data-testid="anno-AIR-1"]').trigger("click")
     expect(wrapper.find('[data-testid="dd-functional"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="dd-requirement-summary"]').text()).toContain("抽取需求")
+    expect(wrapper.find('[data-testid="dd-requirement-summary"]').text()).toContain("功能需求摘要")
     expect(wrapper.find('[data-testid="dd-requirement-summary"]').text()).toContain("应计量体积")
     expect(wrapper.find('[data-testid="dd-analysis-badge"]').exists()).toBe(false)
+  })
+
+  it("prefers translated functional behaviors when the Chinese objective is missing", async () => {
+    const client = makeClient({
+      loadAiRequirements: vi.fn().mockResolvedValue([
+        {
+          ai_req_id: "AIR-ZH-SUMMARY", title: "3.2 使用寿命",
+          description: "Clause 3.2 Lifetime states the manufacturer-guaranteed lifespan.",
+          module: "其它", module_effective: "其它", type: "functional", priority: "P1", status: "draft",
+          source_section: "3 VAr / 3.2 Lifetime", source_quote: "The minimum lifespan is 16 years.",
+          source_block_ids: ["B2"], labels: [], review_state: null,
+          ownership: "software", ownership_effective: "software",
+          functional_requirement_id: "FREQ-LIFETIME", functional_title: "设备寿命与保修",
+          // 模拟旧结果：中文行为已生成，但功能目标中文投影尚未回填。
+          functional_behaviors_zh: ["制造商保证的设备最低使用寿命须为 16 年。", "产品保修期为 5 年。"],
+        },
+      ]),
+    })
+    const wrapper = mount(DocumentReview, { props: { client, active: true } })
+    await flushPromises()
+    await wrapper.find('[data-testid="anno-AIR-ZH-SUMMARY"]').trigger("click")
+    const summary = wrapper.find('[data-testid="dd-requirement-summary"]')
+    expect(summary.text()).toContain("制造商保证的设备最低使用寿命须为 16 年。")
+    expect(summary.text()).toContain("产品保修期为 5 年。")
+    expect(summary.text()).not.toContain("Clause 3.2 Lifetime")
   })
 
   it("hardware card never shows english as translation, falls back to block translation", async () => {

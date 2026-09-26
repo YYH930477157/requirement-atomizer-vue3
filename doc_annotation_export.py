@@ -1990,13 +1990,6 @@ def _render_one_block(bid: str, text: str, path: list, region: str,
             f'<i class="claim-excluded">{excluded_count}</i>'
             f'<i class="claim-uncertain">{uncertain_count}</i></span>'
         )
-    if block and block.get("text_repaired"):
-        repair_html = (
-            '<button class="repair-tag" type="button" '
-            f'data-repair-block="{html.escape(bid, quote=True)}" '
-            f'title="原文断词已做 {len(block.get("text_repairs") or [])} 处确定性修复，点击查看审计记录">'
-            '原文修复</button>'
-        )
     if block and block.get("extraction_failed"):
         failed_html = (
             '<button class="failed-extraction-tag" type="button" '
@@ -2682,11 +2675,6 @@ def _render_pdf_page_stack(pages: list[dict[str, Any]], requirements: list[dict[
         covered_attr = ""
         echo_content = ""
         audit_content = ""
-        if zone.get("text_repaired"):
-            audit_content += (
-                '<span class="pdf-audit-tag tag-repair" '
-                f'data-repair-block="{html.escape(block_id, quote=True)}">修复</span>'
-            )
         if zone.get("extraction_failed"):
             audit_content += '<span class="pdf-audit-tag tag-failed">失败</span>'
         if kind == "req":
@@ -3334,19 +3322,10 @@ mark.sc-quote {{ background: linear-gradient(transparent 44%, var(--highlight) 4
   font-family: var(--sans); transition: color .12s, border-color .12s, background .12s; }}
 .omission-tag:hover, .omission-tag.sel {{ color: var(--st-discussion-tx); border-color: var(--st-discussion-tx);
   background: rgba(248,239,217,.45); }}
-.repair-tag, .failed-extraction-tag {{ display: inline-flex; margin-left: 6px; padding: 0 2px 1px;
+.failed-extraction-tag {{ display: inline-flex; margin-left: 6px; padding: 0 2px 1px;
   border: 0; border-bottom: 1px dotted #a8a29a; border-radius: 0; background: transparent;
   color: #77736d; font: 500 9px/1 var(--sans); cursor: pointer; vertical-align: super; }}
-.repair-tag:hover {{ color: #465568; border-color: #465568; }}
 .failed-extraction-tag {{ color: #9b3b32; border-color: #d7a7a2; }}
-.repair-compare {{ display: grid; gap: 6px; margin-top: 6px; }}
-.repair-compare > div {{ padding: 7px 8px; border: 1px solid var(--line); border-radius: 6px; background: #fff; }}
-.repair-compare small {{ display: block; color: var(--faint); }}
-.repair-compare p {{ margin: 2px 0 0; font-size: 12px; line-height: 1.45; white-space: pre-wrap; }}
-.repair-events {{ max-height: 160px; margin-top: 7px; overflow: auto; font-size: 11px; }}
-.repair-events > div {{ display: grid; grid-template-columns: minmax(0,1fr) auto minmax(0,1fr);
-  gap: 5px; padding: 3px 0; border-bottom: 1px solid var(--line); }}
-.repair-events small {{ grid-column: 1 / -1; color: var(--faint); }}
 .echo-tag {{ display: inline-flex; margin-left: 6px; padding: 0 2px 1px; border: 0;
   border-bottom: 1px dashed var(--line-strong); border-radius: 0; background: transparent;
   color: var(--faint); font-size: 10px; line-height: 1; cursor: pointer; vertical-align: super;
@@ -3402,6 +3381,13 @@ mark.sc-quote {{ background: linear-gradient(transparent 44%, var(--highlight) 4
 .badge.st-accepted {{ background: var(--st-accepted); color: var(--st-accepted-tx); }}
 .badge.st-rejected {{ background: var(--st-rejected); color: var(--st-rejected-tx); }}
 .badge.st-needs_discussion {{ background: var(--st-discussion); color: var(--st-discussion-tx); }}
+.dd-context {{ margin: 8px 0 14px; padding: 12px 13px 11px; border: 1px solid var(--line); border-radius: 10px; background: rgba(255,255,255,.72); }}
+.dd-context-kicker {{ margin-bottom: 4px; color: var(--muted); font-size: 10px; font-weight: 750; letter-spacing: .08em; text-transform: uppercase; }}
+.dd-context .dd-title {{ margin: 0; color: var(--ink); font-size: 16px; line-height: 1.4; }}
+.dd-context-meta {{ display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin-top: 9px; color: var(--muted); font-size: 10px; line-height: 1.45; }}
+.dd-meta-pill {{ padding: 2px 6px; border: 1px solid var(--accent-soft); border-radius: 999px; color: var(--accent); background: var(--accent-soft); }}
+.dd-source-meta {{ min-width: 0; overflow-wrap: anywhere; }}
+.dd-source-meta strong {{ margin-right: 4px; color: var(--ink); font-weight: 650; }}
 .dd-title {{ margin: 10px 0 4px; font-size: 16px; font-weight: 650; color: var(--ink); line-height: 1.45; }}
 .dd-meta {{ font-size: 12px; color: var(--muted); margin-bottom: 13px; }}
 .dd-suspicion {{ font-size: 12px; color: #92400e; background: #fef3c7; border-radius: 6px; padding: 4px 8px; margin-bottom: 10px; }}
@@ -3412,6 +3398,13 @@ mark.sc-quote {{ background: linear-gradient(transparent 44%, var(--highlight) 4
   border-radius: 0 6px 6px 0; background: rgba(15,118,110,.055); }}
 .dd-result-primary .dd-label {{ margin-top: 0; color: var(--accent); font-weight: 700; letter-spacing: 0; text-transform: none; }}
 .dd-result-primary .dd-body {{ color: var(--ink); font-size: 15px; }}
+.dd-collapsible {{ padding: 9px 11px; border: 1px solid var(--line); border-radius: 9px; background: rgba(255,255,255,.46); }}
+.dd-collapsible summary {{ display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--ink); cursor: pointer; font-size: 12px; font-weight: 650; list-style: none; }}
+.dd-collapsible summary::-webkit-details-marker {{ display: none; }}
+.dd-collapsible summary::after {{ content: "展开"; color: var(--muted); font-size: 10px; font-weight: 500; }}
+.dd-collapsible[open] summary::after {{ content: "收起"; }}
+.dd-collapsible summary small {{ margin-left: auto; color: var(--muted); font-size: 10px; font-weight: 500; }}
+.dd-collapsible[open] .dd-quote {{ margin-top: 9px; }}
 .dd-empty {{ color: var(--faint); }}
 .dd-prewrap {{ white-space: pre-wrap; }}
 .src-badge {{ font-size: 10px; text-transform: none; letter-spacing: 0; color: var(--accent);
@@ -3765,8 +3758,19 @@ function ownershipReasonHtml(r) {{
 }}
 
 function requirementSummaryHtml(r) {{
-  const summary = String(r.functional_objective_zh || r.description || "").trim();
-  return '<div class="dd-section dd-result-primary"><div class="dd-label">抽取需求</div>'+
+  const objectiveZh = String(r.functional_objective_zh || "").trim();
+  if (objectiveZh) return summarySectionHtml(objectiveZh);
+  const behaviorsZh = Array.isArray(r.functional_behaviors_zh)
+    ? r.functional_behaviors_zh.map(value => String(value || "").trim()).filter(Boolean)
+    : [];
+  if (behaviorsZh.length) return summarySectionHtml(behaviorsZh.join("；"));
+  const objective = String(r.functional_objective || "").trim();
+  if (objective) return summarySectionHtml(objective);
+  return summarySectionHtml(String(r.description || "").trim());
+}}
+
+function summarySectionHtml(summary) {{
+  return '<div class="dd-section dd-result-primary"><div class="dd-label">功能需求摘要</div>'+
          '<div class="dd-body'+(summary ? '' : ' dd-empty')+'">'+
          (summary ? esc(summary) : '未生成需求摘要')+'</div></div>';
 }}
@@ -3871,32 +3875,9 @@ function selectClaim(claimId) {{
 function repairAuditHtml(blockId) {{
   const audit = REPAIR_AUDIT[blockId];
   if (!audit) return "";
-  const failed = audit.extraction_failed
+  return audit.extraction_failed
     ? '<div class="dd-section"><div class="dd-label">抽取状态</div><div class="dd-suspicion">'+esc(FAILED_EXTRACTION_REASON)+'</div></div>'
     : '';
-  if (!(audit.events || []).length) return failed;
-  const rules = Array.from(new Set((audit.events || []).map(event => event.rule).filter(Boolean))).join("、");
-  const events = (audit.events || []).map(event =>
-    '<div><code>'+esc(event.before || "")+'</code><span>→</span><code>'+esc(event.after || "")+'</code>'+
-    '<small>'+esc(event.rule || "")+'</small></div>').join("");
-  return failed+'<div class="dd-section repair-audit"><div class="dd-label">原文修复 · '+esc(audit.events.length)+' 处</div>'+
-    (rules ? '<div class="dd-meta">'+esc(rules)+'</div>' : '')+
-    '<div class="repair-compare"><div><small>修复前</small><p>'+esc(audit.raw_text || "")+'</p></div>'+
-    '<div><small>修复后</small><p>'+esc(audit.text || "")+'</p></div></div>'+
-    '<div class="repair-events">'+events+'</div></div>';
-}}
-
-function selectRepairAudit(blockId) {{
-  selected = null;
-  selectedContextBlock = blockId + "@repair";
-  document.querySelectorAll(".chip,.source-classification,.omission-tag,.pdf-marker").forEach(el => el.classList.remove("sel"));
-  document.querySelectorAll(".doc-block").forEach(el => el.classList.remove("in-span", "evidence"));
-  paintZoneSelection(blockId);
-  const block = document.querySelector('.doc-block[data-block-id="'+blockId+'"]');
-  if (block) block.classList.add("in-span", "evidence");
-  document.getElementById("detail").innerHTML =
-    '<div class="annotation-card detail-card"><div class="dd-head"><span class="dd-module">原文修复</span>'+
-     '<span class="badge">审计</span></div><div class="dd-title">断词修复记录</div>'+repairAuditHtml(blockId)+'</div>';
 }}
 
 function selectFailedExtraction(blockId) {{
@@ -4225,7 +4206,7 @@ function functionalMembershipHtml(r) {{
   return '<div class="dd-section"><div class="dd-label">所属研发功能</div>'+
     '<div class="dd-body"><strong>'+esc(r.functional_title_zh || r.functional_title || r.functional_requirement_id)+'</strong></div>'+
     (mergeBadge ? '<div class="'+mergeClass+'">⧉ '+esc(mergeBadge)+'</div>' : '')+
-    (r.functional_objective_zh || r.functional_objective ? '<div class="dd-body">'+esc(r.functional_objective_zh || r.functional_objective)+'</div>' : '')+
+    (!r.functional_objective_zh && r.functional_objective ? '<div class="dd-body">'+esc(r.functional_objective)+'</div>' : '')+
     (behaviors ? '<div class="dd-label">功能行为</div><ul class="dd-list">'+behaviors+'</ul>' : '')+
     (preconditions ? '<div class="dd-label">前置条件</div><ul class="dd-list">'+preconditions+'</ul>' : '')+
     (constraints ? '<div class="dd-label">数据约束</div><ul class="dd-list">'+constraints+'</ul>' : '')+
@@ -4266,7 +4247,7 @@ function select(id) {{
   // 归属判定挪到「原文引用」之后（真实反馈 2026-07-12）；设计候选暂不渲染（数据仍在 xlsx）
   const summaryHtml = requirementSummaryHtml(r);
   const sourceQuoteHtml = r.source_quote
-    ? '<div class="dd-section"><div class="dd-label">抽取原句（对照左页）</div><div class="dd-quote">'+esc(r.source_quote)+'</div></div>'
+    ? '<details class="dd-section dd-collapsible"><summary><span>原文依据</span><small>对照左侧原文</small></summary><div class="dd-quote">'+esc(r.source_quote)+'</div></details>'
     : '';
   const functionalHtml = isHardware ? "" : functionalMembershipHtml(r);
   const primaryHtml = summaryHtml + sourceQuoteHtml + (isHardware ? hardwareTranslationHtml(r) : functionalHtml);
@@ -4282,8 +4263,10 @@ function select(id) {{
   document.getElementById("detail").innerHTML =
     '<div class="annotation-card detail-card"><div class="dd-head"><span class="dd-module">'+esc(moduleOf(r))+'</span>'+
     '<span class="badge st-'+st+'">'+esc(STATUS_LABELS[st]||st)+'</span></div>'+
+    '<div class="dd-context"><div class="dd-context-kicker">功能需求</div>'+
     '<div class="dd-title">'+esc(r.title)+'</div>'+
-    '<div class="dd-meta">'+esc(r.type)+' · '+esc(r.priority)+' · '+esc(r.source_section)+'</div>'+
+    '<div class="dd-context-meta"><span class="dd-meta-pill">'+esc(r.type)+'</span><span class="dd-meta-pill">'+esc(r.priority)+'</span>'+
+    '<span class="dd-source-meta"><strong>来源</strong>'+esc(r.source_section || '未定位')+(r.source_page ? ' · PDF 第 '+esc(r.source_page)+' 页' : '')+'</span></div></div>'+
     (PDF_MODE
       ? (r.source_page ? '<div class="dd-legend">原文位置 · PDF 第 '+esc(r.source_page)+' 页</div>' : '')
       : '<div class="dd-legend">正文标记：<span style="background:#ffe89a;padding:0 4px">黄=引用依据</span> · <span style="background:#eef4ff;padding:0 4px">蓝=证据段</span> · 左侧细条=分析上下文（模型通读范围）</div>')+
@@ -4329,8 +4312,6 @@ function decide(id, status) {{
 document.getElementById("paper").addEventListener("click", e => {{
   const failedTag = e.target.closest("[data-failed-block]");
   if (failedTag) {{ selectFailedExtraction(failedTag.getAttribute("data-failed-block") || ""); return; }}
-  const repairTag = e.target.closest("[data-repair-block]");
-  if (repairTag) {{ selectRepairAudit(repairTag.getAttribute("data-repair-block") || ""); return; }}
   const chip = e.target.closest(".chip"); if (chip) {{ select(chip.getAttribute("data-req")); return; }}
   const pdfMarker = e.target.closest('.pdf-marker[data-req]');
   if (pdfMarker) {{ select(pdfMarker.getAttribute("data-req")); return; }}

@@ -2306,3 +2306,22 @@ CLI 契约见 `docs/cli-contract.md`（对接公司任务管理系统的接口�
 - 复核发现完整 chain 在功能直抽返回 `execution_status=partial` 后，无条件跳过需求分析，导致配置默认开启的 `RATOMIZER_PARTIAL_EXPORT=1` 与 `allow_unclosed=True` 在真实全量链路中不可达；单独续跑测试无法覆盖这个问题。
 - `desktop_tasks.chain_task` 现在只在 partial export 开启且功能直抽为非 draft 的 `partial`（或守恒未闭合但执行状态为 `ok`）时放行需求分析/澄清/成文；`failed`、stub draft 和显式关闭开关仍然阻断。守恒阻断信号继续保留，结果不会被标记为完整成功。
 - 新增同一 chain 内 `functional-extract=partial → requirements-analysis` 的回归测试；分析富化与 partial export 定向回归共 209 项通过，`git diff --check` 通过。`tests.test_desktop_tasks` 仍有仓库既有的 producer 版本断言不一致，与本修复无关。
+
+## 2026-09-26 批注审核界面信息层级收敛
+
+- 需求批注右侧卡片将标题、类型、优先级和来源章节收拢为上下文区，主内容改名为“功能需求摘要”，原文依据默认折叠，避免把摘要、功能目标和原句连续重复展示。
+- 所属研发功能不再重复显示已经出现在摘要区的功能目标；Vue 审核界面与独立 `document_annotation.html` 导出保持同一套字段语义和布局文案。
+- 本次只调整展示层级，未将 `analysis_software_requirement_text` 等 LLM 富化字段重新并入默认需求正文；需求事实与分析建议继续隔离。
+- 验证：`DocumentReview.spec.ts` 75 项通过，`npm run build` 通过，`tests.test_doc_annotation_export` 158 项通过，Python 编译和 `git diff --check` 通过。全 UI 套件仍有 5 项既有默认 LLM/运行阶段断言失败，与本次布局改动无关。
+
+## 2026-09-26 隐藏原文修复审计标记
+
+- 批注界面和独立 HTML 不再展示“原文修复”、PDF 修复角标或修复前后对比卡片；这些内容属于内部解析审计，不参与需求审核。
+- 原文修复数据仍保留在解析产物中，抽取失败标记和失败说明继续显示，避免把“修复痕迹”与“抽取失败”混为一谈。
+- 验证：`DocumentReview.spec.ts` 75 项、`tests.test_doc_annotation_export` 158 项通过，生产构建、Python 编译和 `git diff --check` 通过。
+
+## 2026-09-26 功能需求摘要中文投影回退修复
+
+- 复核发现旧结果在缺少 `functional_objective_zh` 时直接把英文 `description` 显示为“功能需求摘要”，即使同一条需求已经有 `functional_behaviors_zh` 和中文分析字段；这是展示投影回退顺序错误，不是原文或需求抽取内容错误。
+- Vue 审核界面与独立批注 HTML 现在按“中文功能目标 → 中文功能行为 → 功能目标 → 抽取描述”回退；中文行为按原顺序合并展示，避免中文结果混入英文摘要。
+- 验证：`DocumentReview.spec.ts` 76 项、`tests.test_doc_annotation_export` 158 项通过，生产构建、Python 编译和 `git diff --check` 通过；已用现有缓存零付费重新导出 `out/ts-novy-nepriamy-elektromer-mimo-v2.6-flash-full-20260926-rerun-v12/document_annotation.html`。

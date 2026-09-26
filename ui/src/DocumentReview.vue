@@ -392,14 +392,6 @@ const selectedBlockKind = computed(() => {
   if (coveredByBlock.value.has(selectedBlock.value.block_id)) return "covered"
   return isOmission(selectedBlock.value) ? "omission" : "context"
 })
-const selectedRepairEvents = computed(() =>
-  (selectedBlock.value?.text_repairs || []).filter((event) => event && typeof event === "object"))
-function repairEventText(event: Record<string, unknown>, key: "before" | "after" | "rule"): string {
-  return String(event[key] || "")
-}
-function repairRulesOf(block: DocumentBlock): string {
-  return [...new Set((block.text_repairs || []).map((event) => String(event.rule || "")).filter(Boolean))].join("、")
-}
 const selectedRelatedReqs = computed(() => {
   if (!selectedBlock.value) return []
   const blockId = selectedBlock.value.block_id
@@ -1347,6 +1339,19 @@ function acceptanceOf(r: AiRequirement): string[] {
 function ownershipReasonOf(r: AiRequirement): string {
   return String(r.ownership_reason || "")
 }
+// 摘要优先使用已通过翻译护栏的中文功能字段。部分旧结果只有中文行为投影，
+// 此时不能直接回退到英文 description，否则中文分析页会混入英文抽取描述。
+function requirementSummaryOf(r: AiRequirement): string {
+  const objectiveZh = String(r.functional_objective_zh || "").trim()
+  if (objectiveZh) return objectiveZh
+  const behaviorsZh = (r.functional_behaviors_zh || [])
+    .map((value) => String(value || "").trim())
+    .filter(Boolean)
+  if (behaviorsZh.length) return behaviorsZh.join("；")
+  const objective = String(r.functional_objective || "").trim()
+  if (objective) return objective
+  return String(r.description || "").trim()
+}
 // 跨章合并徽章（双渲染器契约字段——与 doc_annotation_export functionalMergeBadge 同语义,
 // 契约夹具锁文案）：单源不显示（置信恒 1.0 是噪声）;置信 < 0.9 提示核对（弱合并最易错并）
 function mergeBadgeOf(r: AiRequirement): string {
@@ -1945,7 +1950,6 @@ onMounted(() => {
                       :aria-pressed="pdfZoneSelected(z)"
                       @click.stop="pdfZoneClick(z)">
                 <span v-if="z.kind === 'echo' || z.kind === 'covered'" class="pdf-echo-tag">{{ pdfLinkedLabel(z) }}</span>
-                <span v-if="pdfZoneBlock(z)?.text_repaired" class="pdf-audit-tag tag-repair">修复</span>
                 <span v-if="pdfZoneBlock(z)?.extraction_failed" class="pdf-audit-tag tag-failed">失败</span>
               </button>
               <button v-for="(z, zi) in (pdfClaimZonesByPage.get(p.page_number) || [])"
@@ -2065,14 +2069,6 @@ onMounted(() => {
                 </table>
               </div>
               <button
-                v-if="b.text_repaired"
-                class="repair-tag"
-                type="button"
-                data-testid="repair-tag"
-                :title="`原文断词已做 ${b.text_repairs?.length || 0} 处确定性修复，点击查看审计记录`"
-                @click.stop="selectBlockCard(b)"
-              >原文修复</button>
-              <button
                 v-if="b.extraction_failed"
                 class="failed-extraction-tag"
                 type="button"
@@ -2105,14 +2101,6 @@ onMounted(() => {
                 @click.stop="selectClaimCard(seg.claim.claim_id)"
                 @keydown.enter.stop.prevent="selectClaimCard(seg.claim.claim_id)"
                 @keydown.space.stop.prevent="selectClaimCard(seg.claim.claim_id)"><mark v-if="seg.mark">{{ seg.text }}</mark><template v-else>{{ seg.text }}</template></span><span v-else><mark v-if="seg.mark">{{ seg.text }}</mark><template v-else>{{ seg.text }}</template></span></template>
-              <button
-                v-if="b.text_repaired"
-                class="repair-tag"
-                type="button"
-                data-testid="repair-tag"
-                :title="`原文断词已做 ${b.text_repairs?.length || 0} 处确定性修复，点击查看审计记录`"
-                @click.stop="selectBlockCard(b)"
-              >原文修复</button>
               <button
                 v-if="b.extraction_failed"
                 class="failed-extraction-tag"
@@ -2313,22 +2301,6 @@ onMounted(() => {
           </div>
           <h3 class="dd-title">{{ selectedBlockKind === "failed" ? "该段所在章节未完成抽取" : (selectedBlockKind === "omission" ? "为什么标为未覆盖" : (selectedBlockKind === "echo" ? "该段解析已汇总" : (selectedBlockKind === "covered" ? "该段已纳入需求解析" : (selectedBlockKind === "req_group" ? `该段解析出 ${orderedSelectedRelatedReqs.length} 条需求` : "为什么没有生成研发需求")))) }}</h3>
           <div class="dd-section"><div class="dd-body">{{ selectedBlockKind === "failed" ? FAILED_EXTRACTION_REASON : (selectedBlockKind === "omission" ? OMISSION_REASON : (selectedBlockKind === "echo" ? ECHO_REASON : (selectedBlockKind === "covered" ? COVERED_REASON : (selectedBlockKind === "req_group" ? REQ_GROUP_REASON : CONTEXT_REASON)))) }}</div></div>
-          <div v-if="selectedBlock.text_repaired" class="dd-section repair-audit" data-testid="repair-audit">
-            <div class="dd-label">原文修复 · {{ selectedRepairEvents.length }} 处</div>
-            <div v-if="repairRulesOf(selectedBlock)" class="repair-rules">{{ repairRulesOf(selectedBlock) }}</div>
-            <div class="repair-compare">
-              <div><span>修复前</span><p>{{ selectedBlock.raw_text || "" }}</p></div>
-              <div><span>修复后</span><p>{{ selectedBlock.text || "" }}</p></div>
-            </div>
-            <div v-if="selectedRepairEvents.length" class="repair-events">
-              <div v-for="(event, index) in selectedRepairEvents" :key="index">
-                <code>{{ repairEventText(event, "before") }}</code>
-                <span>→</span>
-                <code>{{ repairEventText(event, "after") }}</code>
-                <small>{{ repairEventText(event, "rule") }}</small>
-              </div>
-            </div>
-          </div>
           <div v-if="selectedBlockKind === 'omission' && (props.client?.applyOmissionAction || props.client?.reextractOmission)"
                class="dd-section omission-actions" data-testid="omission-actions">
             <div class="dd-label">遗漏处置</div>
@@ -2381,8 +2353,15 @@ onMounted(() => {
               <button type="button" class="dd-nav-btn" data-testid="dd-next" title="下一条批注" aria-keyshortcuts="J" @click="stepReq(1)"><ChevronRight :size="15" aria-hidden="true" /></button>
             </span>
           </div>
-          <h3 class="dd-title">{{ selectedReq.title }}</h3>
-          <div class="dd-meta">{{ selectedReq.type }} · {{ selectedReq.priority }} · {{ selectedReq.source_section }}</div>
+          <div class="dd-context">
+            <div class="dd-context-kicker">功能需求</div>
+            <h3 class="dd-title">{{ selectedReq.title }}</h3>
+            <div class="dd-context-meta">
+              <span class="dd-meta-pill">{{ selectedReq.type }}</span>
+              <span class="dd-meta-pill">{{ selectedReq.priority }}</span>
+              <span class="dd-source-meta"><strong>来源</strong>{{ selectedReq.source_section || "未定位" }}<template v-if="selectedReq.source_page"> · PDF 第 {{ selectedReq.source_page }} 页</template></span>
+            </div>
+          </div>
           <div v-if="reviewRequiredOf(selectedReq)" class="dd-suspicion" data-testid="dd-review-required">
             待确认：来源单元被判定为 needs_review/context，尚未确认是真实研发需求
           </div>
@@ -2398,18 +2377,19 @@ onMounted(() => {
 
           <div class="dd-legend">{{ viewMode === "pdf" ? "左侧原版页面为核对依据，右侧为解析结果" : "解析文本可能丢失原版字形与间距，请用原版核对来源" }}</div>
           <div class="dd-section dd-result-primary" data-testid="dd-requirement-summary">
-            <div class="dd-label">抽取需求</div>
-            <div class="dd-body">{{ selectedReq.functional_objective_zh || selectedReq.description || "未生成需求摘要" }}</div>
+            <div class="dd-label">功能需求摘要</div>
+            <div class="dd-body">{{ requirementSummaryOf(selectedReq) || "未生成需求摘要" }}</div>
           </div>
-          <div class="dd-section" v-if="selectedReq.source_quote">
-            <div class="dd-label">抽取原句（对照左页）</div><div class="dd-quote">{{ selectedReq.source_quote }}</div>
-          </div>
+          <details class="dd-section dd-collapsible" v-if="selectedReq.source_quote">
+            <summary><span>原文依据</span><small>对照左侧原文</small></summary>
+            <div class="dd-quote">{{ selectedReq.source_quote }}</div>
+          </details>
           <div class="dd-section" v-if="ownershipOf(selectedReq) !== 'hardware' && selectedReq.functional_requirement_id" data-testid="dd-functional">
             <div class="dd-label">所属研发功能</div>
             <div class="dd-body"><strong>{{ selectedReq.functional_title || selectedReq.functional_requirement_id }}</strong></div>
             <div v-if="mergeBadgeOf(selectedReq)" :class="mergeWarnOf(selectedReq) ? 'dd-suspicion' : 'dd-consistency'"
                  data-testid="dd-merge">⧉ {{ mergeBadgeOf(selectedReq) }}</div>
-            <div v-if="selectedReq.functional_objective_zh || selectedReq.functional_objective" class="dd-body">{{ selectedReq.functional_objective_zh || selectedReq.functional_objective }}</div>
+            <div v-if="!selectedReq.functional_objective_zh && selectedReq.functional_objective" class="dd-body">{{ selectedReq.functional_objective }}</div>
             <template v-if="(selectedReq.functional_behaviors_zh || selectedReq.functional_behaviors || []).length">
               <div class="dd-label">功能行为</div>
               <ul class="dd-list"><li v-for="(b, i) in (selectedReq.functional_behaviors_zh || selectedReq.functional_behaviors)" :key="i">{{ b }}</li></ul>
@@ -2559,7 +2539,6 @@ onMounted(() => {
 .pdf-audit-tag { position: absolute; left: 2px; top: -13px; padding: 1px 3px; border-radius: 3px;
   background: rgba(255,255,255,.94); font-size: 8px; font-weight: 650; line-height: 1.15;
   pointer-events: none; opacity: .72; }
-.pdf-audit-tag.tag-repair { color: #53606f; border-bottom: 1px dotted #8793a1; }
 .pdf-audit-tag.tag-failed { left: auto; right: 2px; color: #a23b3f; border-bottom: 1px solid #d9a6a8; }
 .pdf-echo-tag { position: absolute; right: 2px; top: -13px; display: inline-block; padding: 0 2px 1px;
   border-bottom: 1px dashed #667085; color: #4b5563; background: rgba(255,255,255,.92);
@@ -2632,10 +2611,9 @@ onMounted(() => {
   border-bottom: 1px dotted #cbd5e1; border-radius: 0; background: transparent; color: #98a1b3;
   font-size: 9px; line-height: 1; cursor: pointer; vertical-align: super; }
 .omission-tag:hover, .omission-tag.sel { color: #b06f12; border-color: #b06f12; background: #fff9ec; }
-.repair-tag, .failed-extraction-tag { display: inline-flex; margin-left: 6px; padding: 0 2px 1px;
+.failed-extraction-tag { display: inline-flex; margin-left: 6px; padding: 0 2px 1px;
   border: 0; border-bottom: 1px dotted #aeb6c2; border-radius: 0; background: transparent;
   color: #7a8496; font-size: 9px; line-height: 1; cursor: pointer; vertical-align: super; }
-.repair-tag:hover { color: #465568; border-color: #465568; }
 .failed-extraction-tag { color: #a23b3f; border-color: #d6a4a6; }
 .failed-extraction-tag:hover { color: #7f1f24; border-color: #7f1f24; }
 .echo-tag { display: inline-flex; margin-left: 6px; padding: 0 2px 1px; border: 0;
@@ -2698,16 +2676,6 @@ td.cell-sel, th.cell-sel { outline: 2px solid #5978f7; outline-offset: -2px; }
 .dd-section { margin: 10px 0; }
 .dd-label { font-size: 11px; color: #98a1b3; text-transform: uppercase; margin-bottom: 3px; }
 .dd-body { font-size: 13px; line-height: 1.55; color: #3f4a61; }
-.repair-rules { margin-bottom: 6px; color: #7a8496; font: 11px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace; }
-.repair-compare { display: grid; gap: 6px; }
-.repair-compare > div { padding: 7px 8px; border: 1px solid #e6e9f0; border-radius: 6px; background: #fff; }
-.repair-compare span { color: #98a1b3; font-size: 10px; }
-.repair-compare p { margin: 2px 0 0; color: #3f4a61; font-size: 12px; line-height: 1.45; white-space: pre-wrap; }
-.repair-events { margin-top: 7px; max-height: 150px; overflow: auto; }
-.repair-events > div { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
-  align-items: center; gap: 5px; padding: 3px 0; border-bottom: 1px solid #f0f2f5; font-size: 11px; }
-.repair-events code { overflow-wrap: anywhere; color: #465568; }
-.repair-events small { grid-column: 1 / -1; color: #98a1b3; }
 .dd-list { margin: 0; padding-left: 18px; font-size: 13px; color: #3f4a61; }
 .dd-quote { font-size: 12px; color: #5c6675; border-left: 3px solid #cbd5e1; padding-left: 8px; font-style: italic; }
 .dd-select, .dd-comment { width: 100%; box-sizing: border-box; border: 1px solid #cbd5e1; border-radius: 6px; padding: 6px; font-size: 13px; }
@@ -3119,6 +3087,61 @@ td.cell-sel, th.cell-sel { outline: 2px solid #5978f7; outline-offset: -2px; }
 
 .dd-module { color: var(--doc-blue-strong); }
 
+.dd-context {
+  margin: 8px 0 14px;
+  padding: 12px 13px 11px;
+  border: 1px solid var(--doc-border);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, .72);
+  box-shadow: 0 3px 12px rgba(31, 35, 48, .035);
+}
+
+.dd-context-kicker {
+  margin-bottom: 4px;
+  color: var(--doc-tertiary);
+  font-size: 10px;
+  font-weight: 750;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.dd-context .dd-title {
+  margin: 0;
+  color: var(--doc-ink);
+  font-size: 16px;
+  line-height: 1.4;
+}
+
+.dd-context-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  margin-top: 9px;
+  color: var(--doc-tertiary);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.dd-meta-pill {
+  padding: 2px 6px;
+  border: 1px solid rgba(10, 132, 255, .14);
+  border-radius: 999px;
+  color: var(--doc-blue-strong);
+  background: rgba(10, 132, 255, .06);
+}
+
+.dd-source-meta {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.dd-source-meta strong {
+  margin-right: 4px;
+  color: var(--doc-secondary);
+  font-weight: 650;
+}
+
 .dd-status,
 .dd-suspicion,
 .dd-consistency {
@@ -3138,6 +3161,31 @@ td.cell-sel, th.cell-sel { outline: 2px solid #5978f7; outline-offset: -2px; }
 
 .dd-result-primary .dd-label { color: var(--doc-blue-strong); font-weight: 700; }
 .dd-result-primary .dd-body { color: var(--doc-ink); font-size: 14px; line-height: 1.65; }
+
+.dd-collapsible {
+  padding: 9px 11px;
+  border: 1px solid var(--doc-border);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, .46);
+}
+
+.dd-collapsible summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--doc-secondary);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 650;
+  list-style: none;
+}
+
+.dd-collapsible summary::-webkit-details-marker { display: none; }
+.dd-collapsible summary::after { content: "展开"; color: var(--doc-tertiary); font-size: 10px; font-weight: 500; }
+.dd-collapsible[open] summary::after { content: "收起"; }
+.dd-collapsible summary small { margin-left: auto; color: var(--doc-tertiary); font-size: 10px; font-weight: 500; }
+.dd-collapsible[open] .dd-quote { margin-top: 9px; }
 
 .dd-label {
   color: var(--doc-tertiary);

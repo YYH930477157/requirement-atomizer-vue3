@@ -1069,7 +1069,8 @@ class DocAnnotationExportTests(unittest.TestCase):
 
             rendered = dae.render_annotation_html(out)
 
-        self.assertIn('class="repair-tag"', rendered)
+        self.assertNotIn('class="repair-tag"', rendered)
+        self.assertNotIn('data-repair-block=', rendered)
         self.assertIn('class="failed-extraction-tag"', rendered)
         self.assertIn("const REPAIR_AUDIT =", rendered)
         self.assertIn("function selectFailedExtraction(blockId)", rendered)
