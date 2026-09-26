@@ -42,11 +42,12 @@ LOGGER = logging.getLogger("requirement_atomizer")
 ChatFn = Callable[[str, str], dict[str, Any]]
 
 SCHEMA_VERSION = "requirements-analysis/v1"
-# v9：富化正文的源文数字遗漏改为字段级阻断（不会再被确定性 base 文本掩盖），并收紧
+# v10：收窄富化职责为证据保真改写，设计候选/验收标准默认不生成；v9：富化正文的源文数字遗漏
+# 改为字段级阻断（不会再被确定性 base 文本掩盖），并收紧
 # 证据约束提示；v8：无依据富化字段强制"待澄清"（Agent Phase 2 WP2，规则版本随行）；
 # v6：冻结归属注入 prompt（模型不再重判,只按给定归属定正文深度）；
 # v5：注入文档背景/条款原文/相邻需求,正文连贯成文（2026-07-12 富化深度）
-ANALYZE_PROMPT_VERSION = "analyze-llm-v9"
+ANALYZE_PROMPT_VERSION = "analyze-llm-v10"
 # P0-8：负例 few-shot 注入数量上限（可配）。
 def _int_env(name: str, default: int) -> int:
     """Read a registered integer setting without making module import fail."""
@@ -132,7 +133,10 @@ STUB_ROUTE = "stub"
 DEGRADE_NOTE = "openai_compatible 端点未配置，本次按规则/模板/裁决确定性运行（未做 LLM 富化）"
 # LLM 只允许填这些叙述字段；OBIS/class/访问位/归属/id 等结构字段永不被 LLM 覆盖（防幻觉红线）
 _ENRICH_FIELDS_TEXT = ("software_requirement_text", "hardware_dependency")
-_ENRICH_FIELDS_LIST = ("developer_guidance", "design_options", "acceptance_criteria", "open_questions", "assumptions")
+# 默认富化只允许证据改写、明确研发约束和澄清问题进入交付物。设计候选与验收标准
+# 保留在分析 schema 中供后续专家/规则阶段使用，但不再由本步骤的 LLM 写入。
+_LLM_ENRICH_FIELDS_LIST = ("developer_guidance", "open_questions", "assumptions")
+_ISOLATED_ENRICH_FIELDS = ("design_options", "acceptance_criteria")
 OUTPUT_FILES = [
     "software_requirements.xlsx",
     "engineering_analysis.json",
@@ -1026,7 +1030,7 @@ def _mark_rejected_enrichment_fields(item: dict[str, Any], fields: set[str], rea
         _mark_unfounded_field(item, "software_requirement_text", reason)
     if "hardware_dependency" in fields and str(item.get("ownership") or "") == OWNERSHIP_CO_DESIGN:
         _mark_unfounded_field(item, "hardware_dependency", reason)
-    for field in _UNFOUNDED_LIST_FIELDS:
+    for field in _LLM_ENRICH_FIELDS_LIST:
         if field in fields and not item.get(field):
             _mark_unfounded_field(item, field, reason)
 
@@ -1035,7 +1039,7 @@ def _mark_enrichment_rejected(item: dict[str, Any], reason: str) -> None:
     """WP2 规则 1：富化被护栏整体拒绝（回退 base 值）→ 无依据字段写"待澄清"，
     不再静默以 base 文本充当软件需求正文。（v4 起字段级拒收共享同一套单字段规则。）"""
     _mark_rejected_enrichment_fields(
-        item, set(_UNFOUNDED_TEXT_FIELDS) | set(_UNFOUNDED_LIST_FIELDS), reason)
+        item, set(_UNFOUNDED_TEXT_FIELDS) | set(_LLM_ENRICH_FIELDS_LIST), reason)
 
 
 # v4 字段级拒收的判定细节：编造码**绝不进 open_questions 文本**——码只进 run 级 issues
@@ -1156,8 +1160,16 @@ def _apply_llm_item(
     if semantic_drift:
         _mark_unfounded_field(item, "software_requirement_text", semantic_drift[0])
     fabricated_codes = [d for d in drift if d.startswith("fabricated code")]
-    blocked_fields: dict[str, list[str]] = (
+    all_fabricated_fields: dict[str, list[str]] = (
         _fabricated_code_fields(llm_item, source_req, ctx) if fabricated_codes else {})
+    blocked_fields = {
+        field: codes for field, codes in all_fabricated_fields.items()
+        if field in set(_ENRICH_FIELDS_TEXT) | set(_LLM_ENRICH_FIELDS_LIST) | {"ownership_reason"}
+    }
+    isolated_fields = [
+        field for field in _ISOLATED_ENRICH_FIELDS
+        if _as_list(llm_item.get(field)) and any(str(v).strip() for v in _as_list(llm_item.get(field)))
+    ]
     if semantic_drift:
         blocked_fields.setdefault("software_requirement_text", [])
     # 源文数字遗漏与编造数字同样会改变需求语义，必须在采纳生成正文后把该字段降级为
@@ -1175,6 +1187,11 @@ def _apply_llm_item(
             f"{_UNFOUNDED_FIELD_LABELS.get(field, field)}含编造结构编码，已拒收该字段: "
             f"{', '.join(codes)}"
             for field, codes in blocked_fields.items()]
+        fabricated_issues.extend(
+            f"LLM 富化隔离字段 {field} 含编造结构编码，已忽略，不进入需求分析交付物: "
+            f"{', '.join(all_fabricated_fields[field])}"
+            for field in isolated_fields if field in all_fabricated_fields
+        )
         if not blocked_fields:
             # 编造码只出现在不可采纳位置（如 llm 自带的 requirement 字段,本就不进交付物）——
             # 干净字段照常采纳,但发现必须留痕（出处诚实,不静默吞护栏命中）
@@ -1198,7 +1215,7 @@ def _apply_llm_item(
         item[field] = value
         adopted_fields.add(field)
         accepted = True
-    for field in _ENRICH_FIELDS_LIST:
+    for field in _LLM_ENRICH_FIELDS_LIST:
         if field in blocked_fields:   # 字段自身含编造码：不采纳（红线）
             continue
         values = [str(x).strip() for x in _as_list(llm_item.get(field)) if str(x).strip()]
@@ -1252,12 +1269,16 @@ def _apply_llm_item(
     ]
     # 软标必须随交付物同行（2026-07-08 审计 B1）：此前只进 run 级 issues（excel/成文不读），
     # 编造数字以零可见标记落进公司模板成文 xlsx。现在钉在 item 上，_notes_text/成文同列渲染。
-    warnings = soft + ownership_skips   # 归属护栏跳过同样钉 item（审计 r2 S1：留痕随交付物同行）
+    isolated_issues = [
+        f"LLM 富化字段 {field} 已隔离：本阶段不生成设计候选/验收标准"
+        for field in isolated_fields
+    ]
+    warnings = soft + ownership_skips + isolated_issues  # 隔离字段也随交付物留痕
     if warnings:
         item["enrichment_warnings"] = warnings
     else:
         item.pop("enrichment_warnings", None)   # 重富化后旧警告不残留
-    issues = fabricated_issues + reason_issues + clarify_issues + ownership_skips + (
+    issues = fabricated_issues + reason_issues + clarify_issues + ownership_skips + isolated_issues + (
         [f"富化软提示（数字/遗漏漂移，未阻断，请对照 source_quote 核）: {'; '.join(soft)}"] if soft else [])
     return True, issues
 

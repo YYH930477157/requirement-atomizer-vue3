@@ -2294,3 +2294,9 @@ CLI 契约见 `docs/cli-contract.md`（对接公司任务管理系统的接口�
 - `requirements_analysis_agent.validate_llm_item` 现在只针对生成的 `software_requirement_text` 检查源文参数数字；`task 0`、`AI-REQ-0012`、`block-7` 等对齐标识不会充当业务参数。源文参数遗漏在 `_apply_llm_item` 采纳生成候选后强制降级为 `待澄清`，并保留候选到审计回退字段，不再以软提示直接交付。
 - 富化提示明确禁止把原文没有证据的状态、接口、日志、存储、时序、容量、默认值和异常行为写入正文、指引或验收标准；版本升至 `analyze-llm-v9` / `analyze-unfounded-v5`，旧缓存不会静默复用。
 - 验证：分析、缓存、Excel、深度富化和护栏定向回归共 165 项通过，源码编译与 `git diff --check` 通过。
+
+## 2026-09-25 收窄默认分析富化职责
+
+- 默认富化改为“一主两辅”：只由 LLM 生成证据保真的软件需求正文、明确有据的研发指引和待澄清/假设记录；`design_options` 与 `acceptance_criteria` 保留在 schema 中，但本阶段不采纳模型写入，避免把架构设计和测试设计混入需求事实。
+- 隔离字段即使出现在模型响应中也不会进入结果、回退候选或澄清问题；按条目留审计警告。富化版本升至 `analyze-llm-v10`，旧缓存自动失效。
+- 验证：需求分析、富化护栏、缓存和模板回归共 198 项通过，`git diff --check` 通过。

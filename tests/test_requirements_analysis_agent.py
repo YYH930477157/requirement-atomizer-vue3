@@ -14,8 +14,18 @@ class BuildAnalysisPromptTests(unittest.TestCase):
         prompt = build_analysis_prompt([req], vocab)
 
         assert "电表软件需求分析工程师" in prompt["system"]
-        assert "不能只翻译" in prompt["user"]
+        assert "证据保真富化" in prompt["user"]
         assert "时钟需求" in prompt["user"]
+
+    def test_prompt_uses_evidence_first_scope(self) -> None:
+        prompt = build_analysis_prompt(
+            [{"ai_req_id": "AI-1", "source_quote": "The meter shall retain 16 years of data."}],
+            {"modules": []})
+
+        assert "证据保真富化" in prompt["user"]
+        assert "design_options: 默认输出空数组" in prompt["user"]
+        assert "acceptance_criteria: 默认输出空数组" in prompt["user"]
+        assert "不得自行提出队列、缓存、接口分层" in prompt["user"]
 
 
 class TemplateRefsPromptTests(unittest.TestCase):

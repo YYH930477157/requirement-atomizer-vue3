@@ -68,7 +68,7 @@ class W1PromptTests(unittest.TestCase):
         self.assertIn("【文档背景】", user)
         self.assertIn("【所在条款原文", user)
         self.assertIn("同模块相邻需求标题", user)
-        self.assertIn("连贯的自然段成文", user)          # W2 输出要求
+        self.assertIn("1-2 段忠实表达", user)            # 收窄为证据保真改写
         self.assertIn("夏令时", user)                     # 本模块 submodule 保留
         self.assertNotIn("电能", user)                    # 他模块 submodule 不再全量注入
 

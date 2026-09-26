@@ -604,7 +604,9 @@ class LlmEnrichmentTests(unittest.TestCase):
             item = payload["items"][0]
             assert item["software_requirement_text"].startswith("监听掉电中断")
             assert item["developer_guidance"] == ["订阅掉电中断", "环形缓冲 100 条"]
-            assert item["acceptance_criteria"]
+            assert item["acceptance_criteria"] == []  # 默认富化隔离验收标准
+            assert any("acceptance_criteria" in issue
+                       for issue in item.get("enrichment_warnings", []))
             assert item["analysis_source"] == "llm"
             # 结构/归属字段冻结：LLM 给的 ownership=hardware 不得生效（规则判 software）
             assert item["ownership"] == "software"

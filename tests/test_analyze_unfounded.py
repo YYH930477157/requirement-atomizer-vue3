@@ -1,7 +1,8 @@
 """Agent Phase 2 WP2：软件需求无依据富化字段强制"待澄清"的确定性规则测试。
 
-冻结点：仅富化叙述字段（software_requirement_text/hardware_dependency/developer_guidance/
-design_options/acceptance_criteria）；确定性 join 字段（id/归属/引句/模块）永不标；
+冻结点：默认仅富化证据正文/硬件依赖/研发指引/澄清问题；design_options 和
+acceptance_criteria 由后续专家/规则阶段负责，本步骤不接收 LLM 写入；确定性 join 字段
+（id/归属/引句/模块）永不标；
 只对"无依据"下手——有据字段逐字节不变（质量问题归专家审查,不归确定性层）。
 """
 from __future__ import annotations
@@ -63,8 +64,8 @@ class RejectedEnrichmentMarkingTests(unittest.TestCase):
         self.assertTrue(any("编造结构编码" in msg for msg in issues))
         self.assertEqual(item["software_requirement_text"], CLARIFY_MARK)
         self.assertEqual(item["developer_guidance"], [CLARIFY_MARK])
-        self.assertEqual(item["design_options"], [CLARIFY_MARK])
-        self.assertEqual(item["acceptance_criteria"], [CLARIFY_MARK])
+        self.assertEqual(item["design_options"], [])
+        self.assertEqual(item["acceptance_criteria"], [])
         # 纯软件项 hardware_dependency 留空是设计语义,非"无依据"——不标
         self.assertEqual(item["hardware_dependency"], "")
         # 确定性 join 字段（归属/id）永不标
@@ -77,7 +78,7 @@ class RejectedEnrichmentMarkingTests(unittest.TestCase):
         _apply_llm_item(item, SOURCE, {"software_requirement_text": "写入 0-0:96.1.7。"}, CTX)
 
         questions = item["open_questions"]
-        self.assertEqual(len(questions), 4)   # 正文 + 研发指引/设计候选/验收标准
+        self.assertEqual(len(questions), 3)   # 正文 + 研发指引/澄清字段
         self.assertTrue(all("待澄清" in q for q in questions))
         self.assertTrue(all("内部核对" in q for q in questions))
         self.assertTrue(any("软件需求正文" in q for q in questions))
@@ -153,7 +154,8 @@ class AcceptedEnrichmentFieldDowngradeTests(unittest.TestCase):
 
         self.assertTrue(ok)
         self.assertEqual(item["software_requirement_text"], "Log tamper events deterministically.")
-        self.assertEqual(item["acceptance_criteria"], ["Trigger a tamper event; it appears in the log."])
+        self.assertEqual(item["acceptance_criteria"], [])  # 隔离字段不接收 LLM 写入
+        self.assertTrue(any("acceptance_criteria" in msg for msg in _issues))
         self.assertEqual(item["open_questions"], [])
 
     def test_enum_step_markers_are_not_unfounded(self) -> None:
@@ -287,7 +289,7 @@ class FailedEnrichmentMarkingTests(unittest.TestCase):
         self.assertEqual(item["software_requirement_text"], CLARIFY_MARK)
         self.assertEqual(item["clarify_fallback"]["software_requirement_text"],
                          "The meter shall log tamper events.")
-        self.assertEqual(item["design_options"], [CLARIFY_MARK])
+        self.assertEqual(item["design_options"], [])
         self.assertTrue(any("待澄清" in q for q in item["open_questions"]))
 
     def test_co_design_failure_also_marks_hardware_dependency(self) -> None:
@@ -323,11 +325,12 @@ class FabricatedFieldLevelRejectionTests(unittest.TestCase):
         self.assertTrue(ok)                                  # 部分采纳（整体不再一刀切拒绝）
         self.assertEqual(item["software_requirement_text"], CLARIFY_MARK)   # 编造字段照标
         self.assertEqual(item["developer_guidance"], ["Log tamper events deterministically."])
-        self.assertEqual(item["acceptance_criteria"], ["Trigger a tamper event; it appears in the log."])
+        self.assertEqual(item["acceptance_criteria"], [])
         self.assertEqual(item["analysis_source"], "llm")
         self.assertEqual(item["clarify_fallback"]["software_requirement_text"],
                          "The meter shall log tamper events.")   # base 兜底保留
         self.assertTrue(any("拒收该字段" in msg for msg in issues))
+        self.assertTrue(any("acceptance_criteria" in msg for msg in issues))
 
     def test_fabricated_guidance_clean_body_survives(self) -> None:
         """编造码在交付列表字段（guidance）——只拒该字段,正文照常采纳。"""
@@ -340,8 +343,8 @@ class FabricatedFieldLevelRejectionTests(unittest.TestCase):
 
         self.assertTrue(ok)
         self.assertEqual(item["software_requirement_text"], "Log tamper events deterministically.")
-        self.assertEqual(item["design_options"], [CLARIFY_MARK])   # base 空 → 标待澄清
-        self.assertTrue(any("设计候选" in q for q in item["open_questions"]))
+        self.assertEqual(item["design_options"], [])  # 隔离字段不接收 LLM 写入
+        self.assertTrue(any("设计候选" in msg for msg in _issues))
 
     def test_fabricated_guidance_with_grounded_base_keeps_base(self) -> None:
         """base 非空=源文有据——字段级拒收同样逐字节保留,不因 LLM 编造毁掉有据内容。"""
@@ -379,8 +382,8 @@ class FabricatedFieldLevelRejectionTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(item["software_requirement_text"], CLARIFY_MARK)
         self.assertEqual(item["developer_guidance"], [CLARIFY_MARK])
-        self.assertEqual(item["design_options"], [CLARIFY_MARK])
-        self.assertEqual(item["acceptance_criteria"], [CLARIFY_MARK])
+        self.assertEqual(item["design_options"], [])
+        self.assertEqual(item["acceptance_criteria"], [])
         self.assertTrue(any("编造结构编码" in msg for msg in issues))
 
     def test_no_fabricated_code_survives_in_any_field(self) -> None:
@@ -422,10 +425,10 @@ class FabricatedFieldLevelRejectionTests(unittest.TestCase):
              "acceptance_criteria": ["Trigger a tamper event; it appears in the log."]},
             CTX)
 
-        self.assertTrue(ok)
+        self.assertFalse(ok)
         self.assertEqual(item["software_requirement_text"], CLARIFY_MARK)
         self.assertEqual(item["developer_guidance"], [CLARIFY_MARK])
-        self.assertEqual(item["acceptance_criteria"], ["Trigger a tamper event; it appears in the log."])
+        self.assertEqual(item["acceptance_criteria"], [])
 
     def test_unattributable_fabrication_adopts_clean_fields_with_trace(self) -> None:
         """编造码只在不可采纳字段（如 requirement,本就不进交付物）——干净字段照常采纳,
@@ -477,20 +480,21 @@ class StrListFieldPayloadParityTests(unittest.TestCase):
 
         item, ok, issues = self._apply(self.EVENT_POC)
         self.assertTrue(ok)                                    # 正文干净照常采纳
-        self.assertTrue(any("拒收该字段" in msg and "G-SGX-EY" in msg for msg in issues))
+        self.assertTrue(any("隔离字段" in msg and "G-SGX-EY" in msg for msg in issues))
         self.assertNotIn("G-SGX-EY", json.dumps(item, ensure_ascii=False))   # 全 item JSON 无编造码
-        self.assertEqual(item["design_options"], [CLARIFY_MARK])             # base 空 → 标待澄清
+        self.assertEqual(item["design_options"], [])                         # 隔离字段保持空
 
     def test_str_obis_downgraded_and_absent_from_entire_item(self) -> None:
         """PoC2：str 载荷里的 OBIS 必须走编码硬拒（字段级拒收）,而不是只触发数字软标后
         把含编造码的原始值落进 clarify_fallback——澄清通道同样不得携带编造码。"""
         item, ok, issues = self._apply(self.OBIS_POC)
         self.assertTrue(ok)
-        self.assertTrue(any("拒收该字段" in msg and "0-0:96.1.7.255" in msg for msg in issues))
+        self.assertTrue(any("隔离字段" in msg and "0-0:96.1.7.255" in msg for msg in issues))
         # 编造码绝不出现在交付 item 的任何角落（字段/open_questions/clarify_fallback/
         # enrichment_warnings 全覆盖——直接扫整个序列化 JSON）
         self.assertNotIn("0-0:96.1.7.255", json.dumps(item, ensure_ascii=False))
-        self.assertTrue(any("待澄清" in q for q in item["open_questions"]))
+        self.assertTrue(any("隔离字段" in msg for msg in issues))
+        self.assertFalse(any("0-0:96.1.7.255" in q for q in item["open_questions"]))
 
     def test_str_payload_matches_equivalent_list_payload_outcome(self) -> None:
         """等价性：str 载荷与 list 载荷（["同一字符串"]）结局必须逐字节一致——
@@ -515,7 +519,7 @@ class StrListFieldPayloadParityTests(unittest.TestCase):
 
 class VersionAndCacheFingerprintTests(unittest.TestCase):
     def test_prompt_version_bumped(self) -> None:
-        self.assertEqual(ANALYZE_PROMPT_VERSION, "analyze-llm-v9")
+        self.assertEqual(ANALYZE_PROMPT_VERSION, "analyze-llm-v10")
 
     def test_enrich_key_covers_unfounded_rule_version(self) -> None:
         """确定性后处理（待澄清规则）版本必须进 analyze_enrich_cache 指纹（AGENTS.md 纪律）。"""
