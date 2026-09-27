@@ -2338,3 +2338,10 @@ CLI 契约见 `docs/cli-contract.md`（对接公司任务管理系统的接口�
 - 右侧需求卡改为决策优先：常驻审查建议、来源证据状态、中文功能需求摘要和核心功能行为；前置条件、数据约束、变体、子项、参数表收进“更多结构化字段”，研发指引、验收提示和归属理由收进“辅助研判”，模块与归属编辑收进“裁决字段”。
 - 接受、拒绝、讨论保留在右侧底部的 sticky 裁决区；新增证据状态与审查建议的确定性投影，不改变需求抽取、证据锚点或富化字段边界。Vue 工作台和独立 `document_annotation.html` 同步布局与文案。
 - 验证：UI 全套 310 项通过（新增决策优先面板断言），`DocumentReview.spec.ts` 76 项通过；批注导出定向 159 项通过；`npm run build`、Python 编译通过。
+
+## 2026-09-27 项目架构图与目录清理
+
+- 新增 `docs/architecture.md` 作为 Mermaid 架构图源文件，并生成 `docs/architecture.svg` 作为可直接预览和嵌入文档的静态图；图中区分默认功能需求轨、LLM 基础设施、结果包边界和显式 Legacy A 兼容轨。
+- 清理误提交的根目录 `!` 文件（内容为历史测试输出，约 278 KB），并清理被 `.gitignore` 保护的 `.tmp/` 本地审查临时目录（约 449 KB）。
+- `.venv/`、`build/`、`build-electron-backend/`、`dist-backend/`、`out/`、`ui/node_modules/` 和 `ui/dist/` 属于本机环境、构建产物或用户结果，保留在本地且不进入提交。
+- 验证：Mermaid CLI 生成 SVG 成功，`git diff --check` 通过；本次只涉及文档和目录清理，未改变运行时代码。
