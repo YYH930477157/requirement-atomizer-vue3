@@ -4,7 +4,7 @@ import App from "../App.vue"
 
 enableAutoUnmount(afterEach)
 
-const ALL_STAGES_OFF = JSON.stringify({
+const DEFAULT_RUN_STAGES = JSON.stringify({
   llmReview: true,
   aiExtract: false, assemble: false, analyze: false, compose: false, annotationHtml: false,
 })
@@ -33,7 +33,7 @@ async function openReview(wrapper: ReturnType<typeof mount>) {
 describe("review workspace shell", () => {
   beforeEach(() => {
     // 默认「运行」只跑基础解析+审查，不追加交付物链——各测试按需在 mount 前开启对应阶段
-    localStorage.setItem("ratomizer.runStages.v4", ALL_STAGES_OFF)
+    localStorage.setItem("ratomizer.runStages.v4", DEFAULT_RUN_STAGES)
   })
   afterEach(() => {
     vi.restoreAllMocks()
@@ -160,7 +160,7 @@ describe("review workspace shell", () => {
     expect(wrapper.find('[data-testid="run-stage-llm-review"]').attributes("aria-current")).toBe("step")
     expect(wrapper.find('[data-testid="run-stage-llm-review"] .stage-signal').exists()).toBe(true)
     expect(wrapper.find('[data-testid="run-relay-atomize"]').classes()).toContain("relay-handoff")
-    expect(wrapper.find('[data-testid="run-relay-llm-review"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="run-relay-llm-review"]').classes()).toContain("relay-ready")
 
     progressHandler({ stage: "llm_review", completed: 2, total: 2, percent: 100 })
     await flushPromises()
@@ -183,7 +183,7 @@ describe("review workspace shell", () => {
     const atomize = wrapper.find('[data-testid="run-stage-atomize"]')
     expect(atomize.classes()).toContain("stage-running")
     expect(atomize.find(".stage-bar").classes()).toContain("is-indeterminate")
-    expect(wrapper.find('[data-testid="run-progress"]').text()).toContain("动效演示 1/2")
+    expect(wrapper.find('[data-testid="run-progress"]').text()).toContain("动效演示 1/3")
     expect(wrapper.find('[data-testid="run-progress"]').text()).toContain("0%")
     expect(getApiSession).not.toHaveBeenCalled()
     expect(getLlmSettings).not.toHaveBeenCalled()
@@ -1175,8 +1175,8 @@ describe("review workspace shell", () => {
         outDir: "E:\\out\\abnt",
         skipReview: false,
         track: "legacy_a",
-        llmRoute: undefined,
-        reviewScope: undefined,
+        llmRoute: "openai_compatible",
+        reviewScope: "targeted",
         chunkChars: 3500,
         domainPackDir: "domain_packs/dlms_cosem",
         paragraphMode: "layout",
@@ -1185,16 +1185,16 @@ describe("review workspace shell", () => {
         paragraphVisionMaxRegions: 5,
         paragraphVisionMaxCalls: 5,
         paragraphVisionMaxTokens: 100000,
-        semanticMode: "deterministic",
+        semanticMode: "llm",
         semanticRoute: "openai_compatible",
       })
     })
-    // 单次 Run 自动接上后端 chain（LLM 关 → stub）
+    // 单次 Run 自动接上后端 chain（默认 LLM 开启 → openai_compatible）
     await vi.waitFor(() => {
       expect(window.ratomizerDesktop?.runChain).toHaveBeenCalledWith({
         outDir: "E:\\out\\abnt",
-        stages: ["functional-extract"],
-        llmRoute: "stub",
+        stages: ["functional-extract", "full-translation"],
+        llmRoute: "openai_compatible",
       })
     })
     await vi.waitFor(() => {
@@ -1203,12 +1203,12 @@ describe("review workspace shell", () => {
     expect(startResultPackage).toHaveBeenCalledWith({
       outDir: "E:\\out\\abnt",
       inputPath: "C:\\input\\Appendix 9.docx",
-      stages: ["atomize", "llm-review", "functional-extract"],
+      stages: ["atomize", "llm-review", "functional-extract", "full-translation"],
     })
     expect(completeResultPackage).toHaveBeenCalledWith({
       outDir: "E:\\out\\abnt",
       runId: "RUN-ui-lifecycle",
-      completedStages: ["atomize", "llm-review", "functional-extract"],
+      completedStages: ["atomize", "llm-review", "functional-extract", "full-translation"],
     })
     expect(wrapper.find('[data-testid="result-package-status"]').text()).toContain("已完成")
     expect(wrapper.find('[data-testid="api-message"]').text()).toContain("功能需求直抽")
@@ -1731,7 +1731,7 @@ describe("review workspace shell", () => {
         paragraphVisionMaxRegions: 5,
         paragraphVisionMaxCalls: 5,
         paragraphVisionMaxTokens: 100000,
-        semanticMode: "deterministic",
+        semanticMode: "llm",
         semanticRoute: "openai_compatible",
       })
     })
@@ -1815,7 +1815,7 @@ describe("review workspace shell", () => {
 
     await vi.waitFor(() =>
       expect(window.ratomizerDesktop?.runPipeline).toHaveBeenCalledWith(
-        expect.objectContaining({ skipReview: true, track: "functional", llmRoute: undefined })))
+        expect.objectContaining({ skipReview: true, track: "functional", llmRoute: "openai_compatible" })))
   })
 
   it("shows module and precise backend classification for ABNT extracted rows", async () => {

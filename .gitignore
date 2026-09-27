@@ -23,11 +23,14 @@ blue_book_index.json
 # OfficeCLI 平台二进制由安装器在构建机下载，不能提交单一平台文件
 vendor/officecli/officecli
 vendor/officecli/officecli.exe
+vendor/officecli/*.old
 
 
 # 本机构建产物与会话日志（2026-08-15 评审：防 git add -A 入库 ~704MB）
 ui/.pkg-backup/
+ui/dist-check-zh*/
 ui/dist-open-existing/
 ui/ui-dev-server.log
 session-archive/
 .qoder/
+.tmp/

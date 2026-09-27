@@ -1073,6 +1073,9 @@ class DocAnnotationExportTests(unittest.TestCase):
         self.assertNotIn('data-repair-block=', rendered)
         self.assertIn('class="failed-extraction-tag"', rendered)
         self.assertIn("const REPAIR_AUDIT =", rendered)
+        self.assertIn("function extractionFailureHtml(blockId)", rendered)
+        self.assertNotIn("function repairAuditHtml", rendered)
+        self.assertNotIn("selectRepairAudit", rendered)
         self.assertIn("function selectFailedExtraction(blockId)", rendered)
         self.assertIn('e.target.closest("[data-failed-block]")', rendered)
         self.assertIn("i sobliged", rendered)
@@ -1097,6 +1100,20 @@ class DocAnnotationExportTests(unittest.TestCase):
         self.assertEqual(rendered.count("点击原文段落或页边编号查看解析结果"), 2)
         self.assertNotIn("点击批注标记查看详情", rendered)
         self.assertIn("未生成需求摘要", rendered)
+
+    def test_summary_projection_keeps_chinese_behavior_fallback_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            _seed(out)
+            rendered = dae.render_annotation_html(out)
+
+        # The static renderer must retain the same fallback order as the Vue
+        # review card: translated objective, translated behaviors, then the
+        # untranslated functional fields. This guards the two projections
+        # against reintroducing the English-description regression.
+        self.assertIn("const behaviorsZh = Array.isArray(r.functional_behaviors_zh)", rendered)
+        self.assertIn('return summarySectionHtml(behaviorsZh.join("；"));', rendered)
+        self.assertNotIn('String(r.functional_objective_zh || r.description || "").trim()', rendered)
 
     def test_pdf_zoom_floor_tracks_the_current_container(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

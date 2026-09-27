@@ -3872,7 +3872,7 @@ function selectClaim(claimId) {{
     '</div>';
 }}
 
-function repairAuditHtml(blockId) {{
+function extractionFailureHtml(blockId) {{
   const audit = REPAIR_AUDIT[blockId];
   if (!audit) return "";
   return audit.extraction_failed
@@ -3891,7 +3891,7 @@ function selectFailedExtraction(blockId) {{
   document.getElementById("detail").innerHTML =
     '<div class="annotation-card detail-card"><div class="dd-head"><span class="dd-module">抽取失败</span>'+
     '<span class="badge">需重跑</span></div><div class="dd-title">该章节未完成需求抽取</div>'+
-    repairAuditHtml(blockId)+'</div>';
+    extractionFailureHtml(blockId)+'</div>';
 }}
 
 function echoTargets(reqIds) {{
@@ -3980,7 +3980,7 @@ function selectContextBlock(blk) {{
   if (echoTag) {{
     // 重复段卡片：本段解析（翻译/引用）+ 全部汇总条目，不再只保留第一条。
     const reqIds = (echoTag.getAttribute("data-echo-reqs") || "").split(/\s+/).filter(Boolean);
-    document.getElementById("detail").innerHTML = echoDetailsHtml(reqIds, text, translation, note, 0)+repairAuditHtml(bid);
+    document.getElementById("detail").innerHTML = echoDetailsHtml(reqIds, text, translation, note, 0)+extractionFailureHtml(bid);
     bindEchoJumps();
     return;
   }}
@@ -3991,7 +3991,7 @@ function selectContextBlock(blk) {{
     '<div class="dd-body">'+esc(CONTEXT_REASON)+'</div>'+
     translationHtml+
     (text ? '<div class="dd-label">原文引用</div><div class="dd-quote">'+esc(text)+'</div>' : '')+
-    repairAuditHtml(bid)+
+    extractionFailureHtml(bid)+
     '</div>';
 }}
 
@@ -4021,7 +4021,7 @@ function renderOmissionDetails(text, translation, note, page, blockId) {{
     '<div class="dd-title">为什么标为未覆盖</div>'+location+
     '<div class="dd-body">'+esc(OMISSION_REASON)+'</div>'+translationHtml+
     (text ? '<div class="dd-label">原文引用</div><div class="dd-quote">'+esc(text)+'</div>' : '')+
-    repairAuditHtml(blockId || "")+
+    extractionFailureHtml(blockId || "")+
     '</div>';
 }}
 
@@ -4074,7 +4074,7 @@ function selectPdfContextRecord(blockId, info, clickedPage) {{
      : info.translation_note ? '<div class="dd-body dd-empty">翻译未通过防幻觉校验，保留原文（'+esc(info.translation_note)+'）</div>'
      : '<div class="dd-body dd-empty">未生成翻译（开启 LLM 后重新导出批注 HTML 可自动补齐）</div>')+
     (info.text ? '<div class="dd-label">原文引用</div><div class="dd-quote">'+esc(info.text)+'</div>' : '')+
-    repairAuditHtml(blockId)+
+    extractionFailureHtml(blockId)+
     '</div>';
 }}
 
@@ -4091,7 +4091,7 @@ function selectPdfEchoRecord(blockId, info, clickedPage) {{
   paintZoneSelection(blockId);
   document.getElementById("detail").innerHTML = echoDetailsHtml(
     info.echo_req_ids || [], info.text || "", info.translation || "",
-    info.translation_note || "", sourcePage)+repairAuditHtml(blockId);
+    info.translation_note || "", sourcePage)+extractionFailureHtml(blockId);
   bindEchoJumps();
 }}
 
@@ -4108,7 +4108,7 @@ function selectPdfCoveredRecord(blockId, info, clickedPage) {{
   paintZoneSelection(blockId);
   document.getElementById("detail").innerHTML = coveredDetailsHtml(
     info.covered_req_ids || [], info.text || "", info.translation || "",
-    info.translation_note || "", sourcePage)+repairAuditHtml(blockId);
+    info.translation_note || "", sourcePage)+extractionFailureHtml(blockId);
   bindEchoJumps();
 }}
 
@@ -4124,7 +4124,7 @@ function selectPdfRequirementGroup(blockId, info, reqIds, clickedPage) {{
   document.querySelectorAll(".pdf-source-zone").forEach(zone => zone.classList.remove("selected"));
   paintZoneSelection(blockId);
   document.getElementById("detail").innerHTML = requirementGroupDetailsHtml(
-    reqIds, info.text || "", info.translation || "", info.translation_note || "", sourcePage)+repairAuditHtml(blockId);
+    reqIds, info.text || "", info.translation || "", info.translation_note || "", sourcePage)+extractionFailureHtml(blockId);
   bindEchoJumps();
 }}
 
@@ -4252,7 +4252,7 @@ function select(id) {{
   const functionalHtml = isHardware ? "" : functionalMembershipHtml(r);
   const primaryHtml = summaryHtml + sourceQuoteHtml + (isHardware ? hardwareTranslationHtml(r) : functionalHtml);
   const detailHtml = isHardware ? "" : subItemsHtml(r) + thresholdHtml(r);
-  const repairHtml = repairAuditHtml(String(r.anchor_block_id || (r.source_block_ids||[])[0] || ""));
+  const failureHtml = extractionFailureHtml(String(r.anchor_block_id || (r.source_block_ids||[])[0] || ""));
   const opts = MODULE_VOCAB.map(m => '<option value="'+esc(m)+'"></option>').join("");
   const ownershipOptions = [
     ["", "自动/不覆盖"],
@@ -4274,7 +4274,7 @@ function select(id) {{
     ((r.consistency_flags||[]).length ? '<div class="dd-consistency">⇄ 全文档一致性：'+esc((r.consistency_flags||[]).join("；"))+'</div>' : '')+
     primaryHtml+
     detailHtml+
-    repairHtml+
+    failureHtml+
     (dev ? '<div class="dd-label">研发指引 / 落地实现</div><ul class="dd-list">'+dev+'</ul>' : '')+
     (acc ? '<div class="dd-label">测试指引 / 验收</div><ul class="dd-list">'+acc+'</ul>' : '')+
     ownershipReasonHtml(r)+

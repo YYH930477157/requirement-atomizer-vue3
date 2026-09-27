@@ -2325,3 +2325,10 @@ CLI 契约见 `docs/cli-contract.md`（对接公司任务管理系统的接口�
 - 复核发现旧结果在缺少 `functional_objective_zh` 时直接把英文 `description` 显示为“功能需求摘要”，即使同一条需求已经有 `functional_behaviors_zh` 和中文分析字段；这是展示投影回退顺序错误，不是原文或需求抽取内容错误。
 - Vue 审核界面与独立批注 HTML 现在按“中文功能目标 → 中文功能行为 → 功能目标 → 抽取描述”回退；中文行为按原顺序合并展示，避免中文结果混入英文摘要。
 - 验证：`DocumentReview.spec.ts` 76 项、`tests.test_doc_annotation_export` 158 项通过，生产构建、Python 编译和 `git diff --check` 通过；已用现有缓存零付费重新导出 `out/ts-novy-nepriamy-elektromer-mimo-v2.6-flash-full-20260926-rerun-v12/document_annotation.html`。
+
+## 2026-09-26 项目级 Archify 复核收口
+
+- 项目级复核发现 UI 测试仍按旧的“LLM 默认关闭/两阶段演示”契约断言；测试已改为验证当前默认 LLM 路径、三阶段演示和全文翻译阶段，完整 UI 套件恢复为 310/310 通过。
+- 静态批注导出保留抽取失败提示，但移除废弃的“原文修复审计”函数命名与调用语义；新增静态摘要回退契约测试，避免 Vue 与 HTML 两套投影再次出现英文摘要分叉。
+- `.tmp`、`ui/dist-check-zh*` 和 `vendor/officecli/*.old` 纳入忽略规则，避免本地检查物和旧平台二进制进入提交。
+- 验证：UI 310 项通过；需求分析、功能抽取及批注导出定向测试 329 项通过；生产构建、Python 编译和 `git diff --check` 通过。
