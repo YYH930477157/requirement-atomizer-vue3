@@ -1352,6 +1352,24 @@ function requirementSummaryOf(r: AiRequirement): string {
   if (objective) return objective
   return String(r.description || "").trim()
 }
+function evidenceLabelOf(r: AiRequirement): string {
+  if (r.needs_reconfirmation) return "证据已变化"
+  if (reviewRequiredOf(r)) return "来源待确认"
+  if (String(r.source_quote || "").trim() || (r.source_block_ids || []).length) return "来源已定位"
+  return "来源未定位"
+}
+function reviewHintOf(r: AiRequirement): string {
+  if (r.needs_reconfirmation) return "证据已变化，建议重新核对"
+  if (reviewRequiredOf(r)) return "先核对来源，再决定是否接受"
+  if ((r.suspicion_reasons || []).length || (r.functional_conflict_flags || []).length) return "存在风险提示，建议优先复核"
+  return "信息完整，可直接裁决"
+}
+function requirementFactCountOf(r: AiRequirement): number {
+  return (r.functional_behaviors_zh || r.functional_behaviors || []).length
+    + (r.functional_preconditions_zh || r.functional_preconditions || []).length
+    + (r.functional_data_constraints_zh || r.functional_data_constraints || []).length
+    + (r.functional_variants || []).length
+}
 // 跨章合并徽章（双渲染器契约字段——与 doc_annotation_export functionalMergeBadge 同语义,
 // 契约夹具锁文案）：单源不显示（置信恒 1.0 是噪声）;置信 < 0.9 提示核对（弱合并最易错并）
 function mergeBadgeOf(r: AiRequirement): string {
@@ -2376,96 +2394,90 @@ onMounted(() => {
           </div>
 
           <div class="dd-legend">{{ viewMode === "pdf" ? "左侧原版页面为核对依据，右侧为解析结果" : "解析文本可能丢失原版字形与间距，请用原版核对来源" }}</div>
+          <div class="dd-decision-bar" data-testid="dd-decision-summary">
+            <div class="dd-decision-copy">
+              <div class="dd-decision-kicker">审查建议</div>
+              <strong>{{ reviewHintOf(selectedReq) }}</strong>
+              <span>{{ evidenceLabelOf(selectedReq) }} · 先看摘要，再展开证据和低频字段</span>
+            </div>
+            <span class="dd-evidence-chip" :class="'tone-' + (evidenceLabelOf(selectedReq) === '来源已定位' ? 'good' : 'warn')"
+                  data-testid="dd-evidence-strip">{{ evidenceLabelOf(selectedReq) }}</span>
+          </div>
           <div class="dd-section dd-result-primary" data-testid="dd-requirement-summary">
-            <div class="dd-label">功能需求摘要</div>
+            <div class="dd-section-heading"><div class="dd-label">功能需求摘要</div><span class="dd-section-hint">中文投影</span></div>
             <div class="dd-body">{{ requirementSummaryOf(selectedReq) || "未生成需求摘要" }}</div>
           </div>
           <details class="dd-section dd-collapsible" v-if="selectedReq.source_quote">
             <summary><span>原文依据</span><small>对照左侧原文</small></summary>
             <div class="dd-quote">{{ selectedReq.source_quote }}</div>
           </details>
-          <div class="dd-section" v-if="ownershipOf(selectedReq) !== 'hardware' && selectedReq.functional_requirement_id" data-testid="dd-functional">
-            <div class="dd-label">所属研发功能</div>
-            <div class="dd-body"><strong>{{ selectedReq.functional_title || selectedReq.functional_requirement_id }}</strong></div>
-            <div v-if="mergeBadgeOf(selectedReq)" :class="mergeWarnOf(selectedReq) ? 'dd-suspicion' : 'dd-consistency'"
-                 data-testid="dd-merge">⧉ {{ mergeBadgeOf(selectedReq) }}</div>
-            <div v-if="!selectedReq.functional_objective_zh && selectedReq.functional_objective" class="dd-body">{{ selectedReq.functional_objective }}</div>
+          <section class="dd-section dd-facts" v-if="ownershipOf(selectedReq) !== 'hardware' && selectedReq.functional_requirement_id" data-testid="dd-functional">
+            <div class="dd-section-heading"><div><div class="dd-label">需求事实</div><span class="dd-section-hint">已从原文抽取</span></div><span class="dd-count">{{ requirementFactCountOf(selectedReq) }} 项</span></div>
+            <div class="dd-fact-primary">
+              <div class="dd-label">所属研发功能</div>
+              <div class="dd-body"><strong>{{ selectedReq.functional_title || selectedReq.functional_requirement_id }}</strong></div>
+              <div v-if="mergeBadgeOf(selectedReq)" :class="mergeWarnOf(selectedReq) ? 'dd-suspicion' : 'dd-consistency'"
+                   data-testid="dd-merge">⧉ {{ mergeBadgeOf(selectedReq) }}</div>
+            </div>
+            <div v-if="!selectedReq.functional_objective_zh && selectedReq.functional_objective" class="dd-fact-note">{{ selectedReq.functional_objective }}</div>
             <template v-if="(selectedReq.functional_behaviors_zh || selectedReq.functional_behaviors || []).length">
               <div class="dd-label">功能行为</div>
               <ul class="dd-list"><li v-for="(b, i) in (selectedReq.functional_behaviors_zh || selectedReq.functional_behaviors)" :key="i">{{ b }}</li></ul>
             </template>
-            <template v-if="(selectedReq.functional_preconditions_zh || selectedReq.functional_preconditions || []).length">
-              <div class="dd-label">前置条件</div>
-              <ul class="dd-list"><li v-for="(p, i) in (selectedReq.functional_preconditions_zh || selectedReq.functional_preconditions)" :key="i">{{ p }}</li></ul>
-            </template>
-            <template v-if="(selectedReq.functional_data_constraints_zh || selectedReq.functional_data_constraints || []).length">
-              <div class="dd-label">数据约束</div>
-              <ul class="dd-list"><li v-for="(c, i) in (selectedReq.functional_data_constraints_zh || selectedReq.functional_data_constraints)" :key="i">{{ c }}</li></ul>
-            </template>
-            <template v-if="(selectedReq.functional_variants || []).length">
-              <div class="dd-label">功能变体</div>
-              <ul class="dd-list"><li v-for="(v, i) in selectedReq.functional_variants" :key="i"><strong>{{ v.name || "变体" }}</strong>：{{ v.behavior || "" }}</li></ul>
-            </template>
             <div v-if="(selectedReq.functional_conflict_flags || []).length" class="dd-suspicion"
                  data-testid="dd-conflict">待澄清冲突：{{ (selectedReq.functional_conflict_flags || []).join("；") }}</div>
-          </div>
+            <details v-if="(selectedReq.functional_preconditions_zh || selectedReq.functional_preconditions || []).length || (selectedReq.functional_data_constraints_zh || selectedReq.functional_data_constraints || []).length || (selectedReq.functional_variants || []).length || (selectedReq.sub_items || []).length || (selectedReq.threshold_table && (selectedReq.threshold_table.rows || []).length)" class="dd-inline-details">
+              <summary><span>更多结构化字段</span><small>前置条件、数据约束、参数与子项</small></summary>
+              <template v-if="(selectedReq.functional_preconditions_zh || selectedReq.functional_preconditions || []).length">
+                <div class="dd-label">前置条件</div>
+                <ul class="dd-list"><li v-for="(p, i) in (selectedReq.functional_preconditions_zh || selectedReq.functional_preconditions)" :key="i">{{ p }}</li></ul>
+              </template>
+              <template v-if="(selectedReq.functional_data_constraints_zh || selectedReq.functional_data_constraints || []).length">
+                <div class="dd-label">数据约束</div>
+                <ul class="dd-list"><li v-for="(c, i) in (selectedReq.functional_data_constraints_zh || selectedReq.functional_data_constraints)" :key="i">{{ c }}</li></ul>
+              </template>
+              <template v-if="(selectedReq.functional_variants || []).length">
+                <div class="dd-label">功能变体</div>
+                <ul class="dd-list"><li v-for="(v, i) in selectedReq.functional_variants" :key="i"><strong>{{ v.name || "变体" }}</strong>：{{ v.behavior || "" }}</li></ul>
+              </template>
+              <div class="dd-section" v-if="(selectedReq.sub_items || []).length">
+                <div class="dd-label">子项要求（二级）</div>
+                <ul class="dd-list" data-testid="dd-subitems"><li v-for="(it, i) in selectedReq.sub_items" :key="i"><strong>{{ it.label || "·" }})</strong> {{ it.text }}</li></ul>
+              </div>
+              <div class="dd-section" v-if="selectedReq.threshold_table && (selectedReq.threshold_table.rows || []).length">
+                <div class="dd-label">参数表（数值原样照抄原文）</div>
+                <table class="dd-table" data-testid="dd-threshold"><thead v-if="(selectedReq.threshold_table.columns || []).length"><tr><th v-for="(c, i) in selectedReq.threshold_table.columns" :key="i">{{ c }}</th></tr></thead><tbody><tr v-for="(row, ri) in selectedReq.threshold_table.rows" :key="ri"><td v-for="(cell, ci) in (Array.isArray(row) ? row : [row])" :key="ci">{{ cell }}</td></tr></tbody></table>
+              </div>
+            </details>
+          </section>
           <div class="dd-section" v-if="ownershipOf(selectedReq) === 'hardware'">
             <div class="dd-label">中文翻译 / 说明</div>
             <div v-if="hardwareTranslationOf(selectedReq)" class="dd-body" data-testid="dd-hw-translation">{{ hardwareTranslationOf(selectedReq) }}</div>
             <div v-else class="dd-body dd-empty">未生成翻译（开启 LLM 后点「导出批注HTML」可自动补齐，刷新即见）</div>
           </div>
-          <div class="dd-section" v-if="(selectedReq.sub_items || []).length">
-            <div class="dd-label">子项要求（二级）</div>
-            <ul class="dd-list" data-testid="dd-subitems">
-              <li v-for="(it, i) in selectedReq.sub_items" :key="i"><strong>{{ it.label || "·" }})</strong> {{ it.text }}</li>
-            </ul>
-          </div>
-          <div class="dd-section" v-if="selectedReq.threshold_table && (selectedReq.threshold_table.rows || []).length">
-            <div class="dd-label">参数表（数值原样照抄原文）</div>
-            <table class="dd-table" data-testid="dd-threshold">
-              <thead v-if="(selectedReq.threshold_table.columns || []).length">
-                <tr><th v-for="(c, i) in selectedReq.threshold_table.columns" :key="i">{{ c }}</th></tr>
-              </thead>
-              <tbody>
-                <tr v-for="(row, ri) in selectedReq.threshold_table.rows" :key="ri">
-                  <td v-for="(cell, ci) in (Array.isArray(row) ? row : [row])" :key="ci">{{ cell }}</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-          <div class="dd-section" v-if="devGuidanceOf(selectedReq).length">
-            <div class="dd-label">研发指引 / 落地实现</div>
-            <ul class="dd-list"><li v-for="(g, i) in devGuidanceOf(selectedReq)" :key="i">{{ g }}</li></ul>
-          </div>
-          <div class="dd-section" v-if="acceptanceOf(selectedReq).length">
-            <div class="dd-label">测试指引 / 验收</div>
-            <ul class="dd-list"><li v-for="(c, i) in acceptanceOf(selectedReq)" :key="i">{{ c }}</li></ul>
-          </div>
-          <div class="dd-section" v-if="ownershipReasonOf(selectedReq)">
-            <div class="dd-label">为什么判为{{ OWNERSHIP_LABELS[ownershipOf(selectedReq)] || ownershipOf(selectedReq) }}</div>
-            <div class="dd-body" data-testid="dd-ownership-reason">{{ ownershipReasonOf(selectedReq) }}</div>
-            <div v-if="ownershipOverrideNote(selectedReq)" class="dd-body dd-empty">{{ ownershipOverrideNote(selectedReq) }}</div>
-          </div>
-
-          <div class="dd-section">
-            <div class="dd-label">模块（可改）</div>
-            <input v-model.trim="moduleEdit" class="dd-select" data-testid="dd-module-select"
-                   list="review-module-options" autocomplete="off" maxlength="20" />
-            <datalist id="review-module-options">
-              <option v-for="m in moduleOptions" :key="m" :value="m" />
-            </datalist>
-          </div>
-          <div class="dd-section">
-            <div class="dd-label">归属（可改，规则初判：{{ OWNERSHIP_OPTIONS.find(o => o.value === selectedReq?.ownership)?.label || "软件" }}）</div>
-            <select v-model="ownershipEdit" class="dd-select" data-testid="dd-ownership-select">
-              <option v-for="o in OWNERSHIP_OPTIONS" :key="o.value" :value="o.value">{{ o.label }}</option>
-            </select>
-          </div>
+          <details v-if="devGuidanceOf(selectedReq).length || acceptanceOf(selectedReq).length || ownershipReasonOf(selectedReq)" class="dd-section dd-accordion" data-testid="dd-analysis-support">
+            <summary><span>辅助研判</span><small>归属、实现与验收提示</small></summary>
+            <div class="dd-accordion-body">
+              <div v-if="devGuidanceOf(selectedReq).length" class="dd-subsection"><div class="dd-label">研发指引 / 落地实现</div><ul class="dd-list"><li v-for="(g, i) in devGuidanceOf(selectedReq)" :key="i">{{ g }}</li></ul></div>
+              <div v-if="acceptanceOf(selectedReq).length" class="dd-subsection"><div class="dd-label">测试指引 / 验收</div><ul class="dd-list"><li v-for="(c, i) in acceptanceOf(selectedReq)" :key="i">{{ c }}</li></ul></div>
+              <div v-if="ownershipReasonOf(selectedReq)" class="dd-subsection"><div class="dd-label">为什么判为{{ OWNERSHIP_LABELS[ownershipOf(selectedReq)] || ownershipOf(selectedReq) }}</div><div class="dd-body" data-testid="dd-ownership-reason">{{ ownershipReasonOf(selectedReq) }}</div><div v-if="ownershipOverrideNote(selectedReq)" class="dd-body dd-empty">{{ ownershipOverrideNote(selectedReq) }}</div></div>
+            </div>
+          </details>
+          <details class="dd-section dd-accordion dd-decision-fields" data-testid="dd-decision-fields">
+            <summary><span>裁决字段</span><small>模块和归属可调整</small></summary>
+            <div class="dd-accordion-body">
+              <div class="dd-subsection"><div class="dd-label">模块（可改）</div><input v-model.trim="moduleEdit" class="dd-select" data-testid="dd-module-select" list="review-module-options" autocomplete="off" maxlength="20" /><datalist id="review-module-options"><option v-for="m in moduleOptions" :key="m" :value="m" /></datalist></div>
+              <div class="dd-subsection"><div class="dd-label">归属（可改，规则初判：{{ OWNERSHIP_OPTIONS.find(o => o.value === selectedReq?.ownership)?.label || "软件" }}）</div><select v-model="ownershipEdit" class="dd-select" data-testid="dd-ownership-select"><option v-for="o in OWNERSHIP_OPTIONS" :key="o.value" :value="o.value">{{ o.label }}</option></select></div>
+            </div>
+          </details>
           <textarea v-model="comment" class="dd-comment" data-testid="dd-comment" placeholder="审查意见（可选）" />
-          <div class="dd-actions">
-            <button class="button primary" type="button" data-testid="dd-accept" aria-keyshortcuts="A" :disabled="isSaving" @click="decide('accepted')"><Check :size="14" aria-hidden="true" />接受</button>
-            <button class="button reject" type="button" data-testid="dd-reject" aria-keyshortcuts="R" :disabled="isSaving" @click="decide('rejected')"><Ban :size="14" aria-hidden="true" />拒绝</button>
-            <button class="button" type="button" data-testid="dd-discuss" aria-keyshortcuts="D" :disabled="isSaving" @click="decide('needs_discussion')"><MessagesSquare :size="14" aria-hidden="true" />讨论</button>
+          <div class="dd-review-footer" data-testid="dd-review-footer">
+            <div class="dd-review-note">裁决后将写入审核记录</div>
+            <div class="dd-actions">
+              <button class="button primary" type="button" data-testid="dd-accept" aria-keyshortcuts="A" :disabled="isSaving" @click="decide('accepted')"><Check :size="14" aria-hidden="true" />接受</button>
+              <button class="button reject" type="button" data-testid="dd-reject" aria-keyshortcuts="R" :disabled="isSaving" @click="decide('rejected')"><Ban :size="14" aria-hidden="true" />拒绝</button>
+              <button class="button" type="button" data-testid="dd-discuss" aria-keyshortcuts="D" :disabled="isSaving" @click="decide('needs_discussion')"><MessagesSquare :size="14" aria-hidden="true" />讨论</button>
+            </div>
           </div>
         </div>
       </aside>
@@ -3162,6 +3174,46 @@ td.cell-sel, th.cell-sel { outline: 2px solid #5978f7; outline-offset: -2px; }
 .dd-result-primary .dd-label { color: var(--doc-blue-strong); font-weight: 700; }
 .dd-result-primary .dd-body { color: var(--doc-ink); font-size: 14px; line-height: 1.65; }
 
+.dd-decision-bar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 10px 0 12px;
+  padding: 10px 11px;
+  border: 1px solid rgba(10, 132, 255, .16);
+  border-radius: 10px;
+  background: rgba(10, 132, 255, .055);
+}
+.dd-decision-copy { min-width: 0; }
+.dd-decision-kicker { color: var(--doc-tertiary); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; }
+.dd-decision-copy strong { display: block; margin-top: 2px; color: var(--doc-ink); font-size: 13px; font-weight: 700; line-height: 1.45; }
+.dd-decision-copy span { display: block; margin-top: 3px; color: var(--doc-tertiary); font-size: 10px; }
+.dd-evidence-chip { flex: 0 0 auto; padding: 3px 7px; border-radius: 999px; color: var(--doc-blue-strong); background: rgba(10, 132, 255, .1); font-size: 10px; white-space: nowrap; }
+.dd-evidence-chip.tone-good { color: #147a58; background: rgba(20, 151, 104, .1); }
+.dd-evidence-chip.tone-warn { color: #976011; background: rgba(188, 125, 24, .12); }
+.dd-section-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.dd-section-heading .dd-label { margin: 0 0 2px; }
+.dd-section-hint { color: var(--doc-tertiary); font-size: 10px; }
+.dd-count { flex: 0 0 auto; color: var(--doc-blue-strong); font-size: 10px; }
+.dd-facts { padding: 12px 12px 10px; border: 1px solid var(--doc-border); border-radius: 10px; background: rgba(255, 255, 255, .54); }
+.dd-fact-primary { margin-top: 8px; }
+.dd-fact-primary .dd-label { margin-top: 0; }
+.dd-fact-note { margin: 7px 0 8px; color: var(--doc-secondary); font-size: 12px; line-height: 1.55; }
+.dd-inline-details, .dd-accordion { margin-top: 10px; border-top: 1px dashed var(--doc-border); }
+.dd-inline-details summary, .dd-accordion summary { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 0 2px; color: var(--doc-secondary); cursor: pointer; font-size: 12px; font-weight: 650; list-style: none; }
+.dd-inline-details summary::-webkit-details-marker, .dd-accordion summary::-webkit-details-marker { display: none; }
+.dd-inline-details summary::after, .dd-accordion summary::after { content: "+"; color: var(--doc-tertiary); font-size: 16px; font-weight: 400; line-height: 1; }
+.dd-inline-details[open] summary::after, .dd-accordion[open] summary::after { content: "−"; }
+.dd-inline-details summary small, .dd-accordion summary small { margin-left: auto; color: var(--doc-tertiary); font-size: 10px; font-weight: 500; }
+.dd-inline-details > .dd-label:first-of-type, .dd-accordion-body .dd-label:first-child { margin-top: 10px; }
+.dd-accordion { padding: 0 10px 9px; border: 1px solid var(--doc-border); border-radius: 10px; background: rgba(255, 255, 255, .42); }
+.dd-accordion summary { padding-inline: 1px; }
+.dd-accordion-body { padding: 0 1px; }
+.dd-subsection + .dd-subsection { margin-top: 12px; }
+.dd-review-footer { position: sticky; bottom: -1px; z-index: 4; margin: 12px -4px -4px; padding: 10px 4px 4px; background: rgba(246, 247, 250, .82); backdrop-filter: blur(18px) saturate(150%); -webkit-backdrop-filter: blur(18px) saturate(150%); }
+.dd-review-note { margin: 0 0 7px; color: var(--doc-tertiary); font-size: 10px; }
+
 .dd-collapsible {
   padding: 9px 11px;
   border: 1px solid var(--doc-border);
@@ -3278,14 +3330,7 @@ td.cell-sel, th.cell-sel { outline: 2px solid #5978f7; outline-offset: -2px; }
 }
 
 .dd-actions {
-  position: sticky;
-  bottom: -1px;
-  z-index: 4;
-  margin: 12px -4px -4px;
-  padding: 10px 4px 4px;
-  background: rgba(246, 247, 250, 0.82);
-  backdrop-filter: blur(18px) saturate(150%);
-  -webkit-backdrop-filter: blur(18px) saturate(150%);
+  margin-top: 0;
 }
 
 @keyframes detail-enter {

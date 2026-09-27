@@ -3398,6 +3398,35 @@ mark.sc-quote {{ background: linear-gradient(transparent 44%, var(--highlight) 4
   border-radius: 0 6px 6px 0; background: rgba(15,118,110,.055); }}
 .dd-result-primary .dd-label {{ margin-top: 0; color: var(--accent); font-weight: 700; letter-spacing: 0; text-transform: none; }}
 .dd-result-primary .dd-body {{ color: var(--ink); font-size: 15px; }}
+.dd-decision-bar {{ display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin: 10px 0 12px; padding: 10px 11px; border: 1px solid rgba(36,99,235,.16); border-radius: 10px; background: rgba(36,99,235,.055); }}
+.dd-decision-copy {{ min-width: 0; }}
+.dd-decision-kicker {{ color: var(--muted); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; }}
+.dd-decision-copy strong {{ display: block; margin-top: 2px; color: var(--ink); font-size: 13px; font-weight: 700; line-height: 1.45; }}
+.dd-decision-copy span {{ display: block; margin-top: 3px; color: var(--muted); font-size: 10px; }}
+.dd-evidence-chip {{ flex: 0 0 auto; padding: 3px 7px; border-radius: 999px; color: #2463eb; background: rgba(36,99,235,.1); font-size: 10px; white-space: nowrap; }}
+.dd-evidence-chip.tone-good {{ color: #147a58; background: rgba(20,151,104,.1); }}
+.dd-evidence-chip.tone-warn {{ color: #976011; background: rgba(188,125,24,.12); }}
+.dd-section-heading {{ display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }}
+.dd-section-heading .dd-label {{ margin: 0 0 2px; }}
+.dd-section-hint {{ color: var(--muted); font-size: 10px; }}
+.dd-count {{ flex: 0 0 auto; color: var(--accent); font-size: 10px; }}
+.dd-facts {{ padding: 12px 12px 10px; border: 1px solid var(--line); border-radius: 10px; background: rgba(255,255,255,.54); }}
+.dd-fact-primary {{ margin-top: 8px; }}
+.dd-fact-primary .dd-label {{ margin-top: 0; }}
+.dd-fact-note {{ margin: 7px 0 8px; color: var(--muted); font-size: 12px; line-height: 1.55; }}
+.dd-inline-details, .dd-accordion {{ margin-top: 10px; border-top: 1px dashed var(--line); }}
+.dd-inline-details summary, .dd-accordion summary {{ display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 0 2px; color: var(--ink); cursor: pointer; font-size: 12px; font-weight: 650; list-style: none; }}
+.dd-inline-details summary::-webkit-details-marker, .dd-accordion summary::-webkit-details-marker {{ display: none; }}
+.dd-inline-details summary::after, .dd-accordion summary::after {{ content: "+"; color: var(--muted); font-size: 16px; font-weight: 400; line-height: 1; }}
+.dd-inline-details[open] summary::after, .dd-accordion[open] summary::after {{ content: "−"; }}
+.dd-inline-details summary small, .dd-accordion summary small {{ margin-left: auto; color: var(--muted); font-size: 10px; font-weight: 500; }}
+.dd-accordion {{ padding: 0 10px 9px; border: 1px solid var(--line); border-radius: 10px; background: rgba(255,255,255,.42); }}
+.dd-accordion summary {{ padding-inline: 1px; }}
+.dd-accordion-body {{ padding: 0 1px; }}
+.dd-subsection + .dd-subsection {{ margin-top: 12px; }}
+.dd-review-footer {{ position: sticky; bottom: -1px; z-index: 4; margin: 12px -4px -4px; padding: 10px 4px 4px; background: rgba(250,248,242,.92); }}
+.dd-review-note {{ margin: 0 0 7px; color: var(--muted); font-size: 10px; }}
+.dd-review-footer .actions {{ margin-top: 0; }}
 .dd-collapsible {{ padding: 9px 11px; border: 1px solid var(--line); border-radius: 9px; background: rgba(255,255,255,.46); }}
 .dd-collapsible summary {{ display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--ink); cursor: pointer; font-size: 12px; font-weight: 650; list-style: none; }}
 .dd-collapsible summary::-webkit-details-marker {{ display: none; }}
@@ -4194,6 +4223,38 @@ function functionalMergeBadge(r) {{
   return '跨章合并 '+count+' 条（'+method+'，置信 '+conf+'）'+(conf < 0.9 ? '——建议核对合并是否恰当' : '');
 }}
 
+function reviewRequiredOf(r) {{
+  if (r.review_required !== true) return false;
+  const state = r.review_state || {{}};
+  return !(r.needs_reconfirmation !== true && (state.status === "accepted" || state.status === "rejected"));
+}}
+function evidenceLabelOf(r) {{
+  if (r.needs_reconfirmation) return "证据已变化";
+  if (reviewRequiredOf(r)) return "来源待确认";
+  if (String(r.source_quote || "").trim() || (r.source_block_ids || []).length) return "来源已定位";
+  return "来源未定位";
+}}
+function reviewHintOf(r) {{
+  if (r.needs_reconfirmation) return "证据已变化，建议重新核对";
+  if (reviewRequiredOf(r)) return "先核对来源，再决定是否接受";
+  if ((r.suspicion_reasons || []).length || (r.functional_conflict_flags || []).length) return "存在风险提示，建议优先复核";
+  return "信息完整，可直接裁决";
+}}
+function requirementFactCountOf(r) {{
+  return (r.functional_behaviors_zh || r.functional_behaviors || []).length +
+    (r.functional_preconditions_zh || r.functional_preconditions || []).length +
+    (r.functional_data_constraints_zh || r.functional_data_constraints || []).length +
+    (r.functional_variants || []).length;
+}}
+function decisionBarHtml(r) {{
+  const label = evidenceLabelOf(r);
+  const tone = label === "来源已定位" ? "good" : "warn";
+  return '<div class="dd-decision-bar"><div class="dd-decision-copy">'+
+    '<div class="dd-decision-kicker">审查建议</div><strong>'+esc(reviewHintOf(r))+'</strong>'+
+    '<span>'+esc(label)+' · 先看摘要，再展开证据和低频字段</span></div>'+
+    '<span class="dd-evidence-chip tone-'+tone+'">'+esc(label)+'</span></div>';
+}}
+
 function functionalMembershipHtml(r) {{
   if (!r.functional_requirement_id) return "";
   const mergeBadge = functionalMergeBadge(r);
@@ -4203,16 +4264,35 @@ function functionalMembershipHtml(r) {{
   const constraints = (r.functional_data_constraints_zh||r.functional_data_constraints||[]).map(value => '<li>'+esc(value)+'</li>').join("");
   const variants = (r.functional_variants||[]).map(value => '<li><strong>'+esc(value.name||"变体")+'</strong>：'+esc(value.behavior||"")+'</li>').join("");
   const conflicts = (r.functional_conflict_flags||[]).map(value => '<li>'+esc(value)+'</li>').join("");
-  return '<div class="dd-section"><div class="dd-label">所属研发功能</div>'+
-    '<div class="dd-body"><strong>'+esc(r.functional_title_zh || r.functional_title || r.functional_requirement_id)+'</strong></div>'+
+  const structured = preconditions || constraints || variants;
+  return '<section class="dd-section dd-facts"><div class="dd-section-heading"><div><div class="dd-label">需求事实</div><span class="dd-section-hint">已从原文抽取</span></div><span class="dd-count">'+requirementFactCountOf(r)+' 项</span></div>'+\
+    '<div class="dd-fact-primary"><div class="dd-label">所属研发功能</div>'+\
+    '<div class="dd-body"><strong>'+esc(r.functional_title_zh || r.functional_title || r.functional_requirement_id)+'</strong></div>'+\
     (mergeBadge ? '<div class="'+mergeClass+'">⧉ '+esc(mergeBadge)+'</div>' : '')+
-    (!r.functional_objective_zh && r.functional_objective ? '<div class="dd-body">'+esc(r.functional_objective)+'</div>' : '')+
+    '</div>'+(!r.functional_objective_zh && r.functional_objective ? '<div class="dd-fact-note">'+esc(r.functional_objective)+'</div>' : '')+
     (behaviors ? '<div class="dd-label">功能行为</div><ul class="dd-list">'+behaviors+'</ul>' : '')+
-    (preconditions ? '<div class="dd-label">前置条件</div><ul class="dd-list">'+preconditions+'</ul>' : '')+
-    (constraints ? '<div class="dd-label">数据约束</div><ul class="dd-list">'+constraints+'</ul>' : '')+
-    (variants ? '<div class="dd-label">功能变体</div><ul class="dd-list">'+variants+'</ul>' : '')+
     (conflicts ? '<div class="dd-suspicion">待澄清冲突<ul class="dd-list">'+conflicts+'</ul></div>' : '')+
+    (structured ? '<details class="dd-inline-details"><summary><span>更多结构化字段</span><small>前置条件、数据约束与功能变体</small></summary>'+\
+      (preconditions ? '<div class="dd-label">前置条件</div><ul class="dd-list">'+preconditions+'</ul>' : '')+\
+      (constraints ? '<div class="dd-label">数据约束</div><ul class="dd-list">'+constraints+'</ul>' : '')+\
+      (variants ? '<div class="dd-label">功能变体</div><ul class="dd-list">'+variants+'</ul>' : '')+'</details>' : '')+
     '</div>';
+}}
+function structuredDetailHtml(r) {{
+  const items = subItemsHtml(r);
+  const threshold = thresholdHtml(r);
+  if (!items && !threshold) return "";
+  return '<details class="dd-inline-details dd-section"><summary><span>更多结构化字段</span><small>参数与子项</small></summary>'+items+threshold+'</details>';
+}}
+function analysisSupportHtml(r) {{
+  const own = ownershipReasonHtml(r);
+  const dev = isHardwareRequirement(r) ? "" : (r.dev_guidance||[]).map(c => '<li>'+esc(c)+'</li>').join("");
+  const acc = isHardwareRequirement(r) ? "" : (r.acceptance_criteria||[]).map(c => '<li>'+esc(c)+'</li>').join("");
+  if (!dev && !acc && !own) return "";
+  return '<details class="dd-section dd-accordion"><summary><span>辅助研判</span><small>归属、实现与验收提示</small></summary><div class="dd-accordion-body">'+
+    (dev ? '<div class="dd-subsection"><div class="dd-label">研发指引 / 落地实现</div><ul class="dd-list">'+dev+'</ul></div>' : '')+
+    (acc ? '<div class="dd-subsection"><div class="dd-label">测试指引 / 验收</div><ul class="dd-list">'+acc+'</ul></div>' : '')+
+    (own ? '<div class="dd-subsection">'+own+'</div>' : '')+'</div></details>';
 }}
 function select(id) {{
   if (selected === id) {{ deselect(); return; }}  // 再点一下 → 取消选中
@@ -4240,10 +4320,8 @@ function select(id) {{
   const d = decisionOf(id) || {{}};
   const st = statusOf(id);
   const isHardware = isHardwareRequirement(r);
-  const devSrc = r.dev_guidance||[];
-  const accSrc = r.acceptance_criteria||[];
-  const dev = isHardware ? "" : devSrc.map(c => "<li>" + esc(c) + "</li>").join("");
-  const acc = isHardware ? "" : accSrc.map(c => "<li>" + esc(c) + "</li>").join("");
+  const dev = isHardware ? "" : (r.dev_guidance||[]).map(c => "<li>" + esc(c) + "</li>").join("");
+  const acc = isHardware ? "" : (r.acceptance_criteria||[]).map(c => "<li>" + esc(c) + "</li>").join("");
   // 归属判定挪到「原文引用」之后（真实反馈 2026-07-12）；设计候选暂不渲染（数据仍在 xlsx）
   const summaryHtml = requirementSummaryHtml(r);
   const sourceQuoteHtml = r.source_quote
@@ -4251,7 +4329,8 @@ function select(id) {{
     : '';
   const functionalHtml = isHardware ? "" : functionalMembershipHtml(r);
   const primaryHtml = summaryHtml + sourceQuoteHtml + (isHardware ? hardwareTranslationHtml(r) : functionalHtml);
-  const detailHtml = isHardware ? "" : subItemsHtml(r) + thresholdHtml(r);
+  const detailHtml = isHardware ? "" : structuredDetailHtml(r);
+  const supportHtml = analysisSupportHtml(r);
   const failureHtml = extractionFailureHtml(String(r.anchor_block_id || (r.source_block_ids||[])[0] || ""));
   const opts = MODULE_VOCAB.map(m => '<option value="'+esc(m)+'"></option>').join("");
   const ownershipOptions = [
@@ -4260,6 +4339,9 @@ function select(id) {{
     ["hardware", "硬件"],
     ["co_design", "软硬件协同"],
   ].map(([value, label]) => '<option value="'+esc(value)+'"'+(value===ownershipOf(r)?' selected':'')+'>'+esc(label)+'</option>').join("");
+  const decisionFieldsHtml = '<details class="dd-section dd-accordion dd-decision-fields"><summary><span>裁决字段</span><small>模块和归属可调整</small></summary><div class="dd-accordion-body">'+
+    '<div class="dd-subsection"><div class="dd-label">模块（可改）</div><input id="mod-sel" class="dd-select" list="mod-options" autocomplete="off" value="'+esc(moduleOf(r))+'"><datalist id="mod-options">'+opts+'</datalist></div>'+\
+    '<div class="dd-subsection"><div class="dd-label">归属（可改）</div><select id="own-sel" class="dd-select">'+ownershipOptions+'</select></div></div></details>';
   document.getElementById("detail").innerHTML =
     '<div class="annotation-card detail-card"><div class="dd-head"><span class="dd-module">'+esc(moduleOf(r))+'</span>'+
     '<span class="badge st-'+st+'">'+esc(STATUS_LABELS[st]||st)+'</span></div>'+
@@ -4272,18 +4354,15 @@ function select(id) {{
       : '<div class="dd-legend">正文标记：<span style="background:#ffe89a;padding:0 4px">黄=引用依据</span> · <span style="background:#eef4ff;padding:0 4px">蓝=证据段</span> · 左侧细条=分析上下文（模型通读范围）</div>')+
     ((r.suspicion_reasons||[]).length ? '<div class="dd-suspicion">⚠ 建议优先复核：'+esc((r.suspicion_reasons||[]).join("、"))+'</div>' : '')+
     ((r.consistency_flags||[]).length ? '<div class="dd-consistency">⇄ 全文档一致性：'+esc((r.consistency_flags||[]).join("；"))+'</div>' : '')+
+    decisionBarHtml(r)+
     primaryHtml+
     detailHtml+
     failureHtml+
-    (dev ? '<div class="dd-label">研发指引 / 落地实现</div><ul class="dd-list">'+dev+'</ul>' : '')+
-    (acc ? '<div class="dd-label">测试指引 / 验收</div><ul class="dd-list">'+acc+'</ul>' : '')+
-    ownershipReasonHtml(r)+
-    '<div class="dd-label">模块（可改）</div><input id="mod-sel" class="dd-select" list="mod-options" autocomplete="off" value="'+esc(moduleOf(r))+'">'+
-    '<datalist id="mod-options">'+opts+'</datalist>'+
-    '<div class="dd-section"><div class="dd-label">归属（可改）</div><select id="own-sel" class="dd-select">'+ownershipOptions+'</select></div>'+
+    supportHtml+
+    decisionFieldsHtml+
     '<textarea id="cmt" placeholder="审查意见（可选）">'+esc(d.reason||"")+'</textarea>'+
-    '<div class="actions"><button class="accept" data-st="accepted">接受</button>'+
-    '<button data-st="rejected">拒绝</button><button data-st="needs_discussion">讨论</button></div>'+
+    '<div class="dd-review-footer"><div class="dd-review-note">裁决后将写入审核记录</div><div class="actions"><button class="accept" data-st="accepted">接受</button>'+
+    '<button data-st="rejected">拒绝</button><button data-st="needs_discussion">讨论</button></div></div>'+
     '<div class="saved-hint" id="hint"></div></div>';
   document.querySelectorAll(".actions button").forEach(b => b.onclick = () => decide(id, b.getAttribute("data-st")));
   // 整个被分析跨度亮淡底 + 引句黄标（markSpan 内部先清后加，含锚点块）
