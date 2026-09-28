@@ -1204,7 +1204,7 @@ class ChainAndManifestTests(unittest.TestCase):
                 # 2026-08-14 FIX 2：DOCX 物理网格/表格裁决规则版本进戳——
                 # 二者均改变 atomize 必产输出（blocks/rows/cells 与 dispositions 台账）
                 f"+{DOCX_TABLE_PHYSICAL_VERSION}"
-                f"+{TABLE_DISPOSITION_RULE_VERSION}+impl-v13"
+                f"+{TABLE_DISPOSITION_RULE_VERSION}+impl-v14"
             ),
             # 专家审核 0715:版本戳必须覆盖全部影响产物的代码层——guards/verify 版本
             # 缺席使护栏与复核升级后 chain 续跑直接跳过 ai-extract
@@ -1222,7 +1222,7 @@ class ChainAndManifestTests(unittest.TestCase):
             # partial export（2026-09-01）：两阶段 producer 末尾追加待核标记算法
             # 身份 + 开关有效值（测试环境未设开关 → 默认 True）；
             # v2（2026-09-01b）：extract_degraded 标记类并入算法身份
-            "requirements-analysis": "analyze-llm-v8+analyze-unfounded-v4+analyze-rules-v1+ai-supplement-v3-identity-preconditions+conservation-partial-export-v3+partial-export-True+impl-v6",
+            "requirements-analysis": "analyze-llm-v11+analyze-unfounded-v5+analyze-rules-v1+ai-supplement-v3-identity-preconditions+conservation-partial-export-v3+partial-export-True+impl-v6",
             "template-write": "template_writer/v1+ai-supplement-v3-identity-preconditions+conservation-partial-export-v3+partial-export-True+impl-v6",
             "clarification-report": "clarification/v8-param-row-aggregate+ai-supplement-v3-identity-preconditions+impl-v6",
             "compose": "engineering_composer/v1+ai-supplement-v3-identity-preconditions+impl-v2",
