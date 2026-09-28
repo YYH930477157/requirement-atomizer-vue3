@@ -1,5 +1,12 @@
 # CLAUDE.md — Requirement Atomizer 项目上下文
 
+## 决策（2026-09-27）——预处理/分段审查修复
+
+- `docs/review-2026-09-27-preprocessing-segmentation.md` 的 F1/F2/F5 结论经代码与真实 PDF 复核成立：最终解析分区必须先于语义单元和候选产物；视觉/文本回退后的 blocks 不能复用旧 sidecar。`atomize` producer 升至 `v15`，`functional-extract` 输入显式绑定候选与覆盖审计，候选筛选状态写入功能产物/摘要。
+- 候选分类不再用正文中的 `contents` 等词切换区域；前言/定义状态只由标题或明确编号路径触发，并在新编号章节重置。信息区中的义务句降为 `needs_review`，覆盖审计的约束信号会回流功能抽取范围，避免静默丢失。
+- PDF 编号标题启发式加入单位、代码、数值、句式和列表行护栏；显式 Heading 样式仍优先。语义预审改为窗口化，语义 LLM 使用用途级 token 下限并允许一次截断修复，窗口上限由 8 提至 32；提示词版本已登记。架构文档与 SVG 已补齐 Regions → Semantic → Candidates → Extract 实际链路。
+- 2026-09-27 定向回归 61 项通过；真实 TS PDF 零付费重解析的伪标题样本已清零。完整套件仍有若干历史基线/平台偶发项，见本次审核记录，不把套件未全绿误报为本修复已验证。
+
 ## 当前架构（2026-09-09）
 
 - 正式桌面端是 `ui/`（Vue3 + Electron）和 Python 后端。

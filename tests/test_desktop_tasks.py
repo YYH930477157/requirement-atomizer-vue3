@@ -1204,7 +1204,8 @@ class ChainAndManifestTests(unittest.TestCase):
                 # 2026-08-14 FIX 2：DOCX 物理网格/表格裁决规则版本进戳——
                 # 二者均改变 atomize 必产输出（blocks/rows/cells 与 dispositions 台账）
                 f"+{DOCX_TABLE_PHYSICAL_VERSION}"
-                f"+{TABLE_DISPOSITION_RULE_VERSION}+impl-v14"
+                # 2026-09-27：视觉/文本回退后统一重建 region、语义和候选 sidecar。
+                f"+{TABLE_DISPOSITION_RULE_VERSION}+impl-v15"
             ),
             # 专家审核 0715:版本戳必须覆盖全部影响产物的代码层——guards/verify 版本
             # 缺席使护栏与复核升级后 chain 续跑直接跳过 ai-extract

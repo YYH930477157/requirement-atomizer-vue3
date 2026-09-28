@@ -1021,7 +1021,8 @@ STAGE_INPUTS: dict[str, list[str]] = {
     # them here would make the stage's own pre/post input check self-invalidate.
     "functional-extract": [
         "blocks.jsonl", "chunks.jsonl", "doc_map.json",
-        "semantic_segmentation.json",
+        "semantic_segmentation.json", "requirement_candidates.json",
+        "requirement_coverage_audit.json",
         "table_items.jsonl", "table_cell_items.jsonl",
         "table_cell_dispositions.jsonl",
     ],
@@ -1137,7 +1138,8 @@ STAGE_IMPLEMENTATION_REVISIONS = {
     # v6：表格块扁平文本取消 [:5000] 截断（初始提交遗留）——大参数表 88% 内容此前
     # 进不了抽取管线（STO/俄标实证）；blocks 内容变化,docx 输入须重解析
     # v5：PDF 清单段合并（名词式清单项并整段，微块可锚定）——块结构变化，PDF 输入须重解析
-    "atomize": "v14",
+    # v15（2026-09-27）：最终解析后再标 doc_region/语义/候选，避免回退重解析留下旧 sidecar。
+    "atomize": "v15",
     # v6：cell 级 assemble 输入（cells source_block）+ 权威 row/cell ID 去重键 + 发布断言
     # ——section/unit 文本与 source_blocks 结构变,旧 ai-extract 缓存失效重抽
     # v5：表格行级化(封堵一 chunk 表头注入 + 行级 source_blocks/rows + 封堵二去重 + 封堵三澄清聚合)
@@ -1147,7 +1149,8 @@ STAGE_IMPLEMENTATION_REVISIONS = {
     "functional-synthesis": "v4",
     # v1：chain 正式接入 WS2 条款直抽（RATOMIZER_FUNCTIONAL_EXTRACT=1 时整体替换
     # ai-extract + functional-synthesis，不产原子）——新阶段初始版本戳。
-    "functional-extract": "v1",
+    # v2（2026-09-27）：候选筛选成为显式阶段输入，异常/空筛选写入产物审计。
+    "functional-extract": "v2",
     # v6：hardware_dependency 落交付物渲染（xlsx 说明列/co_design_items.md）——
     # 纯渲染变更不动 analyze 缓存版本，靠 impl 戳让阶段重跑重渲染（审计 P1-b）
     "requirements-analysis": "v6",

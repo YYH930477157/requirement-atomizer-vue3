@@ -185,7 +185,7 @@ class FlagOffByteIdentityTests(unittest.TestCase):
             # 与 desktop_tasks.stage_producer 的拼接顺序保持一致。
             fe.SEMANTIC_SECTION_LOADER_VERSION,
             *fe.routing_lineage_versions().values(),
-        )) + "+impl-v1"
+        )) + "+impl-v2"
         base = _clean_env()
         with mock.patch.dict(os.environ, base, clear=True):
             unset = desktop_tasks.stage_producer("functional-extract")

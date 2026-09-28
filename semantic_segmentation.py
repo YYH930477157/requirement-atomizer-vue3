@@ -19,8 +19,10 @@ from typing import Any
 # v4：真实 PDF 跨页表格续文只登记可审计候选，保留物理表边界，不静默拼接。
 # v5：编号义务句允许编号末尾句点（如 ``9.2.2.1. The meter shall ...``），
 #      修复 PDF 视觉标题误分类后留下的半句正文。
-SEMANTIC_SEGMENTATION_VERSION = "semantic-segmentation-v6"
-SEMANTIC_PROMPT_VERSION = "semantic-segmentation-prompt-v3-contextual-boundaries"
+# v6→v7：语义 LLM 使用用途级 token 下限并允许一次截断修复；长节不再因
+#      8 窗口上限过早整节回退。
+SEMANTIC_SEGMENTATION_VERSION = "semantic-segmentation-v7"
+SEMANTIC_PROMPT_VERSION = "semantic-segmentation-prompt-v4-contextual-boundaries"
 SEMANTIC_MODES = ("off", "deterministic", "llm")
 _TERMINAL_RE = re.compile(r"[.!?。！？；;:]$")
 _CONTINUATION_RE = re.compile(r"^(?:and|or|but|which|that|this|these|it|they|where|when|if|for|with)\b", re.I)
@@ -253,7 +255,7 @@ def _semantic_prompt() -> str:
 
 
 SEMANTIC_WINDOW_MAX_BLOCKS = 18
-SEMANTIC_MAX_CALLS = 8
+SEMANTIC_MAX_CALLS = 32
 
 
 def _llm_groups(blocks: list[dict[str, Any]], *, route: str, max_chars: int = 12000) -> list[list[str]]:
@@ -263,6 +265,11 @@ def _llm_groups(blocks: list[dict[str, Any]], *, route: str, max_chars: int = 12
     config = config_for_route(route, DEFAULT_PIPELINE_PATH)
     if config is None:
         raise ValueError("semantic segmentation route is unavailable")
+    # Keep injected/minimal test configs compatible, while production routes
+    # use the same purpose-level floor as the other reasoning-heavy stages.
+    if hasattr(config, "max_tokens"):
+        from llm_client import apply_min_tokens
+        config = apply_min_tokens(config, "semantic")
     def rows_for(window: list[dict[str, Any]]) -> list[dict[str, Any]]:
         return [{"block_id": str(b["block_id"]), "text": str(b.get("text") or ""),
                  "type": str(b.get("type") or "paragraph"),
@@ -300,7 +307,7 @@ def _llm_groups(blocks: list[dict[str, Any]], *, route: str, max_chars: int = 12
         result = chat_json_messages(config, [
             {"role": "system", "content": _semantic_prompt()},
             {"role": "user", "content": payload},
-        ], max_truncation_escalations=0)
+        ], max_truncation_escalations=1)
         groups = _validated_semantic_groups(result.get("groups"), window)
         for group in groups:
             merge_edges.update(zip(group, group[1:]))

@@ -5,6 +5,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from atomize import (
@@ -52,6 +53,84 @@ class AtomizeTableTests(unittest.TestCase):
             "100 litres of water shall be stored safely.",
             "Normal",
         ))
+
+    def test_numbered_measurement_and_code_rows_are_not_headings(self) -> None:
+        for text in (
+            "1.0 m m2 to 2.5 m m2",
+            "1.5 P+ active power",
+            "3 VAr",
+            "1. Counter",
+            "148.5 Flicker Pst UL 3 mean value",
+            "0.9.1 - Zs7",
+            "2. Communication indication that is permanently lit or flashes during data interface communication",
+            "3 decimal places",
+            "29 characters.",
+        ):
+            with self.subTest(text=text):
+                self.assertIsNone(detect_heading(text, "Normal"))
+
+    def test_short_numbered_clause_title_remains_a_heading(self) -> None:
+        self.assertEqual(
+            detect_heading("4.1 System architecture", "Normal"),
+            (2, "4.1 System architecture"),
+        )
+
+    def test_text_fallback_rebuilds_candidates_from_final_blocks(self) -> None:
+        from paragraph_segmentation import SegmentationOptions
+
+        old_block = {
+            "block_id": "OLD-1", "order": 1, "type": "paragraph",
+            "source_format": "pdf", "text": "The discarded visual partition shall not win.",
+            "raw_text": "The discarded visual partition shall not win.",
+            "section_path": ["1 Requirements"], "domain_tags": [], "kb_matches": [],
+            "requirement_like": True, "noise": False, "page_number": 1,
+        }
+        final_block = {
+            **old_block,
+            "block_id": "FINAL-1",
+            "text": "The final text partition shall be retained.",
+            "raw_text": "The final text partition shall be retained.",
+        }
+
+        def fake_extract(*_args, **_kwargs):
+            return ([old_block], [], []) if fake_extract.calls == 0 else ([final_block], [], [])
+
+        fake_extract.calls = 0
+
+        def extracting(*args, **kwargs):
+            result = fake_extract(*args, **kwargs)
+            fake_extract.calls += 1
+            return result
+
+        def partial_visual(report, *_args):
+            report["vision"].update(status="partial", reason="test fallback")
+
+        with tempfile.TemporaryDirectory() as td:
+            source = Path(td) / "input.pdf"
+            source.write_bytes(b"%PDF-test")
+            out = Path(td) / "out"
+            options = SegmentationOptions(
+                mode="vision_assisted",
+                vision_capable=True,
+                fallback="text_fallback",
+                semantic_mode="deterministic",
+            )
+            with mock.patch("parsers.pdf_parser.extract_pdf", side_effect=extracting), \
+                    mock.patch("paragraph_vision.add_visual_suggestions", side_effect=partial_visual):
+                run_atomizer_pipeline(source, out, segmentation=options)
+            blocks = [
+                json.loads(line)
+                for line in (out / "blocks.jsonl").read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            from result_package import governed_artifact_path
+            candidates = json.loads(
+                governed_artifact_path(
+                    out, "requirement_candidates.json", for_write=False
+                ).read_text(encoding="utf-8")
+            )
+        self.assertEqual([row["block_id"] for row in blocks], ["FINAL-1"])
+        self.assertEqual([row["source_block_ids"] for row in candidates["units"]], [["FINAL-1"]])
 
     def test_definition_with_fixed_validity_values_is_requirement_like(self) -> None:
         text = (

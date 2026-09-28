@@ -3857,6 +3857,11 @@ def run_functional_extract(
     sections = list(sections)
     # 候选筛选层：只把需求/表格/待判断语义单元对应的条款送入抽取，
     # 缺少候选产物时保持兼容并继续使用完整条款池。
+    candidate_filter: dict[str, Any] = {
+        "status": "missing_compatibility_fallback",
+        "selected_block_count": 0,
+        "source_section_count_before_filter": len(sections),
+    }
     try:
         from result_package import governed_artifact_path
         import json
@@ -3866,11 +3871,50 @@ def run_functional_extract(
             selected_ids = {str(block_id) for row in (candidate_payload.get("units") or [])
                             if row.get("category") in {"requirement_candidate", "table_candidate", "needs_review"}
                             for block_id in (row.get("source_block_ids") or [])}
+            # The coverage audit is an independent recall backstop.  A unit
+            # with a numeric/constraint signal may still be classified as
+            # context by a conservative candidate classifier; keep its source
+            # blocks in the extraction scope and record that promotion rather
+            # than silently dropping the obligation.
+            audit_path = governed_artifact_path(out_dir, "requirement_coverage_audit.json", for_write=False)
+            audit_promoted_ids: set[str] = set()
+            if audit_path.is_file():
+                audit_payload = json.loads(audit_path.read_text(encoding="utf-8"))
+                audit_promoted_ids = {
+                    str(block_id)
+                    for row in (audit_payload.get("suspicious") or [])
+                    for block_id in (row.get("source_block_ids") or [])
+                }
+                selected_ids.update(audit_promoted_ids)
             filtered = [section for section in sections if selected_ids.intersection(str(x) for x in (section.get("block_ids") or []))]
             if filtered:
                 sections = filtered
-    except Exception:
-        pass
+                candidate_filter = {
+                    "status": "applied",
+                    "selected_block_count": len(selected_ids),
+                    "audit_promoted_block_count": len(audit_promoted_ids),
+                    "selected_section_count": len(filtered),
+                    "source_section_count_before_filter": candidate_filter["source_section_count_before_filter"],
+                }
+            else:
+                # Keep the historical full-scope compatibility fallback, but
+                # make it observable.  A malformed/empty filter must never look
+                # like a successful narrowed extraction.
+                candidate_filter = {
+                    "status": "empty_selection_full_scope_fallback",
+                    "selected_block_count": len(selected_ids),
+                    "audit_promoted_block_count": len(audit_promoted_ids),
+                    "source_section_count_before_filter": candidate_filter["source_section_count_before_filter"],
+                    "reason": "candidate IDs did not match loaded section block IDs",
+                }
+    except Exception as exc:  # noqa: BLE001 - compatibility fallback is now audited
+        LOGGER.warning("candidate filter unavailable; using full clause scope: %s", exc)
+        candidate_filter = {
+            "status": "error_full_scope_fallback",
+            "selected_block_count": 0,
+            "source_section_count_before_filter": candidate_filter["source_section_count_before_filter"],
+            "error": type(exc).__name__ + ": " + str(exc),
+        }
     source_section_count = len(sections)
     if limit_sections is not None:
         sections = sections[:limit_sections]
@@ -4017,6 +4061,7 @@ def run_functional_extract(
             "selected_section_count": len(sections),
             "source_section_count": source_section_count,
         },
+        "candidate_filter": candidate_filter,
         "functional_requirements": len(items),
         "fingerprint": fingerprint,
         "conservation": conservation,
@@ -4085,6 +4130,9 @@ def _finalize_payload(
         "mode": "full_document",
         "limit_sections": None,
         "selected_section_count": payload.get("clause_count", 0),
+    })
+    result["candidate_filter"] = payload.get("candidate_filter", {
+        "status": "legacy_cache_without_candidate_filter",
     })
     routing = payload.get("unit_routing")
     if isinstance(routing, dict):

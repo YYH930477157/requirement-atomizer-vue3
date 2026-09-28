@@ -34,9 +34,9 @@ PROMPT_REGISTRY: list[dict[str, str]] = [
      "purpose": "Claim-targeted re-extraction critique prompt"},
 
     # Requirements analysis enrichment
-    {"id": "analyze-llm", "version": "analyze-llm-v8", "owner_module": "requirements_analysis",
+    {"id": "analyze-llm", "version": "analyze-llm-v11", "owner_module": "requirements_analysis",
      "purpose": "Requirements analysis LLM enrichment prompt"},
-    {"id": "analyze-unfounded", "version": "analyze-unfounded-v4", "owner_module": "requirements_analysis",
+    {"id": "analyze-unfounded", "version": "analyze-unfounded-v5", "owner_module": "requirements_analysis",
      "purpose": "Unfounded-field downgrade rule version pinned into analyze cache"},
     {"id": "analyze-rules", "version": "analyze-rules-v1", "owner_module": "requirements_analysis_rules",
      "purpose": "Ownership/compliance deterministic rule version"},
@@ -85,14 +85,12 @@ PROMPT_REGISTRY: list[dict[str, str]] = [
      "owner_module": "functional_extract",
      "purpose": "Functional extract obligation/evidence conservation model version"},
 
-    # 语义段落分割（2026-09-09 补登记——caaccea/f1ab43f 落地时漏登，D1 契约测试
-    # 抓出）。提示词进 parse 阶段产物（semantic_segmentation.json 的
-    # configuration.prompt_version）与 atomize producer 戳。v3 同步确定性边界
-    # 修复：编号义务句、清单依赖和罗马编号小节。
-    {"id": "semantic-segmentation", "version": "semantic-segmentation-prompt-v3-contextual-boundaries",
+    # 语义段落分割：提示词进入 parse 阶段产物与 atomize producer 戳。
+    # v4（2026-09-27）：用途级 token 下限、截断修复和更完整的长节窗口。
+    {"id": "semantic-segmentation", "version": "semantic-segmentation-prompt-v4-contextual-boundaries",
      "owner_module": "semantic_segmentation",
      "purpose": "Semantic paragraph boundary adjudication prompt (LLM mode only)"},
-    {"id": "semantic-pre-review", "version": "semantic-pre-review-prompt-v1",
+    {"id": "semantic-pre-review", "version": "semantic-pre-review-prompt-v2-windowed",
      "owner_module": "semantic_pre_review",
      "purpose": "Pre-review semantic structure adjudication prompt"},
 

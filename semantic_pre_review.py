@@ -15,8 +15,8 @@ import re
 from typing import Any, Callable, Sequence
 
 
-SEMANTIC_PRE_REVIEW_VERSION = "semantic-pre-review-v1"
-SEMANTIC_PRE_REVIEW_PROMPT_VERSION = "semantic-pre-review-prompt-v1"
+SEMANTIC_PRE_REVIEW_VERSION = "semantic-pre-review-v2"
+SEMANTIC_PRE_REVIEW_PROMPT_VERSION = "semantic-pre-review-prompt-v2-windowed"
 SEMANTIC_PRE_REVIEW_SCHEMA = "semantic-pre-review/v1"
 SEMANTIC_PRE_REVIEW_FILENAME = "semantic_pre_review.json"
 _OBLIGATION_RE = re.compile(r"\b(?:shall|must|should|required|may not|不得|必须|应当)\b", re.I)
@@ -168,6 +168,50 @@ def _semantic_map(blocks: Sequence[dict[str, Any]], elements: Sequence[dict[str,
     }
 
 
+def _payload_row(block: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "element_id": str(block["block_id"]),
+        "text": str(block.get("text") or ""),
+        "type": str(block.get("type") or "paragraph"),
+        "section_path": list(block.get("section_path") or []),
+        "page": block.get("page_number"),
+        "is_list_item": bool(block.get("is_list_item")),
+        "table_id": block.get("table_id"),
+    }
+
+
+def _payload_chunks(
+    blocks: Sequence[dict[str, Any]],
+    *,
+    max_chars: int,
+) -> list[list[dict[str, Any]]]:
+    """Split the pre-review request without dropping or truncating blocks."""
+    chunks: list[list[dict[str, Any]]] = []
+    current: list[dict[str, Any]] = []
+    for block in blocks:
+        row = _payload_row(block)
+        if not current:
+            if len(json.dumps([row], ensure_ascii=False)) > max_chars:
+                raise RuntimeError(
+                    f"semantic pre-review element {row['element_id']} exceeds window budget"
+                )
+            current = [row]
+            continue
+        candidate = [*current, row]
+        if len(json.dumps(candidate, ensure_ascii=False)) > max_chars:
+            chunks.append(current)
+            current = [row]
+            if len(json.dumps(current, ensure_ascii=False)) > max_chars:
+                raise RuntimeError(
+                    f"semantic pre-review element {row['element_id']} exceeds window budget"
+                )
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+    return chunks
+
+
 def build_semantic_pre_review(
     blocks: Sequence[dict[str, Any]],
     source: Path,
@@ -189,9 +233,11 @@ def build_semantic_pre_review(
     expected_ids = [str(block["block_id"]) for block in source_blocks]
     source_hash = hashlib.sha256(source.read_bytes()).hexdigest()
     annotations = _deterministic_elements(source_blocks)
+    deterministic_annotations = annotations
     errors: list[str] = []
     effective_mode = "deterministic"
     route_used = "stub"
+    llm_window_count: int | None = None
     if mode == "llm":
         try:
             active_chat = chat
@@ -202,25 +248,27 @@ def build_semantic_pre_review(
                 route_used = "injected"
             if active_chat is None:
                 raise RuntimeError("semantic pre-review LLM route unavailable")
-            payload = json.dumps([
-                {
-                    "element_id": str(block["block_id"]),
-                    "text": str(block.get("text") or ""),
-                    "type": str(block.get("type") or "paragraph"),
-                    "section_path": list(block.get("section_path") or []),
-                    "page": block.get("page_number"),
-                    "is_list_item": bool(block.get("is_list_item")),
-                    "table_id": block.get("table_id"),
-                }
-                for block in source_blocks
-            ], ensure_ascii=False)
-            if len(payload) > max_chars:
-                raise RuntimeError("semantic pre-review input exceeds one-call budget")
-            raw = active_chat(_SYSTEM_PROMPT, payload)
-            annotations = _validate_llm_elements(raw, expected_ids)
+            chunks = _payload_chunks(source_blocks, max_chars=max_chars)
+            llm_window_count = len(chunks)
+            annotations = []
+            for chunk_index, chunk in enumerate(chunks):
+                chunk_ids = [str(row["element_id"]) for row in chunk]
+                payload = json.dumps(chunk, ensure_ascii=False)
+                raw = active_chat(_SYSTEM_PROMPT, payload)
+                chunk_annotations = _validate_llm_elements(raw, chunk_ids)
+                if chunk_index:
+                    # The model cannot see the previous window. A hard
+                    # boundary is safer than allowing a cross-window merge.
+                    chunk_annotations[0]["relation_to_previous"] = "independent"
+                    chunk_annotations[0]["boundary_after"] = True
+                    chunk_annotations[0]["reason"] = (
+                        "窗口边界无跨窗上下文，保守切开"
+                    )
+                annotations.extend(chunk_annotations)
             effective_mode = "llm"
         except Exception as exc:  # pre-review must never block source parsing
             errors.append(type(exc).__name__ + ": " + str(exc))
+            annotations = deterministic_annotations
     return {
         "schema": SEMANTIC_PRE_REVIEW_SCHEMA,
         "version": SEMANTIC_PRE_REVIEW_VERSION,
@@ -231,6 +279,7 @@ def build_semantic_pre_review(
         "route": route_used,
         "quality_status": "not_evaluated",
         "errors": errors,
+        "llm_window_count": llm_window_count,
         "counts": {
             "source_elements": len(source_blocks),
             "annotations": len(annotations),

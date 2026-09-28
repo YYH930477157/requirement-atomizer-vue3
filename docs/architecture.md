@@ -26,13 +26,16 @@ flowchart LR
     subgraph Parse["解析与上下文"]
         Parsers["parsers/<br/>DOCX / XLSX / PDF"]
         IR["文档 IR<br/>blocks / chunks / tables"]
-        Context["doc_map / outline / terms<br/>条款上下文与领域引用"]
-        Units["extraction_units.py<br/>统一抽取单元"]
-        Router["unit_router.py<br/>A / B / mixed / context / review"]
+        Regions["最终解析分区<br/>视觉/文本回退 + doc_region"]
+        Semantic["semantic_segmentation.py<br/>LLM/确定性语义分段"]
+        Candidates["requirement_candidates.py<br/>候选分类 + 覆盖审计"]
     end
 
     subgraph Functional["默认功能需求轨"]
         Extract["functional_extract.py<br/>条款级功能需求抽取"]
+        Context["doc_map / outline / terms<br/>抽取上下文与领域引用"]
+        Units["extraction_units.py<br/>统一抽取单元（内部计划）"]
+        Router["unit_router.py<br/>A / B / mixed / context / review（影子）"]
         Guard["守恒检查与质量门禁<br/>evidence / obligation / preservation"]
         FR["functional_requirements.json<br/>行为、约束、例外与来源"]
         Analysis["requirements_analysis*<br/>规则分析、可选富化、澄清"]
@@ -71,11 +74,14 @@ flowchart LR
     API --> Review
 
     Parsers --> IR
-    IR --> Context
-    Context --> Units
+    IR --> Regions
+    Regions --> Semantic
+    Semantic --> Candidates
+    Candidates --> Extract
+    Context --> Extract
+    Extract -. "内部规划" .-> Units
     Units --> Router
-    Router --> Extract
-    Router --> Atomize
+    Router -. "路由计划/影子审计" .-> Extract
     Extract --> Guard
     Guard --> FR
     FR --> Analysis
@@ -109,7 +115,7 @@ flowchart LR
 
     class Vue,Bridge,Electron ui;
     class CLI,Tasks,API,Plan entry;
-    class Parsers,IR,Context,Units,Router,Extract,Guard,FR,Analysis,Review,Delivery,Annotation core;
+    class Parsers,IR,Regions,Semantic,Candidates,Context,Units,Router,Extract,Guard,FR,Analysis,Review,Delivery,Annotation core;
     class Client,Runner,Cache,Routes llm;
     class Atomize,Pipeline,Assemble legacy;
     class Package,Out,KB storage;
@@ -118,6 +124,8 @@ flowchart LR
 ## 维护边界
 
 - **功能需求轨是默认交付路径**：抽取以条款为单位保留上下文，守恒和质量门禁决定下游是否具备交付资格。
+- **解析分区与候选筛选先于功能抽取**：视觉/文本回退完成后，才写入 doc_region、语义单元、候选分类和覆盖审计；功能抽取只消费这次最终分区。
+- **统一抽取单元与路由是计划/审计层**：它们为质量优先策略提供 A/B/mixed 路由依据，默认链路通过影子边观察，不替代候选筛选和功能抽取的权威输入。
 - **LLM 只通过统一基础设施进入**：路由、预算、重试、缓存和调用血统由 `llm_client`、`llm_job_runner` 和 `paid_cache_store` 负责。
 - **证据与裁决独立于展示层**：Vue 工作台和静态批注 HTML 共享同一需求投影，不在界面层重新推断需求事实。
 - **结果包是边界**：状态、缓存、日志和阶段文件写入 `.ratomizer/`，根目录只保留注册的交付物。

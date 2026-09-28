@@ -469,15 +469,20 @@ def detect_heading(
     if normalized in profile.major_headings_set:
         return 1, text
 
-    numbered = re.match(r"^(\d+(?:\.\d+)*)(?:\s+|\.\s+)(.{3,})$", text)
+    numbered = re.match(r"^(\d+(?:\.\d+)*)(\s+|\.\s+)(.{3,})$", text)
     if numbered:
-        number, title = numbered.groups()
+        number, separator, title = numbered.groups()
         title = title.strip()
         # A large bare integer is overwhelmingly a quantity or table value, not
         # a top-level clause number (for example, "100 litres of water ...").
         # Keep explicit Heading styles authoritative, but protect all heuristic
         # callers, including DOCX, instead of relying on the PDF-only refinement.
         if "." not in number and int(number) > 40:
+            return None
+        # PDF text extraction often presents a numbered list/value row as a
+        # heading. Keep the shared detector conservative for obvious body
+        # signals, while leaving short noun-phrase chapter titles intact.
+        if looks_like_numbered_body(text, number, title, separator=separator):
             return None
         if not looks_like_toc_entry(title) and not looks_like_caption(text, document_profile=profile):
             return min(number.count(".") + 1, 6), f"{number} {title}"
@@ -506,6 +511,79 @@ def looks_like_toc_entry(text: str) -> bool:
 def looks_like_caption(text: str, *, document_profile: DocumentProfile | None = None) -> bool:
     profile = document_profile or DEFAULT_DOCUMENT_PROFILE
     return bool(re.match(profile.caption_pattern, text.strip(), flags=re.I))
+
+
+_NUMBERED_BODY_UNIT_RE = re.compile(
+    r"(?<![A-Za-z])(?:mm(?:2|²)?|cm(?:2|²)?|m²?|km|hz|khz|mhz|ghz|"
+    r"var|va|kw|kwh|kvar|kv|mv|v|ma|a|w|ms|s|min|h|°c|%)"
+    r"(?![A-Za-z])",
+    re.I,
+)
+_NUMBERED_BODY_CODE_RE = re.compile(
+    r"^(?:[-–—]\s*|[A-Za-z]{1,5}(?:[+−-]|\d))"
+)
+_NUMBERED_BODY_SENTENCE_LEAD_RE = re.compile(
+    r"^(?:the|this|it|if|when|where|each|all|any|every|a|an|for|in|on|at)\b",
+    re.I,
+)
+
+
+def looks_like_numbered_body(
+    text: str,
+    number: str,
+    title: str,
+    *,
+    separator: str = " ",
+) -> bool:
+    """Reject high-confidence numbered value/list sentences as headings.
+
+    This intentionally does not try to recognize a domain's complete title
+    vocabulary. It only uses structural evidence that survives across PDF,
+    DOCX and XLSX inputs: a second numeric value, a measurement/code token, a
+    sentence terminator, or a long sentence-like single-level item. Explicit
+    Heading styles remain authoritative because this guard is reached only
+    after the style check above.
+    """
+    title = str(title or "").strip()
+    if not title:
+        return False
+    if re.search(r"\d", title):
+        return True
+    if _NUMBERED_BODY_CODE_RE.match(title):
+        return True
+    if _NUMBERED_BODY_UNIT_RE.search(title) and (
+        "." in number
+        or len(title.split()) <= 2
+        or re.search(r"\b(?:to|from|and|or|of)\b", title, re.I)
+    ):
+        return True
+    # A two-level number in the high hundreds is a value/row identifier in
+    # practice, not a document section; keep the threshold independent of any
+    # one meter vocabulary.
+    try:
+        if "." in number and int(number.split(".", 1)[0]) > 40:
+            return True
+    except ValueError:
+        pass
+    if title.endswith((".", ";", "?", "!")):
+        return True
+    # ``N. item`` is the common PDF representation of a list.  Clause
+    # headings in supported standards use ``N title`` or a multi-level
+    # ``N.N title``; accepting the dot-space list form creates a false top
+    # level section even when the item happens to be short.
+    if "." not in number and separator.lstrip().startswith("."):
+        return True
+    # A single-level N. item is a list form in extracted standards when the
+    # item is sentence-like; real chapter headings in the supported corpus use
+    # N title or a multi-level clause number. Known major headings have already
+    # been accepted above.
+    if "." not in number and (
+        title[:1].islower()
+    ):
+        return True
+    if "." not in number and len(title) > 52 and _NUMBERED_BODY_SENTENCE_LEAD_RE.match(title):
+        return True
+    return False
 
 
 def infer_table_title(last_caption: str | None, table_index: int) -> str:
@@ -2943,8 +3021,35 @@ def run_atomizer_pipeline(
         with segmentation_mode(effective_mode):
             blocks, table_items, table_cell_items = extract_pdf(input_path, knowledge_bases=knowledge_bases, document_profile=document_profile)
     paragraph_report = build_segmentation_report(blocks, input_path, segmentation)
+    # Vision-assisted parsing may replace the block partition.  Complete that
+    # decision before building *any* semantic or candidate sidecars; otherwise
+    # a text fallback leaves candidate IDs bound to the discarded partition.
+    add_visual_suggestions(paragraph_report, input_path, segmentation)
+    visual_state = paragraph_report["vision"]["status"]
+    if visual_state in ("unavailable", "partial"):
+        if segmentation.fallback == "fail_closed":
+            raise AtomizerInputError("段落视觉辅助未完成：" + str(paragraph_report["vision"].get("reason")))
+        if segmentation.fallback == "text_fallback" and effective_mode != "text_only":
+            if input_format == ".pdf":
+                with segmentation_mode("text_only"):
+                    blocks, table_items, table_cell_items = extract_pdf(
+                        input_path, knowledge_bases=knowledge_bases, document_profile=document_profile)
+            # Old suggestions refer to the old segmentation and must not be attached to new units.
+            vision = paragraph_report["vision"]
+            vision["suggestions"] = []
+            vision["suggestions_discarded"] = True
+            paragraph_report = build_segmentation_report(blocks, input_path, segmentation)
+            paragraph_report["vision"] = vision
+            paragraph_report["effective_mode"] = "text_only"
+            # The text fallback reparses the document.  Semantic pre-review,
+            # semantic units, candidate classification, and coverage audit are
+            # intentionally rebuilt below from this final block partition.
+    # Region metadata is parser-owned input to candidate classification.  It
+    # must be present before semantic units are classified, while still being
+    # applied after a possible visual/text fallback has settled the blocks.
+    mark_doc_regions(blocks, table_items, document_profile=document_profile, table_cell_items=table_cell_items)
     # 语义预审是独立的假设层：显式开关才运行，并在语义分段前生成，
-    # 这样 LLM 的上下文关系才会真正参与边界判断。
+    # 这样 LLM 的上下文关系才会真正参与边界判断。它必须消费最终 blocks。
     pre_review_enabled = (
         get_env("RATOMIZER_SEMANTIC_PRE_REVIEW").strip().lower() in {"1", "true", "yes", "on"}
         or segmentation.semantic_mode == "llm"
@@ -2964,42 +3069,18 @@ def run_atomizer_pipeline(
     # Candidate classification needs parser block metadata.  Semantic units
     # intentionally carry only stable source ids, so table blocks otherwise
     # lose their type and are filtered as ordinary context before functional
-    # extraction.  Passing the original blocks also preserves the explicit
-    # doc_region for tables whose section path contains a stale TOC ancestor.
+    # extraction.  Passing the final blocks also preserves explicit doc_region
+    # for tables whose section path contains a stale TOC ancestor.
     requirement_candidates = classify_semantic_units(
         semantic_report.get("units") or [], source_blocks=blocks)
     requirement_coverage_audit = build_full_coverage_audit(
         semantic_report.get("units") or [], requirement_candidates)
-    add_visual_suggestions(paragraph_report, input_path, segmentation)
-    visual_state = paragraph_report["vision"]["status"]
-    if visual_state in ("unavailable", "partial"):
-        if segmentation.fallback == "fail_closed":
-            raise AtomizerInputError("段落视觉辅助未完成：" + str(paragraph_report["vision"].get("reason")))
-        if segmentation.fallback == "text_fallback" and effective_mode != "text_only":
-            if input_format == ".pdf":
-                with segmentation_mode("text_only"):
-                    blocks, table_items, table_cell_items = extract_pdf(
-                        input_path, knowledge_bases=knowledge_bases, document_profile=document_profile)
-            # Old suggestions refer to the old segmentation and must not be attached to new units.
-            vision = paragraph_report["vision"]
-            vision["suggestions"] = []
-            vision["suggestions_discarded"] = True
-            paragraph_report = build_segmentation_report(blocks, input_path, segmentation)
-            paragraph_report["vision"] = vision
-            paragraph_report["effective_mode"] = "text_only"
-            # The text fallback reparses the document and therefore changes the
-            # block partition used by semantic extraction as well.
-            semantic_report = build_semantic_report(
-                blocks, input_path, mode=segmentation.semantic_mode, route=segmentation.semantic_route,
-                pre_review=semantic_pre_review,
-            )
     LOGGER.info("extracted %s blocks, %s table rows, %s table cells", len(blocks), len(table_items), len(table_cell_items))
     # S1-4：双轨签发的表格结构假设落盘（OFF / 无假设 → 不写任何文件，产物与 main 一致）。
     hypothesis_count = _flush_table_structure_hypotheses(out_dir, document_id=input_path.stem)
     pattern_shadow = None
     if domain_pack_dir is not None:
         pattern_shadow = apply_table_pattern_shadow(blocks, table_items, domain_pack_dir)
-    mark_doc_regions(blocks, table_items, document_profile=document_profile, table_cell_items=table_cell_items)
     # A7：未抽取内容登记册（默认开启，纯登记不改行为）
     unextracted_registry: dict[str, Any] | None = None
     if os.environ.get("RATOMIZER_UNEXTRACTED_REGISTRY", "1").strip().lower() not in {"0", "false", "off"}:

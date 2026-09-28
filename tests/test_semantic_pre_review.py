@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import tempfile
 import unittest
+import json
 
 from semantic_pre_review import build_semantic_pre_review
 from semantic_segmentation import build_semantic_report
@@ -69,6 +70,51 @@ class SemanticPreReviewTests(unittest.TestCase):
             source.write_bytes(b"doc")
             report = build_semantic_report(blocks, source, mode="llm", pre_review=pre_review)
         self.assertEqual(report["units"][0]["source_block_ids"], ["B1", "B2"])
+
+    def test_llm_pre_review_windows_long_documents_instead_of_silent_global_fallback(self):
+        blocks = [
+            {
+                "block_id": f"B{i}",
+                "type": "paragraph",
+                "text": "The meter shall report status " + ("x" * 80),
+                "section_path": ["4"],
+            }
+            for i in range(5)
+        ]
+        calls = []
+
+        def chat(_system, user):
+            rows = json.loads(user)
+            calls.append([row["element_id"] for row in rows])
+            return {
+                "elements": [
+                    {
+                        "element_id": row["element_id"],
+                        "role": "body",
+                        "relation_to_previous": "independent",
+                        "boundary_after": True,
+                        "context_owner": "",
+                        "uncertainty": "low",
+                        "reason": "windowed test",
+                    }
+                    for row in rows
+                ]
+            }
+
+        with tempfile.TemporaryDirectory() as td:
+            source = Path(td) / "doc.pdf"
+            source.write_bytes(b"doc")
+            report = build_semantic_pre_review(
+                blocks, source, mode="llm", chat=chat, max_chars=400,
+            )
+        self.assertEqual(report["effective_mode"], "llm")
+        self.assertGreater(len(calls), 1)
+        self.assertEqual(
+            [row["element_id"] for row in report["elements"]],
+            [block["block_id"] for block in blocks],
+        )
+        self.assertEqual(report["elements"][2]["relation_to_previous"], "independent")
+        self.assertIn("窗口边界", report["elements"][2]["reason"])
 
 
 if __name__ == "__main__":

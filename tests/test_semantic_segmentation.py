@@ -24,7 +24,7 @@ class SemanticSegmentationTests(unittest.TestCase):
         blocks = [
             {"block_id": f"B{i}", "type": "paragraph", "text": "x" * 160,
              "section_path": ["4"]}
-            for i in range(10)
+            for i in range(40)
         ]
         with mock.patch("ai_extract.config_for_route", return_value=object()), \
              mock.patch("llm_client.chat_json_messages", return_value={"groups": []}) as chat:
